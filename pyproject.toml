@@ -1,0 +1,31 @@
+[project]
+name = "narrator"
+version = "0.1.0"
+description = "Long-form narration from text: chunk, synthesize, verify, stitch, master."
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.0",
+    "scipy>=1.14",
+    "soundfile>=0.13",
+    "pyloudnorm>=0.1.1",
+]
+
+[project.optional-dependencies]
+# The Higgs backend and the ASR verifier. Heavy, and Apple-Silicon only.
+# torch is NOT optional despite the MLX path: mlx-audio's Higgs codec loader
+# reads safetensors with framework="pt". Discovered at runtime, so it is pinned here.
+higgs = ["mlx-audio>=0.4.8", "mlx-whisper>=0.4.3", "torch>=2.6"]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+narrate = "narrator.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,20 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Generated audio and downloaded voices — build artifacts
+*.wav
+*.mp3
+*.flac
+!tests/fixtures/*.wav
+
+# Model weights live in ~/.cache/huggingface
+models/
