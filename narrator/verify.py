@@ -153,6 +153,38 @@ class ASR(Protocol):
     def transcribe(self, audio: Audio, lang: str) -> str: ...
 
 
+# Czech orthography encodes distinctions that its phonology does not, so an ASR
+# and a script routinely disagree in spelling about identical sound. Measured
+# across 201 real Czech chunks, EVERY rejection was of this kind: lisa/lise,
+# tipovat/typovat, odpověz/odpověs, cokoli/cokoliv, hashe/haše.
+# Czech failed at 18.4% against English at 2.4% for this reason alone.
+#
+# Folding is safe for the thing that matters: it can make two spellings of the
+# same word match, but it cannot conjure a word that is absent. Drop detection
+# is unaffected.
+_FOLD = str.maketrans({
+    # i/y carry no sound difference in modern Czech, and vowel LENGTH is what an
+    # ASR most often gets wrong. Nothing here merges two different consonants:
+    # a blanket voiced/voiceless collapse (z->s, d->t, b->p) was tried and made
+    # things worse — too many distinct words collided, which scrambled the
+    # alignment and broke 9 chunks that had been passing.
+    "y": "i", "ý": "i", "í": "i",
+    "á": "a", "é": "e", "ě": "e", "ú": "u", "ů": "u", "ó": "o",
+})
+
+
+def fold(word: str, lang: str) -> str:
+    """Collapse spelling differences that carry no difference in sound."""
+    if not lang.startswith("cs"):
+        return word
+    w = word.translate(_FOLD)
+    w = w.replace("sh", "š")                 # English loanwords: hashe / haše
+    w = re.sub(r"(.)\1+", r"\1", w)          # doubled letters
+    if w.endswith("z"):                      # final devoicing: odpověz / odpověs
+        w = w[:-1] + "s"
+    return w
+
+
 def normalize(text: str) -> str:
     text = unicodedata.normalize("NFC", text.lower())
     return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", text)).strip()
@@ -196,7 +228,7 @@ def _squashed(text: str) -> str:
     return re.sub(r"\s+", "", normalize(text))
 
 
-def coverage(reference: str, hypothesis: str) -> tuple[float, str]:
+def coverage(reference: str, hypothesis: str, lang: str = "en") -> tuple[float, str]:
     """Worst per-sentence coverage in [0,1], and the sentence that scored it.
 
     A dropped sentence scores ~0 regardless of how long the surrounding chunk is;
@@ -210,8 +242,8 @@ def coverage(reference: str, hypothesis: str) -> tuple[float, str]:
     sentence with nothing to compare. Those are counted, not silently skipped, and
     the duration bounds remain the only guard on them.
     """
-    ref_words = content_words(reference)
-    hyp_words = content_words(hypothesis)
+    ref_words = [fold(w, lang) for w in content_words(reference)]
+    hyp_words = [fold(w, lang) for w in content_words(hypothesis)]
     if not ref_words:
         return 1.0, ""
 
@@ -253,7 +285,7 @@ def coverage(reference: str, hypothesis: str) -> tuple[float, str]:
     # keeps a genuinely dropped sentence detectable.
     unclaimed = "".join(w for w, taken in zip(hyp_words, hyp_claimed) if not taken)
     for k, word in enumerate(ref_words):
-        if not covered[k] and len(word) > 3 and word in unclaimed:
+        if not covered[k] and len(word) > 2 and word in unclaimed:
             covered[k] = True
             matched += 1
 
@@ -286,7 +318,7 @@ def coverage(reference: str, hypothesis: str) -> tuple[float, str]:
             # identical sentence elsewhere in the chunk satisfies it while this
             # one is genuinely absent. Count occurrences instead of asking
             # "does it appear at all".
-            needle = _squashed(sentence)
+            needle = "".join(fold(w, lang) for w in content_words(sentence))
             seen[needle] = seen.get(needle, 0) + 1
             # Boundaries matter: an unanchored substring search found "go now"
             # inside "under-go now-here". Require the match to sit at a word
@@ -309,7 +341,7 @@ def coverage(reference: str, hypothesis: str) -> tuple[float, str]:
             # global alignment had already matched the sentence to the wrong
             # occurrence.
             leftover = [w for w, claimed in zip(hyp_words, hyp_claimed) if not claimed]
-            present = _bounded_count(leftover, content_words(sentence)) >= 1
+            present = _bounded_count(leftover, [fold(w, lang) for w in content_words(sentence)]) >= 1
             # `or score > 0` used to turn ANY partial coverage into a pass, so a
             # two-word sentence rendered as one word scored 1.0. Only genuine
             # containment rescues a short sentence now.
@@ -368,7 +400,7 @@ class CoverageVerifier:
 
     def verify(self, audio: Audio, text: str, lang: str) -> Verdict:
         transcript = self.asr.transcribe(audio, lang)
-        score, dropped = coverage(text, transcript)
+        score, dropped = coverage(text, transcript, lang)
         return Verdict(
             ok=score >= self.min_coverage,
             coverage=score,

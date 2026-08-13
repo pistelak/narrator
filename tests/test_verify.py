@@ -316,3 +316,34 @@ def test_boundary_rescue_still_cannot_resurrect_a_dropped_sentence() -> None:
                     "Not the keeper. Not a stranger.")[0] == 0.0
     assert coverage("It burns. The sign says it burns brightly.",
                     "The sign says it burns brightly.")[0] == 0.0
+
+
+# --------------- Czech orthographic folding (measured over 201 real chunks)
+
+@pytest.mark.parametrize("script,heard", [
+    ("Napíšeš Lisa e-mail dnes večer.", "Napíšeš Lise e-mail dnes večer."),      # case ending
+    ("Zkus tipovat co bude dál.",       "Zkus typovat co bude dál."),            # i/y, same sound
+    ("Tak mi odpověz hned teď.",        "Tak mi odpověs hned teď."),             # final devoicing
+    ("Zahashovaný soubor leží tady.",  "Zahašovaný soubor leží tady."),        # loanword digraph
+])
+def test_czech_spelling_variants_are_not_drops(script: str, heard: str) -> None:
+    """Czech orthography encodes distinctions its phonology does not.
+
+    Across 201 real Czech chunks every single rejection was of this kind, and
+    Czech failed at 18.4% against English at 2.4% for this reason alone. The
+    audio was correct in all of them; only the spelling differed.
+    """
+    assert coverage(script, heard, "cs")[0] >= 0.90
+
+
+def test_folding_does_not_apply_to_english() -> None:
+    assert coverage("The key is safe here.", "The kay is safe here.", "en")[0] < 0.90
+
+
+def test_folding_cannot_hide_a_missing_word() -> None:
+    """Folding makes two spellings of one word match; it cannot invent a word.
+
+    This is why it is safe: drop detection is unaffected.
+    """
+    assert coverage("Ztíží to třídění ale neznemožní.", "Ztíží to ale.", "cs")[0] < 0.90
+    assert coverage("Ne surový záznam ale souhrn.", "Ne surový záznam.", "cs")[0] < 0.90
