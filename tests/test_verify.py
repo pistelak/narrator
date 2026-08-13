@@ -293,3 +293,26 @@ def test_compound_numerals_are_skipped_symmetrically() -> None:
     An asymmetric rule reads a correct transcription as a changed number."""
     assert coverage("It uses SHA two fifty six today.", "It uses SHA 256 today.")[0] == 1.0
     assert coverage("Použije ša dvě stě padesát šest dnes.", "Použije ša 256 dnes.")[0] == 1.0
+
+
+# ------------------- word-boundary disagreement (found by the acceptance run)
+
+def test_hyphenated_compound_is_not_a_drop() -> None:
+    """Measured on real Whisper output at 0.83, on correct audio.
+
+    The script says "coworkers"; Whisper writes "co-worker's", which normalises
+    to three tokens matching none of it. Same mechanism as the Czech merge, in
+    reverse — a split rather than a join — and it happens in long sentences where
+    the short-sentence rescue never applied.
+    """
+    ref = "The coworkers reaction is not subtle here today."
+    assert coverage(ref, "The co-worker's reaction is not subtle here today.")[0] == 1.0
+
+
+def test_boundary_rescue_still_cannot_resurrect_a_dropped_sentence() -> None:
+    """The rescue searches only UNCLAIMED transcript text, which is what keeps a
+    genuine drop detectable."""
+    assert coverage("Not the keeper. Not a stranger. Not any council.",
+                    "Not the keeper. Not a stranger.")[0] == 0.0
+    assert coverage("It burns. The sign says it burns brightly.",
+                    "The sign says it burns brightly.")[0] == 0.0

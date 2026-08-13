@@ -242,6 +242,21 @@ def coverage(reference: str, hypothesis: str) -> tuple[float, str]:
     matched_chars = sum(size for _, _, size in char_matcher.get_matching_blocks())
     precision = matched_chars / len(hyp_squashed_words) if hyp_squashed_words else 1.0
 
+    # Word-boundary rescue, applied to INDIVIDUAL words rather than only to short
+    # sentences. Measured on real Whisper output: the script says "coworkers" and
+    # the transcript says "co-worker's", which normalises to three tokens and
+    # aligns with none of them — correct audio scoring 0.83 and failing. The same
+    # mechanism as the Czech "Ne znemožní" -> "Neznemožní" merge, in reverse.
+    #
+    # Restricted to UNCLAIMED hypothesis text, so a word cannot be rescued by an
+    # occurrence that another sentence already matched. That restriction is what
+    # keeps a genuinely dropped sentence detectable.
+    unclaimed = "".join(w for w, taken in zip(hyp_words, hyp_claimed) if not taken)
+    for k, word in enumerate(ref_words):
+        if not covered[k] and len(word) > 3 and word in unclaimed:
+            covered[k] = True
+            matched += 1
+
     hyp_squashed = _squashed(hypothesis)
     seen: dict[str, int] = {}
     worst, worst_sentence, pos = 1.0, "", 0
