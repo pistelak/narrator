@@ -88,6 +88,13 @@ def coverage(reference: str, hypothesis: str) -> tuple[float, str]:
     A dropped sentence scores ~0 regardless of how long the surrounding chunk is;
     an ASR spelling quirk costs a word or two inside an otherwise intact sentence.
     That separation is the entire reason this is per-sentence.
+
+    Known limit, stated because it is not obvious: a sentence whose content words
+    are ALL numerals cannot be verified this way. Scripts spell numerals out
+    because digits are unspeakable, every ASR writes them back as digits, and
+    number-blinding — which is what makes the rest of this work — leaves such a
+    sentence with nothing to compare. Those are counted, not silently skipped, and
+    the duration bounds remain the only guard on them.
     """
     ref_words = content_words(reference)
     hyp_words = content_words(hypothesis)
@@ -101,20 +108,37 @@ def coverage(reference: str, hypothesis: str) -> tuple[float, str]:
             covered[k] = True
 
     hyp_squashed = _squashed(hypothesis)
+    seen: dict[str, int] = {}
     worst, worst_sentence, pos = 1.0, "", 0
+    unverifiable: list[str] = []
+
     for sentence in (s for s in _SENTENCE_END.split(reference.strip()) if s.strip()):
         n = len(content_words(sentence))
+
         if n == 0:
+            # Every content word was a numeral, so number-blinding left nothing to
+            # compare. This is genuinely unverifiable by a text round-trip: the
+            # script says "two fifty six" precisely because digits are unspeakable,
+            # and the ASR says "256", so no squashed form matches either. Recorded
+            # rather than skipped — silently passing it is how a dropped sentence
+            # gets through, which this used to do.
+            unverifiable.append(sentence.strip())
             continue
+
         score = sum(covered[pos:pos + n]) / n
         pos += n
 
         if n < SHORT_SENTENCE_WORDS:
             # Short sentences are fragile at word level: Czech "Ne znemožní."
-            # comes back as one token, "Neznemožní", and neither source word
-            # matches, so word coverage reads 0.0 on correct audio. Squashing
-            # both sides makes boundary disagreement invisible.
-            present = _squashed(sentence) in hyp_squashed
+            # returns as one token, "Neznemožní", so neither source word matches
+            # and correct audio reads 0.0. Squashing both sides hides boundary
+            # disagreement — but containment alone is not enough, because an
+            # identical sentence elsewhere in the chunk satisfies it while this
+            # one is genuinely absent. Count occurrences instead of asking
+            # "does it appear at all".
+            needle = _squashed(sentence)
+            seen[needle] = seen.get(needle, 0) + 1
+            present = hyp_squashed.count(needle) >= seen[needle]
             score = 1.0 if (present or score > 0) else 0.0
 
         if score < worst:

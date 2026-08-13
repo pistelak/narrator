@@ -155,3 +155,49 @@ def test_coverage_verifier_passes_and_fails() -> None:
 
 def test_null_verifier_accepts_anything() -> None:
     assert NullVerifier().verify(SILENCE, CHUNK, "en").ok
+
+
+# ------------------------------- false passes found by adversarial self-review
+
+def test_dropped_sentence_is_caught_even_when_it_appears_elsewhere() -> None:
+    """Containment alone is not presence.
+
+    The short-sentence leniency asked "does this text appear in the transcript",
+    which an identical sentence elsewhere in the chunk answers yes to while this
+    one is genuinely gone. Occurrences are counted now.
+    """
+    ref = "Not the keeper. It burns. A stranger cannot douse it. It burns."
+    hyp = "Not the keeper. It burns. A stranger cannot douse it."
+    score, sentence = coverage(ref, hyp)
+    assert score == 0.0
+    assert "It burns." in sentence
+
+
+def test_one_of_several_identical_sentences_dropped_is_caught() -> None:
+    assert coverage("Again. Again. Again.", "Again. Again.")[0] == 0.0
+
+
+def test_repeated_sentences_all_present_still_pass() -> None:
+    """The fix must not make legitimate repetition fail."""
+    assert coverage("Again. Again.", "Again. Again.")[0] == 1.0
+
+
+def test_czech_boundary_leniency_survives_the_fix() -> None:
+    """The case the leniency exists for must still work."""
+    ref = "Což třídění ztíží. Ne znemožní."
+    hyp = "Což třídění ztíží. Neznemožní."
+    assert coverage(ref, hyp)[0] == 1.0
+
+
+def test_all_numeral_sentence_is_a_documented_blind_spot() -> None:
+    """Honest about a limit rather than pretending to cover it.
+
+    "Two fifty six." has no content words after number-blinding, so a text
+    round-trip cannot verify it: the script spells the numeral out because digits
+    are unspeakable, and the ASR writes it back as "256". Nothing matches either
+    way. The duration bounds are the only remaining guard, and the docstring says
+    so — this test exists so the limitation cannot be forgotten.
+    """
+    ref = "The seal is four bytes. Two fifty six. That catches the typo."
+    hyp = "The seal is four bytes. That catches the typo."
+    assert coverage(ref, hyp)[0] == 1.0, "still passes — see the docstring's stated limit"
