@@ -190,3 +190,19 @@ def test_cli_collapses_internal_whitespace() -> None:
 def test_cli_ignores_empty_input() -> None:
     from narrator.cli import parse_text
     assert parse_text("\n\n   \n\n", 0.35) == []
+
+
+def test_backend_with_unknown_sample_rate_is_refused(tmp_path: Path) -> None:
+    """A leading Gap against sample_rate == 0 allocated zero samples and vanished
+    from a render that still reported itself clean."""
+    backend, verifier = build()
+    backend.sample_rate = 0
+    with pytest.raises(ValueError, match="sample_rate is 0"):
+        render([Gap(3.0), Text("Alpha beta gamma.")], VOICE, backend, verifier, tmp_path / "x.wav")
+
+
+def test_leading_gap_is_rendered_at_full_length(tmp_path: Path) -> None:
+    backend, verifier = build()
+    a = render([Text("Alpha beta gamma.")], VOICE, backend, verifier, tmp_path / "a.wav")
+    b = render(*[[Gap(3.0), Text("Alpha beta gamma.")], VOICE, *build(), tmp_path / "b.wav"])
+    assert b.duration_s - a.duration_s == pytest.approx(3.0, abs=0.05)

@@ -63,6 +63,13 @@ def render(
     shortens one: in a teaching script a pause is content — the listener is meant
     to answer during it — and a renderer that "improves" the timing is editing.
     """
+    if not getattr(backend, "sample_rate", 0):
+        raise ValueError(
+            f"{type(backend).__name__}.sample_rate is 0. A backend must know its rate "
+            "before rendering: a leading Gap would otherwise allocate zero samples and "
+            "vanish from an otherwise clean render. Call the backend's load()/prepare "
+            "step, or set sample_rate explicitly."
+        )
     started = time.perf_counter()
     plan = _plan(segments, cfg.max_chars)
     total = sum(1 for kind, _ in plan if kind == "text")

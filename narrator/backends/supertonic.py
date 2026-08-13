@@ -69,6 +69,17 @@ class SupertonicBackend:
     def frames_per_second(self) -> int:
         return self.fps
 
+    def prepare(self, voice: Voice) -> None:
+        """Discover the sample rate before rendering starts.
+
+        Required because `render` allocates gap silence from `sample_rate`, so a
+        leading Gap against an unknown rate produces zero samples and disappears
+        from a render that still reports itself clean.
+        """
+        self.load()
+        if not self.sample_rate:
+            self.synthesize("Ahoj.", voice, max_frames=0, temperature=0.0)
+
     def load(self) -> None:
         if self._tts is not None:
             return

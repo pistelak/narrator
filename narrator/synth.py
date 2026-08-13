@@ -25,7 +25,10 @@ import numpy as np
 
 from narrator.types import Audio, Backend, ChunkResult, Verdict, Verifier, Voice
 
-_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+# Closing quotes and brackets may sit between the terminator and the space.
+# Missing them merged sentences, which silently restored the aggregate
+# scoring that per-sentence coverage exists to replace.
+_SENTENCE_END = re.compile(r'(?<=[.!?])["”’\')\]]*\s+')
 
 
 @dataclass(frozen=True)
@@ -125,8 +128,20 @@ def synthesize_chunk(
         # transcript and no named sentence — which is exactly what a caller needs
         # to tell "it said the wrong thing" from "it stopped early". Costs one
         # extra ASR call, on failure only.
+        #
+        # This MUST NOT be able to rescue the attempt. Assigning the fresh verdict
+        # wholesale did exactly that: `_Attempt.ok` reads `verdict.ok`, so a flaky
+        # ASR returning success on this second call turned a failed chunk into a
+        # passing one without generating any new audio. Copy the diagnostic text
+        # across; keep the failure.
         try:
-            attempt.verdict = verifier.verify(attempt.audio, text, voice.lang)
+            diagnostic = verifier.verify(attempt.audio, text, voice.lang)
+            attempt.verdict = Verdict(
+                ok=False,
+                coverage=diagnostic.coverage,
+                dropped_sentence=diagnostic.dropped_sentence,
+                transcript=diagnostic.transcript,
+            )
         except Exception:
             pass
 
@@ -160,10 +175,12 @@ def _best_attempt(
 
         duration = len(audio) / backend.sample_rate
         # Reaching the cap means generation was still going when it was stopped.
-        # This must be its own signal: with these constants the cap always lands
+        # This must be its own signal: for typical chunk lengths the cap lands
         # *below* the duration ceiling, so a runaway is truncated to cap length
-        # and then sails through the ceiling check. Without this the cap bounds
-        # the cost of a runaway without ever detecting one.
+        # and then sails through the ceiling check. (Not true for the very
+        # shortest inputs, where the 4 s floor exceeds the ceiling — but both
+        # checks are required, so that ordering never creates a pass.) Without
+        # this the cap bounds the cost of a runaway without ever detecting one.
         hit_cap = (
             getattr(backend, "honours_frame_cap", True)
             and duration >= (cap / backend.frames_per_second()) - 1e-6

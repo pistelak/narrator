@@ -76,10 +76,16 @@ def test_aggregate_similarity_cannot_separate_correct_from_dropped() -> None:
 # ---------------------------------------------------- trap 3: number-blind
 
 @pytest.mark.parametrize("word,expected", [
-    ("twenty", True), ("dvacet", True), ("256", True), ("20-byte", True),
-    ("padesát", True), ("lantern", False), ("hash", False), ("paluba", False),
+    ("twenty", True), ("dvacet", True), ("256", True), ("padesát", True),
+    ("lantern", False), ("hash", False), ("paluba", False),
+    # Alphanumeric domain terms are CONTENT, not numerals. Treating "contains a
+    # digit" as numeric deleted these from both sides, leaving the verifier blind
+    # to whether the audio said them at all.
+    ("utf8", False), ("iso9001", False), ("rfc822", False), ("base64", False),
 ])
 def test_is_numberish(word: str, expected: bool) -> None:
+    """Operates on normalized tokens: `normalize` strips punctuation first, so
+    "20-byte" arrives as the two tokens "20" and "byte", never as one."""
     assert is_numberish(word.lower()) is expected
 
 
@@ -189,6 +195,13 @@ def test_czech_boundary_leniency_survives_the_fix() -> None:
     assert coverage(ref, hyp)[0] == 1.0
 
 
+def test_alphanumeric_terms_are_verified_not_discarded() -> None:
+    """utf8 / iso9001 / base64 are content words in this domain."""
+    ref = "The file is utf8 encoded. It uses iso9001 forms."
+    assert coverage(ref, "The file is utf8 encoded. It uses iso9001 forms.")[0] == 1.0
+    assert coverage(ref, "The file is encoded. It uses forms.")[0] < 0.9
+
+
 def test_all_numeral_sentence_is_a_documented_blind_spot() -> None:
     """Honest about a limit rather than pretending to cover it.
 
@@ -201,3 +214,46 @@ def test_all_numeral_sentence_is_a_documented_blind_spot() -> None:
     ref = "The seal is four bytes. Two fifty six. That catches the typo."
     hyp = "The seal is four bytes. That catches the typo."
     assert coverage(ref, hyp)[0] == 1.0, "still passes — see the docstring's stated limit"
+
+
+# ------------------------------ insertion blindness (found by external review)
+
+def test_inserted_negation_is_caught() -> None:
+    """The worst corruption possible in teaching material, and it scored 1.00.
+
+    Coverage measured recall only — it marked which REFERENCE words appeared in
+    the transcript, so anything the engine ADDED was invisible. Precision over
+    the hypothesis is what catches it.
+    """
+    assert coverage("The key is safe.", "The key is not safe.")[0] < 0.9
+
+
+def test_hallucinated_extra_sentence_is_caught() -> None:
+    ref = "Alpha beta gamma."
+    assert coverage(ref, "Alpha beta gamma. And then some invented extra sentence.")[0] < 0.9
+
+
+def test_partial_short_sentence_no_longer_scores_perfect() -> None:
+    """`or score > 0` turned ANY partial coverage into a pass."""
+    assert coverage("Alpha beta.", "Alpha.")[0] < 0.9
+
+
+def test_containment_does_not_match_across_word_boundaries() -> None:
+    """Squashed containment was an unanchored substring search: "go now" was
+    found inside "under-go now-here" and the dropped sentence passed."""
+    ref = "Stop here. Go now."
+    assert coverage(ref, "Stop here. We undergo nowhere near that place.")[0] < 0.9
+
+
+def test_dropped_negation_fails_at_the_tightened_threshold() -> None:
+    """0.60 let a sentence lose 40% of its words. This one scored 0.857."""
+    ref = "Never share the master password to anyone."
+    score, _ = coverage(ref, "Share the master password with anyone.")
+    assert 0.6 < score < 0.9, "must fail now, and would have passed at 0.60"
+
+
+def test_closing_quote_does_not_merge_sentences() -> None:
+    """Boundaries only fired on `[.!?]` + whitespace, so a closing quote merged
+    two sentences and restored the aggregate scoring this replaces."""
+    ref = 'He shouted "do not enter!" Then everyone left the room.'
+    assert coverage(ref, "He shouted Then everyone left the room.")[0] < 0.9

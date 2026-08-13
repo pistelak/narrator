@@ -35,7 +35,10 @@ _SPLIT_PRIORITY: tuple[tuple[str, float], ...] = (
 )
 _WINDOW = 30
 
-_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+# Closing quotes and brackets may sit between the terminator and the space.
+# Missing them merged sentences, which silently restored the aggregate
+# scoring that per-sentence coverage exists to replace.
+_SENTENCE_END = re.compile(r'(?<=[.!?])["”’\')\]]*\s+')
 
 
 def split_sentences(text: str) -> list[str]:

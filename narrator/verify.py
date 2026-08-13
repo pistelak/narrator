@@ -37,7 +37,15 @@ from typing import Protocol, runtime_checkable
 
 from narrator.types import Audio, Verdict
 
-MIN_COVERAGE = 0.60
+MIN_COVERAGE = 0.90
+"""Near-complete, deliberately.
+
+At 0.60 a sentence could lose almost 40% of its words and pass: "Never share the
+master password to anyone." rendered as "Share the master password with anyone."
+scored 0.857. Dropping a single negation inverts the meaning, and no threshold
+that tolerates it is defensible for teaching material. Number-blinding plus the
+short-sentence rule already absorb the ASR disagreements that made a loose
+threshold seem necessary."""
 SHORT_SENTENCE_WORDS = 3
 
 # Spelled-out numerals in the languages this is used on. Anything matching is
@@ -54,7 +62,10 @@ _NUMBER_WORDS = set(
     """.split()
 )
 
-_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+# Closing quotes and brackets may sit between the terminator and the space.
+# Missing them merged sentences, which silently restored the aggregate
+# scoring that per-sentence coverage exists to replace.
+_SENTENCE_END = re.compile(r'(?<=[.!?])["”’\')\]]*\s+')
 
 
 @runtime_checkable
@@ -70,11 +81,36 @@ def normalize(text: str) -> str:
 
 
 def is_numberish(word: str) -> bool:
-    return any(c.isdigit() for c in word) or word in _NUMBER_WORDS
+    """A token that carries only numeric value, so it can be ignored.
+
+    Deliberately NOT "contains a digit": that deleted `utf8`, `iso9001`, `rfc822`
+    and `base64` from both sides, which are content words in this domain — the
+    verifier was blind to whether the audio said them at all.
+    """
+    return word.isdigit() or word in _NUMBER_WORDS
 
 
 def content_words(text: str) -> list[str]:
     return [w for w in normalize(text).split() if not is_numberish(w)]
+
+
+def _bounded_count(hyp_words: list[str], needle_words: list[str]) -> int:
+    """How many times `needle_words` appears in `hyp_words`, allowing the words to
+    have merged or split in the transcript but not to straddle other words."""
+    if not needle_words:
+        return 0
+    needle = "".join(needle_words)
+    count = 0
+    for start in range(len(hyp_words)):
+        joined = ""
+        for end in range(start, min(start + len(needle_words) + 2, len(hyp_words))):
+            joined += hyp_words[end]
+            if joined == needle:
+                count += 1
+                break
+            if len(joined) > len(needle):
+                break
+    return count
 
 
 def _squashed(text: str) -> str:
@@ -103,9 +139,27 @@ def coverage(reference: str, hypothesis: str) -> tuple[float, str]:
 
     covered = [False] * len(ref_words)
     matcher = difflib.SequenceMatcher(None, ref_words, hyp_words, autojunk=False)
+    matched = 0
     for i, _, size in matcher.get_matching_blocks():
+        matched += size
         for k in range(i, i + size):
             covered[k] = True
+
+    # Recall alone is not enough, and this was the library's worst blind spot.
+    # Marking only reference words made everything the engine ADDED invisible:
+    # "The key is safe." rendered as "The key is not safe." scored a perfect 1.0,
+    # as did correct audio followed by a hallucinated extra sentence. An inserted
+    # negation is the most damaging corruption possible in teaching material.
+    #
+    # Measured on SQUASHED CHARACTERS, not words, for the same reason the
+    # short-sentence rule is: a transcript that merges "ne znemožní" into
+    # "neznemožní" has inserted nothing, but word-level precision reads the merge
+    # as one unmatched token and one missing pair.
+    ref_squashed = "".join(ref_words)
+    hyp_squashed_words = "".join(hyp_words)
+    char_matcher = difflib.SequenceMatcher(None, ref_squashed, hyp_squashed_words, autojunk=False)
+    matched_chars = sum(size for _, _, size in char_matcher.get_matching_blocks())
+    precision = matched_chars / len(hyp_squashed_words) if hyp_squashed_words else 1.0
 
     hyp_squashed = _squashed(hypothesis)
     seen: dict[str, int] = {}
@@ -138,12 +192,22 @@ def coverage(reference: str, hypothesis: str) -> tuple[float, str]:
             # "does it appear at all".
             needle = _squashed(sentence)
             seen[needle] = seen.get(needle, 0) + 1
-            present = hyp_squashed.count(needle) >= seen[needle]
-            score = 1.0 if (present or score > 0) else 0.0
+            # Boundaries matter: an unanchored substring search found "go now"
+            # inside "under-go now-here". Require the match to sit at a word
+            # boundary in the squashed hypothesis, reconstructed from the words.
+            present = _bounded_count(hyp_words, content_words(sentence)) >= seen[needle]
+            # `or score > 0` used to turn ANY partial coverage into a pass, so a
+            # two-word sentence rendered as one word scored 1.0. Only genuine
+            # containment rescues a short sentence now.
+            score = 1.0 if present else score
 
         if score < worst:
             worst, worst_sentence = score, sentence.strip()
 
+    if precision < worst:
+        # Something was inserted rather than dropped. Report the whole chunk,
+        # since an insertion does not belong to any one reference sentence.
+        return precision, f"[inserted content] {reference.strip()[:70]}"
     return worst, worst_sentence
 
 
