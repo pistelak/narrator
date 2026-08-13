@@ -62,18 +62,28 @@ never learn what a frame cap is.
 
 @dataclass(frozen=True)
 class Voice:
-    """A pinned narrator.
+    """A pinned narrator: either a reference clip or a named preset.
 
     Zero-shot models invent a voice per call. Across ~100 chunks that drifts
-    audibly, so a reference is required rather than optional. Reuse the same one
+    audibly, so pinning is required rather than optional. Reuse the same voice
     across every episode of a series: listeners adapt to a specific synthetic
     voice, and the adaptation is large and long-lived (42% -> 78% intelligibility
     over eight days of exposure in Schwab, Nusbaum & Pisoni 1985, still +32 points
     at six months).
+
+    Two shapes, because engines differ and the second one proved it: cloning
+    engines want a clip plus its transcript, while engines that ship a voice bank
+    want a name. A backend uses whichever it supports and says so plainly when
+    handed the other.
     """
-    audio_path: Path
-    transcript: str
+    audio_path: Path | None = None
+    transcript: str = ""
     lang: str = "en"
+    preset: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.audio_path is None and not self.preset:
+            raise ValueError("A Voice needs either audio_path or preset — see the class docstring")
 
 
 # --------------------------------------------------------------------------
@@ -149,10 +159,23 @@ class Backend(Protocol):
 
     sample_rate: int
 
+    honours_frame_cap: bool
+    """Whether `max_frames` actually bounds generation.
+
+    Not every engine has the concept. Autoregressive models can run away and need
+    a hard stop; a diffusion or flow model given a fixed step count cannot, and
+    has no parameter to accept one. A backend that returns False is telling the
+    caller that reaching the cap is not a detectable event for it, so that signal
+    must not be used as evidence of a runaway.
+
+    This exists because a second backend broke the assumption that it did not.
+    """
+
     def synthesize(self, text: str, voice: Voice, *, max_frames: int, temperature: float) -> Audio:
         """Speak `text` once. May return wrong or truncated audio — that is the
-        caller's problem to detect, and `max_frames` is a hard stop so a runaway
-        generation is bounded rather than unbounded."""
+        caller's problem to detect. When `honours_frame_cap` is True, `max_frames`
+        is a hard stop so a runaway is bounded rather than unbounded; otherwise it
+        is advisory and may be ignored."""
         ...
 
     def frames_per_second(self) -> int:

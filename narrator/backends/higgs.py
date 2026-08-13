@@ -47,6 +47,8 @@ class HiggsBackend:
     model_id: str = MODEL
     sample_rate: int = SAMPLE_RATE
     fps: int = FPS
+    honours_frame_cap: bool = True
+    """Autoregressive: max_new_frames is a real hard stop."""
 
     _model: Any = field(default=None, repr=False)
     _ref_codes: Any = field(default=None, repr=False)
@@ -72,6 +74,11 @@ class HiggsBackend:
         """Encode the reference once and cache it for the life of the backend."""
         if self._ref_codes is not None and self._ref_for == voice.audio_path:
             return self._ref_codes
+        if voice.audio_path is None:
+            raise ValueError(
+                "Higgs clones from a reference clip; it has no voice bank, so a preset-only "
+                "Voice cannot be used. Supply audio_path and transcript."
+            )
         if not voice.audio_path.is_file():
             raise FileNotFoundError(
                 f"Voice reference not found: {voice.audio_path}. "

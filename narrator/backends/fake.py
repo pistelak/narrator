@@ -49,6 +49,7 @@ class FakeBackend:
     sample_rate: int = 24000
     words_per_second: float = 2.5
     fps: int = 25
+    honours_frame_cap: bool = True
     script: dict[int, Failure] = field(default_factory=dict)
     default: Failure = Failure.NONE
 

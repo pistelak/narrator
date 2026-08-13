@@ -164,7 +164,10 @@ def _best_attempt(
         # *below* the duration ceiling, so a runaway is truncated to cap length
         # and then sails through the ceiling check. Without this the cap bounds
         # the cost of a runaway without ever detecting one.
-        hit_cap = duration >= (cap / backend.frames_per_second()) - 1e-6
+        hit_cap = (
+            getattr(backend, "honours_frame_cap", True)
+            and duration >= (cap / backend.frames_per_second()) - 1e-6
+        )
         duration_ok = floor <= duration <= ceiling
         # Only pay for verification when the cheap checks already passed.
         verdict = (
