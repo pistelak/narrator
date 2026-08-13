@@ -321,7 +321,6 @@ def test_boundary_rescue_still_cannot_resurrect_a_dropped_sentence() -> None:
 # --------------- Czech orthographic folding (measured over 201 real chunks)
 
 @pytest.mark.parametrize("script,heard", [
-    ("Napíšeš Lisa e-mail dnes večer.", "Napíšeš Lise e-mail dnes večer."),      # case ending
     ("Zkus tipovat co bude dál.",       "Zkus typovat co bude dál."),            # i/y, same sound
     ("Tak mi odpověz hned teď.",        "Tak mi odpověs hned teď."),             # final devoicing
     ("Zahashovaný soubor leží tady.",  "Zahašovaný soubor leží tady."),        # loanword digraph
@@ -334,6 +333,14 @@ def test_czech_spelling_variants_are_not_drops(script: str, heard: str) -> None:
     audio was correct in all of them; only the spelling differed.
     """
     assert coverage(script, heard, "cs")[0] >= 0.90
+
+
+def test_case_inflection_is_not_folded() -> None:
+    """A deliberate limit. "Lisa" -> "Lise" is Czech dative, a different word form
+    that SOUNDS different — unlike i/y or final devoicing, which do not. Folding
+    case endings would collapse genuinely distinct words, so this class of
+    rejection survives and is adjudicated by hand."""
+    assert coverage("Napíšeš Lisa e-mail dnes.", "Napíšeš Lise e-mail dnes.", "cs")[0] < 0.90
 
 
 def test_folding_does_not_apply_to_english() -> None:
