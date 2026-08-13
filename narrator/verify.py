@@ -90,6 +90,59 @@ def critical_counts(words: list[str]) -> dict[str, int]:
     return {w: words.count(w) for w in set(words) & _CRITICAL_TOKENS}
 
 
+# Values for the simple cardinals, so an ISOLATED numeral can be compared rather
+# than merely ignored. Number-blinding is what makes the rest of this verifier
+# work, but it left the wrong number scoring a perfect 1.0 — and this pipeline
+# teaches "four harbor lights" and "a twenty-page logbook", where the number IS the
+# content.
+_NUMERAL_VALUES: dict[str, int] = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+    "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
+    "eighteen": 18, "nineteen": 19, "twenty": 20, "thirty": 30, "forty": 40,
+    "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+    "hundred": 100, "thousand": 1000, "million": 10**6, "billion": 10**9,
+    "nula": 0, "jedna": 1, "jeden": 1, "jedno": 1, "dva": 2, "dvě": 2, "tři": 3,
+    "čtyři": 4, "pět": 5, "šest": 6, "sedm": 7, "osm": 8, "devět": 9, "deset": 10,
+    "jedenáct": 11, "dvanáct": 12, "třináct": 13, "čtrnáct": 14, "patnáct": 15,
+    "šestnáct": 16, "sedmnáct": 17, "osmnáct": 18, "devatenáct": 19, "dvacet": 20,
+    "třicet": 30, "čtyřicet": 40, "padesát": 50, "šedesát": 60, "sedmdesát": 70,
+    "osmdesát": 80, "devadesát": 90, "sto": 100, "tisíc": 1000,
+}
+
+
+def has_compound_numeral(words: list[str]) -> bool:
+    """Two numerals side by side, e.g. "two fifty six"."""
+    return any(
+        is_numberish(w) and is_numberish(words[i + 1])
+        for i, w in enumerate(words[:-1])
+    )
+
+
+def isolated_numerals(words: list[str]) -> list[int]:
+    """Values of numerals that stand ALONE, with no numeral either side.
+
+    Compounds are skipped deliberately. "two fifty six" and "256" denote the same
+    quantity but tokenize as [2, 50, 6] versus [256], so comparing them would
+    manufacture exactly the false failures number-blinding exists to prevent.
+    An isolated numeral has no such ambiguity: "four bytes" against "nine bytes"
+    is unambiguously wrong.
+    """
+    values: list[int] = []
+    for i, word in enumerate(words):
+        if not is_numberish(word):
+            continue
+        prev_num = i > 0 and is_numberish(words[i - 1])
+        next_num = i + 1 < len(words) and is_numberish(words[i + 1])
+        if prev_num or next_num:
+            continue          # part of a compound; ambiguous, so skip
+        if word.isdigit():
+            values.append(int(word))
+        elif word in _NUMERAL_VALUES:
+            values.append(_NUMERAL_VALUES[word])
+    return values
+
+
 _SENTENCE_END = re.compile(r'(?<=[.!?])["”’\')\]]*\s+')
 
 
@@ -249,6 +302,21 @@ def coverage(reference: str, hypothesis: str) -> tuple[float, str]:
 
         if score < worst:
             worst, worst_sentence = score, sentence.strip()
+
+    # An isolated numeral that changed value is a content error, not an ASR
+    # spelling difference. Compounds are excluded above, so this cannot fire on
+    # "two fifty six" vs "256".
+    ref_tokens = normalize(reference).split()
+    hyp_tokens = normalize(hypothesis).split()
+    # Skip if EITHER side compounds. The check must be symmetric: "two fifty six"
+    # is three adjacent numerals in the script and collapses to the single
+    # isolated "256" in the transcript, so an asymmetric rule reads a correct
+    # transcription as a changed number.
+    compound = has_compound_numeral(ref_tokens) or has_compound_numeral(hyp_tokens)
+    ref_nums = [] if compound else sorted(isolated_numerals(ref_tokens))
+    hyp_nums = [] if compound else sorted(isolated_numerals(hyp_tokens))
+    if ref_nums != hyp_nums:
+        return 0.0, f"[numeral changed: {ref_nums} became {hyp_nums}]"
 
     # A meaning-inverting token that appears or disappears fails outright,
     # regardless of how good the surrounding coverage looks.

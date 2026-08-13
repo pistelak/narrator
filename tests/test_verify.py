@@ -273,3 +273,23 @@ def test_closing_quote_does_not_merge_sentences() -> None:
     two sentences and restored the aggregate scoring this replaces."""
     ref = 'He shouted "do not enter!" Then everyone left the room.'
     assert coverage(ref, "He shouted Then everyone left the room.")[0] < 0.9
+
+
+# ---------------------------- isolated numerals (found by the opinion review)
+
+def test_wrong_isolated_number_is_caught() -> None:
+    """Number-blinding made the rest of this verifier work, and left the wrong
+    number scoring 1.00 — in a pipeline that teaches "four checksum bytes"."""
+    assert coverage("The seal is four bytes long.", "The seal is nine bytes long.")[0] == 0.0
+    assert coverage("Pečeť má čtyři bajty.", "Pečeť má devět bajtů.")[0] == 0.0
+
+
+def test_word_to_digit_transcription_still_passes() -> None:
+    assert coverage("He copies the twenty byte code.", "He copies the 20 byte code.")[0] == 1.0
+
+
+def test_compound_numerals_are_skipped_symmetrically() -> None:
+    """"two fifty six" is three adjacent numerals and collapses to one "256".
+    An asymmetric rule reads a correct transcription as a changed number."""
+    assert coverage("It uses SHA two fifty six today.", "It uses SHA 256 today.")[0] == 1.0
+    assert coverage("Použije ša dvě stě padesát šest dnes.", "Použije ša 256 dnes.")[0] == 1.0

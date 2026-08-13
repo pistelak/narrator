@@ -22,7 +22,7 @@ right audio" are different answers.
 from narrator.audio import MasterConfig
 from narrator.render import RenderConfig, RenderFailed, render
 from narrator.synth import SynthConfig
-from narrator.verify import CoverageVerifier, NullVerifier
+from narrator.verify import ASR, CoverageVerifier, NullVerifier
 from narrator.types import (
     Audio,
     Backend,
@@ -39,7 +39,7 @@ from narrator.types import (
 __version__ = "0.1.0"
 
 __all__ = [
-    "Audio", "Backend", "ChunkResult", "CoverageVerifier", "Gap", "MasterConfig",
+    "ASR", "Audio", "Backend", "ChunkResult", "CoverageVerifier", "Gap", "MasterConfig",
     "NullVerifier", "RenderConfig", "RenderFailed", "RenderReport", "Segment",
-    "SynthConfig", "Text", "Verdict", "Verifier", "Voice", "render", "__version__",
+    "SynthConfig", "Text", "Verdict", "Voice", "render", "__version__",
 ]
