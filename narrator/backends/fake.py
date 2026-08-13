@@ -80,7 +80,13 @@ class FakeBackend:
             duration = cap_seconds
 
         samples = max(int(duration * self.sample_rate), 2)
-        audio = np.zeros(samples, dtype=np.float32)
+        # A quiet tone, not silence. Silence made trim_silence collapse every
+        # chunk to its guard band, so end-to-end tests exercised assembly on
+        # 60 ms of nothing and pyloudnorm rejected the result as shorter than its
+        # analysis block. A fake that does not survive the real pipeline tests
+        # nothing downstream of itself.
+        t = np.arange(samples, dtype=np.float32) / self.sample_rate
+        audio = (0.1 * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
         audio[0] = self._stamp(index)
         self._spoken[index] = spoken
         return audio
