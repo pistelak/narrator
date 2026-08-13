@@ -1,0 +1,224 @@
+"""Synthesize one chunk, and keep trying until it is right or provably isn't.
+
+The escalation ladder, in order:
+
+1. generate, bounded by a frame cap
+2. cheap checks: did it hit the cap, is the duration plausible
+3. the real check: does the audio say the words
+4. retry — the failure is stochastic, so a re-roll genuinely helps
+5. split into sentences and render each alone, where "dropped a whole sentence"
+   stops being expressible
+6. give up loudly
+
+Step 6 matters as much as the rest. A chunk that fails every path must not reach
+the assembly stage: shipping it is exactly the silent corruption this library
+exists to prevent, and "best effort" here means "plausible audio saying the wrong
+thing, indistinguishable from success".
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, replace
+
+import numpy as np
+
+from narrator.types import Audio, Backend, ChunkResult, Verdict, Verifier, Voice
+
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+
+
+@dataclass(frozen=True)
+class SynthConfig:
+    temperature: float = 0.4
+    """Measured: acronym rendering degrades monotonically above this. At 0.4 a
+    real engine produced "SHA-256" twice; at 1.0 it produced "ŠAA256" and
+    "SHH256"."""
+
+    max_attempts: int = 3
+    """Best-of-N with ASR selection drove hard failures 0.269 -> 0.038 at N=3."""
+
+    words_per_second: float = 2.5
+    frame_headroom: float = 1.6
+    frame_headroom_s: float = 2.0
+    """ABSOLUTE headroom, added on top of the multiplier.
+
+    A pure multiplier truncates short utterances by construction: "Jen firmu."
+    is two words, so 0.8 s expected x 1.6 = 1.28 s — less than the real leading
+    and trailing silence. That capped every short sentence, which broke the
+    sentence-split fallback for every chunk containing one, which is precisely
+    the chunks the fallback exists to rescue."""
+
+    min_frame_cap_s: float = 4.0
+    duration_floor_wps: float = 4.5
+    duration_ceiling_base_s: float = 1.5
+    duration_ceiling_per_word_s: float = 0.75
+    sentence_gap_s: float = 0.12
+    allow_sentence_split: bool = True
+
+
+def frame_cap(words: int, fps: int, cfg: SynthConfig) -> int:
+    expected = words / cfg.words_per_second
+    seconds = max(expected * cfg.frame_headroom + cfg.frame_headroom_s, cfg.min_frame_cap_s)
+    return int(seconds * fps)
+
+
+def duration_bounds(words: int, cfg: SynthConfig) -> tuple[float, float]:
+    floor = words / cfg.duration_floor_wps
+    ceiling = cfg.duration_ceiling_base_s + cfg.duration_ceiling_per_word_s * words
+    return floor, ceiling
+
+
+@dataclass
+class _Attempt:
+    audio: Audio
+    duration: float
+    duration_ok: bool
+    verdict: Verdict
+    number: int
+    hit_cap: bool = False
+
+    @property
+    def ok(self) -> bool:
+        return self.duration_ok and not self.hit_cap and self.verdict.ok
+
+    @property
+    def rank(self) -> tuple[int, float]:
+        """How good a *failed* attempt is, for picking the least-bad to report.
+
+        Duration-valid outranks duration-invalid, then coverage. The predecessor
+        ranked on coverage alone and gave a skipped check a perfect 1.0, so an
+        attempt that failed on duration could never be beaten — a later attempt
+        that passed everything was generated, then discarded.
+        """
+        return (1 if (self.duration_ok and not self.hit_cap) else 0, self.verdict.coverage)
+
+
+def synthesize_chunk(
+    text: str,
+    index: int,
+    backend: Backend,
+    verifier: Verifier,
+    voice: Voice,
+    cfg: SynthConfig = SynthConfig(),
+) -> ChunkResult:
+    """Render one chunk. `ChunkResult.ok` is the only trustworthy field."""
+    attempt = _best_attempt(text, backend, verifier, voice, cfg)
+
+    if attempt is not None and attempt.ok:
+        return _result(index, text, attempt, recovered_by="retry" if attempt.number > 1 else "")
+
+    if cfg.allow_sentence_split:
+        split = _sentence_split(text, backend, verifier, voice, cfg)
+        if split is not None:
+            audio, coverage_ = split
+            return ChunkResult(
+                index=index, text=text, audio=audio,
+                duration_s=len(audio) / backend.sample_rate,
+                attempts=cfg.max_attempts + len(_sentences(text)),
+                ok=True, coverage=coverage_, recovered_by="sentence-split",
+            )
+
+    if attempt is not None and not attempt.verdict.transcript and attempt.audio.size:
+        # Diagnostics for the chunk we are about to report as failed. Verification
+        # was skipped because a cheap check already failed, so there is no
+        # transcript and no named sentence — which is exactly what a caller needs
+        # to tell "it said the wrong thing" from "it stopped early". Costs one
+        # extra ASR call, on failure only.
+        try:
+            attempt.verdict = verifier.verify(attempt.audio, text, voice.lang)
+        except Exception:
+            pass
+
+    if attempt is None:
+        # Every attempt raised. There is no audio to hand back, and inventing
+        # silence here would put a hole in the episode that reads as a pause.
+        return ChunkResult(
+            index=index, text=text, audio=np.zeros(0, dtype=np.float32),
+            duration_s=0.0, attempts=cfg.max_attempts, ok=False,
+            coverage=0.0, dropped_sentence=text,
+        )
+    return _result(index, text, attempt)
+
+
+def _best_attempt(
+    text: str, backend: Backend, verifier: Verifier, voice: Voice, cfg: SynthConfig
+) -> _Attempt | None:
+    words = len(text.split())
+    cap = frame_cap(words, backend.frames_per_second(), cfg)
+    floor, ceiling = duration_bounds(words, cfg)
+    best: _Attempt | None = None
+
+    for number in range(1, cfg.max_attempts + 1):
+        try:
+            audio = backend.synthesize(text, voice, max_frames=cap, temperature=cfg.temperature)
+        except Exception:
+            # One bad attempt must not lose the whole render. The predecessor had
+            # no guard here, so a transient error at chunk 80 discarded fifteen
+            # minutes of completed work.
+            continue
+
+        duration = len(audio) / backend.sample_rate
+        # Reaching the cap means generation was still going when it was stopped.
+        # This must be its own signal: with these constants the cap always lands
+        # *below* the duration ceiling, so a runaway is truncated to cap length
+        # and then sails through the ceiling check. Without this the cap bounds
+        # the cost of a runaway without ever detecting one.
+        hit_cap = duration >= (cap / backend.frames_per_second()) - 1e-6
+        duration_ok = floor <= duration <= ceiling
+        # Only pay for verification when the cheap checks already passed.
+        verdict = (
+            verifier.verify(audio, text, voice.lang)
+            if duration_ok and not hit_cap
+            else Verdict(False, 0.0)
+        )
+        attempt = _Attempt(audio, duration, duration_ok, verdict, number, hit_cap)
+
+        if attempt.ok:
+            return attempt
+        if best is None or attempt.rank > best.rank:
+            best = attempt
+
+    return best
+
+
+def _sentence_split(
+    text: str, backend: Backend, verifier: Verifier, voice: Voice, cfg: SynthConfig
+) -> tuple[Audio, float] | None:
+    """Render sentence by sentence. Returns None unless every sentence passes.
+
+    At this granularity "the model dropped a sentence" stops being expressible:
+    a sentence rendered alone either succeeds or fails visibly. It is the same
+    containment a strictly per-sentence pipeline gets for free, applied only
+    where it is needed so the rest keeps the prosody that chunking buys.
+    """
+    sentences = _sentences(text)
+    if len(sentences) < 2:
+        return None
+
+    pieces: list[Audio] = []
+    gap = np.zeros(int(cfg.sentence_gap_s * backend.sample_rate), dtype=np.float32)
+    worst = 1.0
+    for sentence in sentences:
+        attempt = _best_attempt(
+            sentence, backend, verifier, voice, replace(cfg, allow_sentence_split=False)
+        )
+        if attempt is None or not attempt.ok:
+            return None
+        pieces.extend([attempt.audio, gap])
+        worst = min(worst, attempt.verdict.coverage)
+
+    return np.concatenate(pieces[:-1]), worst
+
+
+def _sentences(text: str) -> list[str]:
+    return [s.strip() for s in _SENTENCE_END.split(text.strip()) if s.strip()]
+
+
+def _result(index: int, text: str, attempt: _Attempt, recovered_by: str = "") -> ChunkResult:
+    return ChunkResult(
+        index=index, text=text, audio=attempt.audio, duration_s=attempt.duration,
+        attempts=attempt.number, ok=attempt.ok, coverage=attempt.verdict.coverage,
+        dropped_sentence=attempt.verdict.dropped_sentence,
+        transcript=attempt.verdict.transcript, recovered_by=recovered_by,
+    )
