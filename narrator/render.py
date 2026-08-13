@@ -44,6 +44,7 @@ class RenderFailed(RuntimeError):
 class RenderConfig:
     max_chars: int = MAX_CHARS
     synth: SynthConfig = SynthConfig()
+    """Carries `pronunciation`, applied at synthesis only — see SynthConfig."""
     mastering: MasterConfig = MasterConfig()
     quarantine: bool = True
     on_progress: object = None  # Callable[[ChunkResult, int], None] | None

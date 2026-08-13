@@ -128,9 +128,19 @@ class FakeASR:
 
     backend: FakeBackend
     perfect: bool = True
+    orthography: dict[str, str] = field(default_factory=dict)
+    """Spoken form -> conventional spelling, to model a real ASR.
+
+    An ASR hears sound and writes normal orthography. Handed audio synthesised
+    from the respelling "Kalleh", it returns "Kalle" — which is precisely why a
+    pronunciation lexicon must not reach the verifier. Without this the fake
+    reports the respelling back and the asymmetry that caused three real render
+    failures cannot be reproduced."""
 
     def transcribe(self, audio: Audio, lang: str) -> str:
         spoken = self.backend.heard(audio)
+        for said, written in self.orthography.items():
+            spoken = re.sub(rf"\b{re.escape(said)}\b", written, spoken)
         if self.perfect or not spoken:
             return spoken
         # Imitate the two harmless disagreements a real ASR produces, so tests

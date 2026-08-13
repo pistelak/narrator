@@ -59,6 +59,20 @@ class SynthConfig:
     sentence_gap_s: float = 0.12
     allow_sentence_split: bool = True
 
+    pronunciation: tuple[tuple[str, str], ...] = ()
+    """Written form -> spoken form, applied ONLY at synthesis.
+
+    A pronunciation lexicon and a round-trip verifier are in direct conflict if
+    the substitution happens upstream: the engine is asked to say "Kalleh" so the
+    name is not collapsed to "Cal", the ASR faithfully reports "Kalle", and the
+    verifier — comparing against the respelled text — calls correct audio a
+    failure. Measured on a real render: 0.88 against the substituted form, 1.00
+    against the original.
+
+    So narrator applies it here, immediately before the backend call, and always
+    verifies against the caller's original text. Chunking also runs on the
+    original, so chunk boundaries do not shift when the lexicon changes."""
+
 
 def frame_cap(words: int, fps: int, cfg: SynthConfig) -> int:
     expected = words / cfg.words_per_second
@@ -95,6 +109,13 @@ class _Attempt:
         that passed everything was generated, then discarded.
         """
         return (1 if (self.duration_ok and not self.hit_cap) else 0, self.verdict.coverage)
+
+
+def apply_pronunciation(text: str, pairs: tuple[tuple[str, str], ...]) -> str:
+    """Longest key first, so a longer entry is not clipped by a shorter prefix."""
+    for written, spoken in sorted(pairs, key=lambda kv: len(kv[0]), reverse=True):
+        text = re.sub(rf"\b{re.escape(written)}\b", spoken, text)
+    return text
 
 
 def synthesize_chunk(
@@ -164,9 +185,11 @@ def _best_attempt(
     floor, ceiling = duration_bounds(words, cfg)
     best: _Attempt | None = None
 
+    spoken = apply_pronunciation(text, cfg.pronunciation) if cfg.pronunciation else text
+
     for number in range(1, cfg.max_attempts + 1):
         try:
-            audio = backend.synthesize(text, voice, max_frames=cap, temperature=cfg.temperature)
+            audio = backend.synthesize(spoken, voice, max_frames=cap, temperature=cfg.temperature)
         except Exception:
             # One bad attempt must not lose the whole render. The predecessor had
             # no guard here, so a transient error at chunk 80 discarded fifteen

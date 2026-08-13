@@ -185,3 +185,30 @@ def test_failure_names_the_missing_sentence() -> None:
 def test_tolerates_realistic_asr_disagreement() -> None:
     result, _ = run(text="He copies the twenty byte code. Ne znemožní.", perfect=False)
     assert result.ok and result.attempts == 1
+
+
+# --------------------------- pronunciation lexicon (found by a real render)
+
+def test_lexicon_is_applied_to_synthesis_but_not_to_verification() -> None:
+    """A respelling and a round-trip verifier conflict unless they are separated.
+
+    Substituting upstream made the verifier compare audio against "Kalleh" while
+    the ASR reported "Kalle" — correct audio scoring 0.88 and failing. Three of
+    five failures in a real 106-chunk render were this.
+    """
+    backend = FakeBackend()
+    # The ASR hears the respelled audio and writes the conventional spelling.
+    asr = FakeASR(backend, orthography={"Kalleh": "Kalle"})
+    cfg = SynthConfig(pronunciation=(("Kalle", "Kalleh"),), max_attempts=1,
+                      allow_sentence_split=False)
+    result = synthesize_chunk("This is by Kalle Lindkvist here.", 0, backend,
+                              CoverageVerifier(asr), VOICE, cfg)
+    assert backend.requests == ["This is by Kalleh Lindkvist here."], "engine gets the respelling"
+    assert result.text == "This is by Kalle Lindkvist here.", "report keeps the original"
+    assert result.ok, "verification must use the original, not the respelling"
+
+
+def test_longer_lexicon_keys_win() -> None:
+    from narrator.synth import apply_pronunciation
+    pairs = (("cafe", "café"), ("cafe counter", "café kaunter"))
+    assert apply_pronunciation("at the cafe counter", pairs) == "at the café kaunter"
