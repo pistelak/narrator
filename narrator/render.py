@@ -16,7 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
-from narrator.audio import MasterConfig, concatenate, declick, master, to_channels, trim_silence
+from narrator.audio import MasterConfig, concatenate, declick, master, trim_silence
 from narrator.chunking import MAX_CHARS, chunk
 from narrator.synth import SynthConfig, synthesize_chunk
 from narrator.types import Audio, Backend, ChunkResult, Gap, RenderReport, Segment, Text, Verifier, Voice
@@ -94,9 +94,10 @@ def render(
     raw = concatenate(pieces)
     audio, lufs, peak = master(raw, backend.sample_rate, cfg.mastering)
 
+    frames = audio.shape[0] if audio.ndim else 0
     report = RenderReport(
         out_path=out,
-        duration_s=audio.size / backend.sample_rate,
+        duration_s=frames / backend.sample_rate,
         chunks=results,
         loudness_lufs=lufs,
         peak_dbfs=peak,
@@ -106,7 +107,7 @@ def render(
     if cfg.quarantine and not report.clean:
         raise RenderFailed(report)
 
-    _write(out, to_channels(audio, cfg.mastering.channels), backend.sample_rate)
+    _write(out, audio, backend.sample_rate)   # master() already laid out the channels
     return report
 
 

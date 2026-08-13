@@ -11,12 +11,18 @@ right audio" are different answers.
          Gap(3.0),
          Text("Not the keeper. Not a stranger.")],
         voice=Voice(Path("voice.wav"), "reference transcript"),
+        backend=HiggsBackend(),
+        verifier=CoverageVerifier(WhisperASR()),
         out=Path("episode.wav"),
     )
     if not report.clean:
         ...  # report.failures tells you which chunks and why
 """
 
+from narrator.audio import MasterConfig
+from narrator.render import RenderConfig, RenderFailed, render
+from narrator.synth import SynthConfig
+from narrator.verify import CoverageVerifier, NullVerifier
 from narrator.types import (
     Audio,
     Backend,
@@ -33,6 +39,7 @@ from narrator.types import (
 __version__ = "0.1.0"
 
 __all__ = [
-    "Audio", "Backend", "ChunkResult", "Gap", "RenderReport",
-    "Segment", "Text", "Verdict", "Verifier", "Voice", "__version__",
+    "Audio", "Backend", "ChunkResult", "CoverageVerifier", "Gap", "MasterConfig",
+    "NullVerifier", "RenderConfig", "RenderFailed", "RenderReport", "Segment",
+    "SynthConfig", "Text", "Verdict", "Verifier", "Voice", "render", "__version__",
 ]

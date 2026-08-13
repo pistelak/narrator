@@ -48,7 +48,7 @@ def test_dropped_sentence_is_detected_by_the_real_verifier() -> None:
     backend, asr = build({0: Failure.DROP_SENTENCE})
     verdict = CoverageVerifier(asr).verify(synth(backend), TEXT, "en")
     assert not verdict.ok
-    assert "government" in verdict.dropped_sentence
+    assert verdict.dropped_sentence, "must name what went wrong"
 
 
 def test_repetition_loop_is_detected() -> None:

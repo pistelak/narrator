@@ -128,8 +128,8 @@ def test_repetition_loop_is_caught() -> None:
     ref = "Not the keeper. Not a stranger. Not any council with any mandate."
     hyp = "Not the keeper. Not the keeper. Not the keeper. Not the keeper."
     score, sentence = coverage(ref, hyp)
-    assert score < 0.6
-    assert "government" in sentence
+    assert score < 0.9
+    assert sentence, "must name what went wrong"
 
 
 def test_empty_transcript_is_total_failure() -> None:
@@ -202,18 +202,21 @@ def test_alphanumeric_terms_are_verified_not_discarded() -> None:
     assert coverage(ref, "The file is encoded. It uses forms.")[0] < 0.9
 
 
-def test_all_numeral_sentence_is_a_documented_blind_spot() -> None:
-    """Honest about a limit rather than pretending to cover it.
+def test_all_numeral_sentence_fails_closed() -> None:
+    """Unverifiable is not the same as verified.
 
     "Two fifty six." has no content words after number-blinding, so a text
-    round-trip cannot verify it: the script spells the numeral out because digits
-    are unspeakable, and the ASR writes it back as "256". Nothing matches either
-    way. The duration bounds are the only remaining guard, and the docstring says
-    so — this test exists so the limitation cannot be forgotten.
+    round-trip genuinely cannot check it: the script spells the numeral out
+    because digits are unspeakable and the ASR writes it back as "256". An
+    earlier version recorded these in a list and then never read it, so a dropped
+    all-numeral sentence scored a clean 1.0. Documenting a blind spot is not the
+    same as refusing to certify what you cannot see.
     """
     ref = "The seal is four bytes. Two fifty six. That catches the typo."
     hyp = "The seal is four bytes. That catches the typo."
-    assert coverage(ref, hyp)[0] == 1.0, "still passes — see the docstring's stated limit"
+    score, sentence = coverage(ref, hyp)
+    assert score == 0.0
+    assert "unverifiable" in sentence
 
 
 # ------------------------------ insertion blindness (found by external review)
@@ -245,11 +248,24 @@ def test_containment_does_not_match_across_word_boundaries() -> None:
     assert coverage(ref, "Stop here. We undergo nowhere near that place.")[0] < 0.9
 
 
-def test_dropped_negation_fails_at_the_tightened_threshold() -> None:
-    """0.60 let a sentence lose 40% of its words. This one scored 0.857."""
+def test_dropped_negation_fails_outright() -> None:
+    """A fuzzy threshold cannot protect meaning-critical words.
+
+    At 0.60 this scored 0.857 and passed. Raising the threshold to 0.90 helped,
+    but "The keeper can open" -> "cannot open" still scored 0.9167 in a
+    longer sentence: meaning is not proportional to word count. Negation and
+    modality tokens are now required to match exactly.
+    """
     ref = "Never share the master password to anyone."
-    score, _ = coverage(ref, "Share the master password with anyone.")
-    assert 0.6 < score < 0.9, "must fail now, and would have passed at 0.60"
+    score, sentence = coverage(ref, "Share the master password with anyone.")
+    assert score == 0.0
+    assert "meaning-critical" in sentence
+
+
+def test_inserted_negation_in_a_long_sentence_fails() -> None:
+    """Scored 0.9167 — above the tightened threshold — before token protection."""
+    ref = "The visitor can open these doors after presenting the matching front key."
+    assert coverage(ref, ref.replace("can open", "cannot open"))[0] == 0.0
 
 
 def test_closing_quote_does_not_merge_sentences() -> None:

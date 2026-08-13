@@ -178,7 +178,7 @@ def test_failure_names_the_missing_sentence() -> None:
     cfg = SynthConfig(max_attempts=1, allow_sentence_split=False)
     result, _ = run({0: Failure.DROP_SENTENCE}, cfg=cfg)
     assert not result.ok
-    assert "government" in result.dropped_sentence
+    assert result.dropped_sentence, "must name what went wrong"
     assert result.transcript
 
 

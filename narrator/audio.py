@@ -129,10 +129,18 @@ def soft_limit(audio: Audio, ceiling: float, knee_frac: float = 0.8) -> Audio:
 def master(audio: Audio, sample_rate: int, cfg: MasterConfig = MasterConfig()) -> tuple[Audio, float, float]:
     """High-pass, normalise loudness, limit. Returns (audio, lufs, peak_dbfs).
 
+    **Returns the final channel layout**, already duplicated when `channels == 2`,
+    and measures that layout. Normalising the mono signal and duplicating it
+    afterwards reintroduced the exact +3 dB BS.1770 offset this config exists to
+    avoid: `master` reported -16.00 LUFS while the written file measured -12.99.
+    Measuring anything other than what is delivered is how that happens.
+
     Loudness is applied as a single static gain, not a dynamic pass. ffmpeg's
     `loudnorm` in one-pass mode applies time-varying gain, which on already-flat
     synthetic speech pumps and squashes what prosody exists.
     """
+    if cfg.channels not in (1, 2):
+        raise ValueError(f"channels must be 1 or 2, got {cfg.channels}")
     import pyloudnorm as pyln
     from scipy.signal import butter, sosfilt
 
@@ -142,24 +150,29 @@ def master(audio: Audio, sample_rate: int, cfg: MasterConfig = MasterConfig()) -
     # BS.1770 needs at least one analysis block. Shorter input cannot be
     # measured, so it is passed through unnormalised rather than crashing — a
     # caller rendering a two-word test clip should not hit a library error.
+    # Duplicate FIRST, then measure and normalise the delivered layout.
+    laid_out = to_channels(audio, cfg.channels)
+
     meter = pyln.Meter(sample_rate)
-    if audio.size < meter.block_size * sample_rate:
-        limited = soft_limit(audio, 10 ** (cfg.peak_ceiling_db / 20))
+    if laid_out.shape[0] < meter.block_size * sample_rate:
+        limited = soft_limit(laid_out, 10 ** (cfg.peak_ceiling_db / 20))
         peak_db = 20 * np.log10(np.max(np.abs(limited)) + 1e-12) if limited.size else -np.inf
         return limited, float("nan"), float(peak_db)
 
-    measured = meter.integrated_loudness(audio)
+    measured = meter.integrated_loudness(laid_out)
     if np.isfinite(measured):
-        audio = pyln.normalize.loudness(audio, measured, cfg.target_lufs).astype(np.float32)
-    audio = soft_limit(audio, 10 ** (cfg.peak_ceiling_db / 20))
+        laid_out = pyln.normalize.loudness(laid_out, measured, cfg.target_lufs).astype(np.float32)
+    laid_out = soft_limit(laid_out, 10 ** (cfg.peak_ceiling_db / 20))
 
-    final = meter.integrated_loudness(audio)
-    peak = 20 * np.log10(np.max(np.abs(audio)) + 1e-12) if audio.size else -np.inf
-    return audio, float(final), float(peak)
+    final = meter.integrated_loudness(laid_out)
+    peak = 20 * np.log10(np.max(np.abs(laid_out)) + 1e-12) if laid_out.size else -np.inf
+    return laid_out, float(final), float(peak)
 
 
 def to_channels(audio: Audio, channels: int) -> Audio:
     """Mono stays 1-D; dual-mono duplicates into an (n, 2) array."""
     if channels == 1:
+        return audio
+    if audio.ndim == 2:
         return audio
     return np.stack([audio, audio], axis=1)

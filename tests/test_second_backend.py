@@ -113,11 +113,33 @@ def test_language_reaches_the_engine(backend: SupertonicBackend) -> None:
     assert backend._tts.calls[0]["lang"] == "cs"
 
 
-def test_sample_rate_is_discovered_not_assumed(backend: SupertonicBackend) -> None:
-    """The package returns samples with no rate; guessing would change pitch."""
-    assert backend.sample_rate == 0
-    backend.synthesize(TEXT, Voice(preset="M1", lang="en"), max_frames=999, temperature=0.4)
-    assert backend.sample_rate == 44100
+def test_sample_rate_is_known_at_construction_then_verified() -> None:
+    """A zero rate made a LEADING Gap allocate zero samples and vanish from a
+    render that still reported itself clean, so the documented 44.1 kHz is known
+    up front — and checked against the real output on first synthesis."""
+    b = SupertonicBackend()
+    assert b.sample_rate == 44100, "render() needs this before the first synthesis"
+    b._tts = FakeTTS(rate=22050)
+    b.synthesize(TEXT, Voice(preset="M1", lang="en"), max_frames=999, temperature=0.4)
+    assert b.sample_rate == 22050, "a real mismatch must correct the assumption"
+
+
+def test_documented_waveform_shape_is_not_collapsed(backend: SupertonicBackend) -> None:
+    """Supertonic documents (1, num_samples); mean(axis=1) on that returns ONE
+    sample — the whole utterance averaged to a point. The double returned 1-D,
+    so no test caught it."""
+    import numpy as np
+
+    class TwoDimTTS(FakeTTS):
+        def synthesize(self, **kwargs):
+            mono, _ = super().synthesize(**kwargs)
+            return mono.reshape(1, -1), None
+
+    backend._tts = TwoDimTTS()
+    audio = backend.synthesize(TEXT, Voice(preset="M1", lang="en"),
+                               max_frames=999, temperature=0.4)
+    assert audio.ndim == 1
+    assert audio.size > 1000
 
 
 def test_voice_requires_a_clip_or_a_preset() -> None:

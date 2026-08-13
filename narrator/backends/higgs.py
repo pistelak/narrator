@@ -122,6 +122,10 @@ class WhisperASR:
 
     repo: str = "mlx-community/whisper-large-v3-turbo"
     source_rate: int = SAMPLE_RATE
+    """Sample rate of the audio handed to `transcribe`. Must match the BACKEND,
+    not this module's default: paired with a 44.1 kHz engine while assuming
+    24 kHz, the resample silently changes time and pitch and every verdict
+    becomes unreliable. The field existed and was never read."""
 
     def transcribe(self, audio: Audio, lang: str) -> str:
         try:
@@ -132,8 +136,12 @@ class WhisperASR:
 
         if audio.size == 0:
             return ""
-        # Whisper wants 16 kHz; 24000 * 2/3 = 16000 exactly.
-        audio_16k = resample_poly(audio, 2, 3).astype(np.float32)
+        # Whisper wants 16 kHz. Derive the ratio from the ACTUAL source rate.
+        from math import gcd
+        divisor = gcd(16_000, self.source_rate)
+        audio_16k = resample_poly(
+            audio, 16_000 // divisor, self.source_rate // divisor
+        ).astype(np.float32)
         return mlx_whisper.transcribe(
             audio_16k,
             path_or_hf_repo=self.repo,

@@ -65,6 +65,31 @@ _NUMBER_WORDS = set(
 # Closing quotes and brackets may sit between the terminator and the space.
 # Missing them merged sentences, which silently restored the aggregate
 # scoring that per-sentence coverage exists to replace.
+# Words whose loss or insertion inverts meaning. A fuzzy threshold cannot protect
+# these: dropping one word from a twelve-word sentence is ~8% of its coverage, so
+# "The keeper can open these doors" rendered as "cannot open" scored 0.9167
+# and passed a 0.90 gate. Meaning is not proportional to word count.
+# NOTE: standalone Czech "ne" is deliberately absent. Czech negation is
+# morphological — a ne- prefix (nelze, nesmí, neznemožní) — so "ne" as a separate
+# word is rare, and listing it collided with the word-boundary case this verifier
+# must tolerate: the ASR returns "Ne znemožní." as "Neznemožní.", which then read
+# as a dropped negation. Prefix negation is caught by coverage instead, since the
+# prefixed and unprefixed forms are different tokens.
+_CRITICAL_TOKENS = frozenset(
+    """
+    not no never none nor cannot cant dont doesnt didnt isnt arent wasnt werent
+    wont wouldnt shouldnt couldnt without nothing neither
+    nikdy nic nikdo žádný žádná žádné nelze bez ani nesmí nesmíš nemůže
+    always must all every only
+    vždy musí všechny každý pouze jen
+    """.split()
+)
+
+
+def critical_counts(words: list[str]) -> dict[str, int]:
+    return {w: words.count(w) for w in set(words) & _CRITICAL_TOKENS}
+
+
 _SENTENCE_END = re.compile(r'(?<=[.!?])["”’\')\]]*\s+')
 
 
@@ -138,12 +163,15 @@ def coverage(reference: str, hypothesis: str) -> tuple[float, str]:
         return 1.0, ""
 
     covered = [False] * len(ref_words)
+    hyp_claimed = [False] * len(hyp_words)
     matcher = difflib.SequenceMatcher(None, ref_words, hyp_words, autojunk=False)
     matched = 0
-    for i, _, size in matcher.get_matching_blocks():
+    for i, j, size in matcher.get_matching_blocks():
         matched += size
         for k in range(i, i + size):
             covered[k] = True
+        for k in range(j, j + size):
+            hyp_claimed[k] = True
 
     # Recall alone is not enough, and this was the library's worst blind spot.
     # Marking only reference words made everything the engine ADDED invisible:
@@ -195,7 +223,25 @@ def coverage(reference: str, hypothesis: str) -> tuple[float, str]:
             # Boundaries matter: an unanchored substring search found "go now"
             # inside "under-go now-here". Require the match to sit at a word
             # boundary in the squashed hypothesis, reconstructed from the words.
-            present = _bounded_count(hyp_words, content_words(sentence)) >= seen[needle]
+            # Search only from where this sentence should begin. Counting
+            # globally let a later sentence rescue an earlier missing one:
+            # "It burns." dropped still scored 1.0 because "it burns" occurred
+            # inside the following sentence.
+            # Search only hypothesis words that no other sentence matched.
+            #
+            # This is the distinction that makes the rescue safe. When the ASR
+            # merges "ne znemožní" into "neznemožní", that merged token is
+            # UNCLAIMED — no reference word aligned to it — so containment finds
+            # it and correctly rescues the sentence. When a sentence is genuinely
+            # dropped but its words appear elsewhere ("It burns." recurring inside
+            # a later sentence, or one of three identical "Again."), every
+            # candidate word is already claimed by another sentence's alignment,
+            # so there is nothing left to rescue it with. Searching the raw
+            # transcript could not tell those apart at any window size, because
+            # global alignment had already matched the sentence to the wrong
+            # occurrence.
+            leftover = [w for w, claimed in zip(hyp_words, hyp_claimed) if not claimed]
+            present = _bounded_count(leftover, content_words(sentence)) >= 1
             # `or score > 0` used to turn ANY partial coverage into a pass, so a
             # two-word sentence rendered as one word scored 1.0. Only genuine
             # containment rescues a short sentence now.
@@ -204,10 +250,29 @@ def coverage(reference: str, hypothesis: str) -> tuple[float, str]:
         if score < worst:
             worst, worst_sentence = score, sentence.strip()
 
+    # A meaning-inverting token that appears or disappears fails outright,
+    # regardless of how good the surrounding coverage looks.
+    ref_critical = critical_counts(normalize(reference).split())
+    hyp_critical = critical_counts(normalize(hypothesis).split())
+    if ref_critical != hyp_critical:
+        changed = sorted(set(ref_critical) ^ set(hyp_critical)) or sorted(
+            w for w in ref_critical if ref_critical[w] != hyp_critical.get(w)
+        )
+        return 0.0, f"[meaning-critical token changed: {', '.join(changed)}]"
+
     if precision < worst:
         # Something was inserted rather than dropped. Report the whole chunk,
         # since an insertion does not belong to any one reference sentence.
         return precision, f"[inserted content] {reference.strip()[:70]}"
+
+    if unverifiable:
+        # Fail closed. These sentences are all-numeral, so number-blinding left
+        # nothing to compare and a text round-trip genuinely cannot check them.
+        # The list was previously built and then ignored, which meant a dropped
+        # all-numeral sentence scored a clean 1.0 — documenting a blind spot is
+        # not the same as refusing to certify what you cannot see.
+        return 0.0, f"[unverifiable, all-numeral] {unverifiable[0]}"
+
     return worst, worst_sentence
 
 

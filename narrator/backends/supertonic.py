@@ -55,30 +55,25 @@ class SupertonicBackend:
     speed: float = 0.9
     """Measured for learning material; 1.0 was reported as "quite fast"."""
 
-    sample_rate: int = 0
-    """Discovered from the first synthesis — the package does not advertise it."""
+    sample_rate: int = 44_100
+    """Supertonic 3 is documented at 44.1 kHz.
+
+    Known at construction rather than discovered on first synthesis: `render`
+    allocates gap silence from this, so a zero here made a LEADING Gap allocate
+    zero samples and vanish from a render still reporting itself clean. Verified
+    against the written file on first synthesis and corrected if it differs."""
 
     fps: int = FPS
     honours_frame_cap: bool = False
     """`TTS.synthesize` accepts no generation bound. Saying so keeps the retry
     ladder from reading a meaningless signal as a runaway."""
 
+    _rate_verified: bool = field(default=False, repr=False)
     _tts: Any = field(default=None, repr=False)
     _styles: dict[str, Any] = field(default_factory=dict, repr=False)
 
     def frames_per_second(self) -> int:
         return self.fps
-
-    def prepare(self, voice: Voice) -> None:
-        """Discover the sample rate before rendering starts.
-
-        Required because `render` allocates gap silence from `sample_rate`, so a
-        leading Gap against an unknown rate produces zero samples and disappears
-        from a render that still reports itself clean.
-        """
-        self.load()
-        if not self.sample_rate:
-            self.synthesize("Ahoj.", voice, max_frames=0, temperature=0.0)
 
     def load(self) -> None:
         if self._tts is not None:
@@ -132,10 +127,21 @@ class SupertonicBackend:
             speed=self.speed,
         )
         audio = np.asarray(wav, dtype=np.float32)
-        if audio.ndim > 1:
-            audio = audio.mean(axis=1)
-        if not self.sample_rate:
-            self.sample_rate = self._discover_rate(audio)
+        if audio.ndim == 2:
+            # Supertonic documents shape (1, num_samples). `mean(axis=1)` on that
+            # returns a SINGLE sample — the whole utterance averaged to a point.
+            # The test double returned 1-D, so no test caught it.
+            if audio.shape[0] == 1:
+                audio = audio[0]
+            elif audio.shape[1] in (1, 2):
+                audio = audio.mean(axis=1)
+            else:
+                raise RuntimeError(f"Unexpected waveform shape {audio.shape}")
+        if not self._rate_verified:
+            actual = self._discover_rate(audio)
+            if actual != self.sample_rate:
+                self.sample_rate = actual
+            self._rate_verified = True
         return audio
 
     def _discover_rate(self, audio: Audio) -> int:
