@@ -173,13 +173,27 @@ _FOLD = str.maketrans({
 })
 
 
+# Voicing assimilation in clusters: an obstruent takes the voicing of what
+# follows, so ztíží/stíží and spraví/zpraví are one pronunciation with two
+# spellings — measured as hard 0.00 rejections from three independent
+# recognisers on correct audio. Unlike the blanket voiced/voiceless collapse
+# (which merged distinct words and was reverted), this fires only in the
+# cluster positions where Czech phonology actually neutralises the contrast;
+# s and z between vowels stay distinct.
+_DOUBLED = re.compile(r"(.)\1+")
+_Z_BEFORE_VOICELESS = re.compile(r"z(?=[ptťkfsšcč])")
+_S_BEFORE_VOICED = re.compile(r"s(?=[bdďgzž])")
+
+
 def fold(word: str, lang: str) -> str:
     """Collapse spelling differences that carry no difference in sound."""
     if not lang.startswith("cs"):
         return word
     w = word.translate(_FOLD)
     w = w.replace("sh", "š")                 # English loanwords: hashe / haše
-    w = re.sub(r"(.)\1+", r"\1", w)          # doubled letters
+    w = _DOUBLED.sub(r"\1", w)               # doubled letters
+    w = _Z_BEFORE_VOICELESS.sub("s", w)
+    w = _S_BEFORE_VOICED.sub("z", w)
     if w.endswith("z"):                      # final devoicing: odpověz / odpověs
         w = w[:-1] + "s"
     return w

@@ -324,6 +324,8 @@ def test_boundary_rescue_still_cannot_resurrect_a_dropped_sentence() -> None:
     ("Zkus tipovat co bude dál.",       "Zkus typovat co bude dál."),            # i/y, same sound
     ("Tak mi odpověz hned teď.",        "Tak mi odpověs hned teď."),             # final devoicing
     ("Zahashovaný soubor leží tady.",  "Zahašovaný soubor leží tady."),        # loanword digraph
+    ("Adresy ztíží pozorovateli práci.", "Adresy stíží pozorovateli práci."),    # cluster assimilation
+    ("Tak co to opravdu spraví teď?",   "Tak co to opravdu zpraví teď?"),        # cluster assimilation
 ])
 def test_czech_spelling_variants_are_not_drops(script: str, heard: str) -> None:
     """Czech orthography encodes distinctions its phonology does not.
@@ -333,6 +335,15 @@ def test_czech_spelling_variants_are_not_drops(script: str, heard: str) -> None:
     audio was correct in all of them; only the spelling differed.
     """
     assert coverage(script, heard, "cs")[0] >= 0.90
+
+
+def test_assimilated_short_sentences_survive_the_negation_merge() -> None:
+    """The exact shape of a real chunk three recognisers all hard-failed at 0.00:
+    "Ztíží. Ne znemožní." heard as "Stíží. Neznemožní." — cluster assimilation on
+    a short sentence, plus the negation-prefix merge, on correct audio."""
+    ref = "Množství. Nová známka na každý dopis. Což třídění ztíží. Ne znemožní. Ztíží."
+    hyp = "Množství. Nová známka na každý dopis. Což třídění stíží. Neznemožní. Stíží."
+    assert coverage(ref, hyp, "cs")[0] >= 0.90
 
 
 def test_case_inflection_is_not_folded() -> None:
