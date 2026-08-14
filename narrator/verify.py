@@ -212,12 +212,6 @@ def fold(word: str, lang: str) -> str:
     # the native s+h prefix (shodí, shoda, shora), pronounced [sx], not [š];
     # folding it corrupted a correct native word on a real render.
     w = _SH_AFTER_VOWEL.sub("š", w)
-    if w == "sha":
-        # The acronym, pronounced [ša] (and respelled so by the pronunciation
-        # lexicon); exact-word because the vowel restriction above rightly
-        # exempts word-initial sh.
-        w = "ša"
-    w = w.replace("haš", "heš")              # the loanword is [heš]: hašování / hešování
     w = w.replace("ee", "i")                 # English loanwords: seed / síd —
     # no native Czech word contains "ee", so this collides with nothing
     w = _DOUBLED.sub(r"\1", w)               # doubled letters
@@ -277,7 +271,12 @@ def _bounded_count(hyp_words: list[str], needle_words: list[str]) -> int:
     return count
 
 
-def coverage(reference: str, hypothesis: str, lang: str = "en") -> tuple[float, str]:
+def coverage(
+    reference: str,
+    hypothesis: str,
+    lang: str = "en",
+    sound_alikes: tuple[tuple[str, str], ...] = (),
+) -> tuple[float, str]:
     """Worst per-sentence coverage in [0,1], and the sentence that scored it.
 
     A dropped sentence scores ~0 regardless of how long the surrounding chunk is;
@@ -291,8 +290,26 @@ def coverage(reference: str, hypothesis: str, lang: str = "en") -> tuple[float, 
     sentence with nothing to compare. Those are counted, not silently skipped, and
     the duration bounds remain the only guard on them.
     """
-    ref_words = [fold(w, lang) for w in content_words(reference)]
-    hyp_words = [fold(w, lang) for w in content_words(hypothesis)]
+    # Caller-supplied equivalences — vocabulary, not phonology. A pronunciation
+    # lexicon pair IS one by construction: the engine is told to say the spoken
+    # form, the ASR writes what it hears, and the script holds the written form.
+    # Applied in fold space so general rules and project vocabulary compose;
+    # multi-word forms are skipped (the boundary rescue already covers merges).
+    alike_pairs = []
+    for written, spoken in sound_alikes:
+        wf = [fold(w, lang) for w in content_words(written)]
+        sf = [fold(w, lang) for w in content_words(spoken)]
+        if len(wf) == 1 and len(sf) == 1 and wf[0] != sf[0]:
+            alike_pairs.append((wf[0], sf[0]))
+
+    def _fold(word: str) -> str:
+        w = fold(word, lang)
+        for a, b in alike_pairs:
+            w = w.replace(a, b)
+        return w
+
+    ref_words = [_fold(w) for w in content_words(reference)]
+    hyp_words = [_fold(w) for w in content_words(hypothesis)]
     if not ref_words:
         return 1.0, ""
 
@@ -383,7 +400,7 @@ def coverage(reference: str, hypothesis: str, lang: str = "en") -> tuple[float, 
             # global alignment had already matched the sentence to the wrong
             # occurrence.
             leftover = [w for w, claimed in zip(hyp_words, hyp_claimed, strict=True) if not claimed]
-            present = _bounded_count(leftover, [fold(w, lang) for w in content_words(sentence)]) >= 1
+            present = _bounded_count(leftover, [_fold(w) for w in content_words(sentence)]) >= 1
             # `or score > 0` used to turn ANY partial coverage into a pass, so a
             # two-word sentence rendered as one word scored 1.0. Only genuine
             # containment rescues a short sentence now.
@@ -439,10 +456,11 @@ class CoverageVerifier:
 
     asr: ASR
     min_coverage: float = MIN_COVERAGE
+    sound_alikes: tuple[tuple[str, str], ...] = ()
 
     def verify(self, audio: Audio, text: str, lang: str) -> Verdict:
         transcript = self.asr.transcribe(audio, lang)
-        score, dropped = coverage(text, transcript, lang)
+        score, dropped = coverage(text, transcript, lang, self.sound_alikes)
         return Verdict(
             ok=score >= self.min_coverage,
             coverage=score,
@@ -511,7 +529,9 @@ class CascadeVerifier:
         return best
 
 
-def default_verifier(source_rate: int) -> Verifier:
+def default_verifier(
+    source_rate: int, sound_alikes: tuple[tuple[str, str], ...] = ()
+) -> Verifier:
     """The verification stack render entry points should use.
 
     One policy, owned here rather than assembled by every caller — the cascade
@@ -522,14 +542,14 @@ def default_verifier(source_rate: int) -> Verifier:
     """
     from narrator.asr import WhisperASR
 
-    whisper = CoverageVerifier(WhisperASR(source_rate=source_rate))
+    whisper = CoverageVerifier(WhisperASR(source_rate=source_rate), sound_alikes=sound_alikes)
     import importlib.util
     if importlib.util.find_spec("parakeet_mlx") is None:
         return whisper
     from narrator.asr import ParakeetASR
 
     return CascadeVerifier([
-        CoverageVerifier(ParakeetASR(source_rate=source_rate)),
+        CoverageVerifier(ParakeetASR(source_rate=source_rate), sound_alikes=sound_alikes),
         whisper,
     ])
 

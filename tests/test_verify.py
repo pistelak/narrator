@@ -455,19 +455,29 @@ def test_english_loanword_seed_folds_to_czech_transcription() -> None:
 def test_native_sh_prefix_is_not_a_loanword() -> None:
     """The sh->š rule is for loanwords (hash). Native s+h (shodí = s+hodit)
     is pronounced [sx], the ASR correctly writes it "schodí", and folding it
-    to š corrupted a correct word on a real render. And the loanword itself is
-    pronounced [heš]: hashování comes back as hešování."""
+    to š corrupted a correct word on a real render."""
     ref = "Špatné slovo shodí kontrolní součet patnáctkrát ze šestnácti; slovo mimo seznam selže okamžitě."
     hyp = "Špatné slovo schodí kontrolní součet patnáctkrát ze šestnácti. Slovo mimo seznam se lže okamžitě."
     assert coverage(ref, hyp, "cs")[0] >= 0.90
-    assert coverage("Pod kapotou je to samé hashování až dolů.",
-                    "Pod kapotou je to samé hešování až dolů.", "cs")[0] >= 0.90
 
 
-def test_sha_acronym_matches_its_pronunciation() -> None:
-    """The lexicon makes the engine say [ša]; the ASR writes what it hears.
-    The word-initial-sh exemption (correct for shodí) must not orphan the
-    acronym: script "HMAC SHA pět set dvanáct", transcript "HMAC šá 512"."""
+def test_sound_alikes_are_vocabulary_the_caller_supplies() -> None:
+    """Phonology lives in fold(); a specific word's pronunciation belongs to
+    the caller. A pronunciation-lexicon pair is a sound-alike by construction,
+    and applied in fold space it covers inflections of the written form."""
+    ref = "Pod kapotou je to samé hashování až dolů."
+    hyp = "Pod kapotou je to samé hešování až dolů."
+    assert coverage(ref, hyp, "cs")[0] < 0.90, "no hardcoded project vocabulary"
+    assert coverage(ref, hyp, "cs", sound_alikes=(("hashování", "hešování"),))[0] >= 0.90
+
+
+def test_pronunciation_pair_verifies_as_sound_alike() -> None:
+    """The lexicon makes the engine say the spoken form; the ASR writes what
+    it hears; the script holds the written form. The same pair that drives
+    synthesis therefore closes the verification loop, with no per-word rules
+    in the library."""
     ref = "Jde do hashe zvaného HMAC SHA pět set dvanáct a ven vypadne pět set dvanáct bitů."
     hyp = "Jde do haše zvaného HMAC šá 512 a ven vypadne 512 bytů."
-    assert coverage(ref, hyp, "cs")[0] >= 0.90
+    alikes = (("SHA", "ša"), ("hashe", "haše"))
+    assert coverage(ref, hyp, "cs", sound_alikes=alikes)[0] >= 0.90
+    assert CoverageVerifier(FakeASR(hyp), sound_alikes=alikes).verify(SILENCE, ref, "cs").ok

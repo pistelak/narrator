@@ -90,7 +90,10 @@ def render(
             "step, or set sample_rate explicitly."
         )
     if verifier is None:
-        verifier = default_verifier(backend.sample_rate)
+        # The pronunciation lexicon doubles as the verifier's sound-alike list:
+        # each pair names a written form and what the audio will actually say.
+        verifier = default_verifier(backend.sample_rate,
+                                    sound_alikes=cfg.synth.pronunciation)
     started = time.perf_counter()
     plan = _plan(segments, cfg.max_chars)
     total = sum(1 for s in plan if isinstance(s, Text))
