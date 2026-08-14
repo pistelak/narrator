@@ -440,3 +440,13 @@ def test_inflected_czech_numerals_are_number_blind() -> None:
     ref2 = "Shodí kontrolní součet patnáctkrát ze šestnácti pokusů tady."
     hyp2 = "Shodí kontrolní součet patnáctkrát z 16 pokusů tady."
     assert coverage(ref2, hyp2, "cs")[0] >= 0.90
+
+
+def test_english_loanword_seed_folds_to_czech_transcription() -> None:
+    """The ASR hears [si:d] and writes the Czech word it knows: seed -> sít,
+    declined seedu -> sídu/sídů. Measured as three chunks of a real render
+    failing at 0.80-0.88 on correct audio. "ee" exists in no native Czech word
+    and final devoicing is general, so both folds collide with nothing."""
+    assert coverage("Stejný seed, stejný strom, pokaždé.", "Stejný sít, stejný strom, pokaždé.", "cs")[0] >= 0.90
+    assert coverage("Svazek klíčů vyrostlý z jednoho seedu.", "Svazek klíčů vyrostlý z jednoho sídu.", "cs")[0] >= 0.90
+    assert coverage("Se zálohou seedu je ta ztráta nulová.", "Se zálohou sídů je ta stráta nulová.", "cs")[0] >= 0.90

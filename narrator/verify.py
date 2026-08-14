@@ -205,6 +205,8 @@ def fold(word: str, lang: str) -> str:
         return word
     w = word.translate(_FOLD)
     w = w.replace("sh", "š")                 # English loanwords: hashe / haše
+    w = w.replace("ee", "i")                 # English loanwords: seed / síd —
+    # no native Czech word contains "ee", so this collides with nothing
     w = _DOUBLED.sub(r"\1", w)               # doubled letters
     w = _Z_BEFORE_VOICELESS.sub("s", w)
     w = _S_BEFORE_VOICED.sub("z", w)
@@ -214,8 +216,13 @@ def fold(word: str, lang: str) -> str:
         # Surfaced by number-blinding: the ASR writes the digit, drops the
         # vowel, and the preposition mismatched on spelling alone.
         w = w[0]
-    if w.endswith("z"):                      # final devoicing: odpověz / odpověs
-        w = w[:-1] + "s"
+    # Final devoicing: Czech devoices every word-final obstruent, so odpověz /
+    # odpověs and seed[síd] / sít are one pronunciation each. Positional like
+    # the cluster rule — led (ice) and let (flight) genuinely are homophones,
+    # and the verifier argues about sound.
+    final = {"z": "s", "d": "t", "b": "p", "ž": "š", "v": "f", "h": "ch"}
+    if w and w[-1] in final:
+        w = w[:-1] + final[w[-1]]
     return w
 
 
