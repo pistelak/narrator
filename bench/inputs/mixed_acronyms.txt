@@ -1,0 +1,1 @@
+Nejdřív každý záznam projde funkcí zvanou SHA dvě stě padesát šest, tažným koněm celé zálohy. Pak archiv zabalí nástroj zvaný GZIP, který ho zmáčkne zhruba na polovinu.

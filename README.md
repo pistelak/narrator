@@ -6,9 +6,9 @@ Built for episodes and audiobooks — twenty to forty minutes of speech assemble
 from ~100 independently generated chunks, where the hard problem is not making
 audio but knowing whether the audio says what you asked for.
 
-> **Status:** early, and honest about it. Requires Python 3.12+; the bundled
-> TTS/ASR stack runs on Apple-Silicon Macs only (Higgs alone is ~8.7 GB on
-> disk and ~12 GB peak RAM; recogniser weights download on first use).
+> **Status: v0.1, early.** Requires Python 3.12+; the bundled TTS/ASR stack
+> runs on Apple-Silicon Macs only (Higgs alone is ~8.7 GB on disk and ~12 GB
+> peak RAM; recogniser weights download on first use).
 
 ## Quickstart
 
@@ -121,17 +121,6 @@ macOS. The bundled engines and recognisers are **Apple-Silicon only**: the
 `[higgs]` extra (Higgs Audio v3 + mlx-whisper) and the `[parakeet]` extra both
 build on MLX. On other hardware, implement the small `Backend`/`ASR` protocols
 against your engine of choice — that seam is the point of the library.
-
-## Related projects
-
-Narrator is a verification-first *library*.
-[tts-audiobook-tool](https://github.com/zeropointnine/tts-audiobook-tool) is
-the closest neighbouring *application*: it also validates output with Whisper
-and regenerates failures, and it supports many more engines. The popular
-generators mostly don't verify at all — see e.g.
-[ebook2audiobook#254](https://github.com/DrewThomasson/ebook2audiobook/issues/254),
-sentences present in the text and silently absent from the audio, which is
-precisely the failure narrator exists to catch.
 
 ## Status
 

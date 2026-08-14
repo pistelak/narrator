@@ -41,7 +41,7 @@ MIN_COVERAGE = 0.90
 """Near-complete, deliberately.
 
 At 0.60 a sentence could lose almost 40% of its words and pass: "Never share the
-master password to anyone." rendered as "Share the master password with anyone."
+master password with anyone." rendered as "Share the master password with anyone."
 scored 0.857. Dropping a single negation inverts the meaning, and no threshold
 that tolerates it is defensible for teaching material. Number-blinding plus the
 short-sentence rule already absorb the ASR disagreements that made a loose

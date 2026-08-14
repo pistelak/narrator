@@ -24,7 +24,7 @@ from narrator.verify import (
 
 # The real 227-character chunk that exposed the aggregate-similarity problem.
 CHUNK = (
-    "So Milo goes to file a permit. He copies the harbor's twenty byte code into his filing"
+    "So Milo goes to file a permit. He copies the harbor's twenty byte code into his filing "
     "line by hand and gets the last character wrong. A D where a C should be. "
     "The seal is valid. He really did file that entry typo included."
 )
@@ -257,7 +257,7 @@ def test_dropped_negation_fails_outright() -> None:
     longer sentence: meaning is not proportional to word count. Negation and
     modality tokens are now required to match exactly.
     """
-    ref = "Never share the master password to anyone."
+    ref = "Never share the master password with anyone."
     score, sentence = coverage(ref, "Share the master password with anyone.")
     assert score == 0.0
     assert "meaning-critical" in sentence

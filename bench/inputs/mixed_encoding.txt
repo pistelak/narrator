@@ -1,0 +1,1 @@
+Tomu obalu se říká kódování base šedesát čtyři a dělá tři věci. Uvnitř je ten samý textový záznam, zabalený do obalu navrženého pro přenos obyčejným textem.

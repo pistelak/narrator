@@ -22,7 +22,7 @@ CZECH = (
 )
 ENGLISH = (
     "On the northern coast stands a lighthouse that no ship will ever pass. Not the keeper. "
-    "Not a stranger. Not any council with any mandate. It isn't shut away — it was"
+    "Not a stranger. Not any council with any mandate. It isn't shut away — it was "
     "built on a headland that maps do not chart, and the coast kept it anyway, forever."
 )
 
