@@ -619,7 +619,7 @@ ls outputs/*.stt.txt
 ```
 
 All WAVs, round-trip transcripts, and `results.csv` from this run are
-preserved in `bench/outputs/`. The Bark smoke artifact is
+preserved in `bench/outputs/` (gitignored). The Bark smoke artifact is
 `outputs/bark_smoke_cs_command_pl-speaker-0.{wav,stt.txt}`.
 
 ---
