@@ -122,12 +122,6 @@ macOS. The bundled engines and recognisers are **Apple-Silicon only**: the
 build on MLX. On other hardware, implement the small `Backend`/`ASR` protocols
 against your engine of choice — that seam is the point of the library.
 
-## Status
-
-Early. Extracted from a working pipeline; being rebuilt with the tests that
-pipeline never had. The design decisions are documented in the code where they
-apply, each with the measurement that motivated it.
-
 ## License
 
 MIT.
