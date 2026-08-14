@@ -481,3 +481,20 @@ def test_pronunciation_pair_verifies_as_sound_alike() -> None:
     alikes = (("SHA", "ša"), ("hashe", "haše"))
     assert coverage(ref, hyp, "cs", sound_alikes=alikes)[0] >= 0.90
     assert CoverageVerifier(FakeASR(hyp), sound_alikes=alikes).verify(SILENCE, ref, "cs").ok
+
+
+def test_numeral_welded_into_a_neighbour_is_not_a_changed_number() -> None:
+    """"dva z" comes back as "dvaze": the value vanishes from the transcript's
+    numeral list while its letters sit in plain sight inside the welded token.
+    Failed 3 of 5 real renders of one chunk, on correct audio each time."""
+    ref = "Libovolné dva z: dvě věci k ochraně místo jedné; hesla se zapomínají."
+    hyp = "Libovolné dvaze: Dvě věci k ochraně místo jedné. Hesla se zapomínají."
+    assert coverage(ref, hyp, "cs")[0] > 0.0, "must not hard-fail as a changed number"
+
+
+def test_merge_rescue_does_not_excuse_a_genuinely_changed_number() -> None:
+    """The rescue needs the numeral's letters inside a welded token; a value
+    that actually changed, or appeared from nowhere, still fails outright."""
+    assert coverage("It has four bytes here.", "It has nine bytes here.")[0] == 0.0
+    assert coverage("Vezmi dva klíče domů.", "Vezmi klíče domů.", "cs")[0] == 0.0
+    assert coverage("Vezmi klíče domů.", "Vezmi dva klíče domů.", "cs")[0] == 0.0

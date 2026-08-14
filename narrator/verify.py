@@ -422,7 +422,28 @@ def coverage(
     ref_nums = [] if compound else sorted(isolated_numerals(ref_tokens))
     hyp_nums = [] if compound else sorted(isolated_numerals(hyp_tokens))
     if ref_nums != hyp_nums:
-        return 0.0, f"[numeral changed: {ref_nums} became {hyp_nums}]"
+        # Merge rescue, one direction only. The ASR sometimes welds a numeral
+        # to its neighbour — "dva z" comes back as "dvaze" — and the welded
+        # token is no longer numberish, so the value vanishes from the hyp
+        # side of a correct transcription. A value missing from hyp is
+        # accounted for if one of its word forms survives inside a
+        # non-numberish hyp token. Extra hyp values are never excused, and a
+        # numeral that is genuinely gone has no containing token to hide in.
+        missing = list(ref_nums)
+        for v in hyp_nums:
+            if v in missing:
+                missing.remove(v)
+        extra = list(hyp_nums)
+        for v in ref_nums:
+            if v in extra:
+                extra.remove(v)
+        welded = [t for t in hyp_tokens if not is_numberish(t)]
+        for v in list(missing):
+            forms = [w for w, val in _NUMERAL_VALUES.items() if val == v]
+            if any(f in t for f in forms for t in welded):
+                missing.remove(v)
+        if missing or extra:
+            return 0.0, f"[numeral changed: {ref_nums} became {hyp_nums}]"
 
     # A meaning-inverting token that appears or disappears fails outright,
     # regardless of how good the surrounding coverage looks.
