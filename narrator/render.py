@@ -11,6 +11,7 @@ wrong. Pass `quarantine=False` to get the file plus a report that says so.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -48,7 +49,7 @@ class RenderConfig:
     """Carries `pronunciation`, applied at synthesis only — see SynthConfig."""
     mastering: MasterConfig = MasterConfig()
     quarantine: bool = True
-    on_progress: object = None  # Callable[[ChunkResult, int], None] | None
+    on_progress: Callable[[ChunkResult, int], None] | None = None
 
 
 def render(
@@ -82,21 +83,21 @@ def render(
         verifier = default_verifier(backend.sample_rate)
     started = time.perf_counter()
     plan = _plan(segments, cfg.max_chars)
-    total = sum(1 for kind, _ in plan if kind == "text")
+    total = sum(1 for s in plan if isinstance(s, Text))
 
     pieces: list[Audio] = []
     results: list[ChunkResult] = []
     index = 0
 
-    for kind, value in plan:
-        if kind == "gap":
-            pieces.append(np.zeros(int(value * backend.sample_rate), dtype=np.float32))
+    for segment in plan:
+        if isinstance(segment, Gap):
+            pieces.append(np.zeros(int(segment.seconds * backend.sample_rate), dtype=np.float32))
             continue
 
-        result = synthesize_chunk(value, index, backend, verifier, voice, cfg.synth)
+        result = synthesize_chunk(segment.text, index, backend, verifier, voice, cfg.synth)
         results.append(result)
         index += 1
-        if callable(cfg.on_progress):
+        if cfg.on_progress:
             cfg.on_progress(result, total)
         if result.audio.size:
             pieces.append(declick(trim_silence(result.audio, backend.sample_rate), backend.sample_rate))
@@ -121,15 +122,14 @@ def render(
     return report
 
 
-def _plan(segments: list[Segment], max_chars: int) -> list[tuple[str, object]]:
-    """Flatten segments into ordered ('text', str) and ('gap', seconds) steps."""
-    plan: list[tuple[str, object]] = []
+def _plan(segments: list[Segment], max_chars: int) -> list[Segment]:
+    """Flatten segments: gaps pass through, texts become chunk-sized Texts."""
+    plan: list[Segment] = []
     for segment in segments:
         if isinstance(segment, Gap):
-            plan.append(("gap", segment.seconds))
+            plan.append(segment)
         elif isinstance(segment, Text):
-            for piece in chunk(segment.text, max_chars):
-                plan.append(("text", piece))
+            plan.extend(Text(piece) for piece in chunk(segment.text, max_chars))
         else:  # pragma: no cover - guarded by the type union
             raise TypeError(f"Not a segment: {segment!r}")
     return plan
