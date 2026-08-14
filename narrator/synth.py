@@ -19,7 +19,7 @@ thing, indistinguishable from success".
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -131,11 +131,11 @@ def synthesize_chunk(
     if cfg.allow_sentence_split:
         split = _sentence_split(text, backend, verifier, voice, cfg)
         if split is not None:
-            audio, coverage_ = split
+            audio, coverage_, split_attempts = split
             return ChunkResult(
                 index=index, text=text, audio=audio,
                 duration_s=len(audio) / backend.sample_rate,
-                attempts=cfg.max_attempts + len(split_sentences(text)),
+                attempts=cfg.max_attempts + split_attempts,
                 ok=True, coverage=coverage_, recovered_by="sentence-split",
             )
 
@@ -153,12 +153,7 @@ def synthesize_chunk(
         # across; keep the failure.
         try:
             diagnostic = verifier.verify(attempt.audio, text, voice.lang)
-            attempt.verdict = Verdict(
-                ok=False,
-                coverage=diagnostic.coverage,
-                dropped_sentence=diagnostic.dropped_sentence,
-                transcript=diagnostic.transcript,
-            )
+            attempt.verdict = replace(diagnostic, ok=False)
         except Exception:
             pass
 
@@ -200,8 +195,13 @@ def _best_attempt(
         # shortest inputs, where the 4 s floor exceeds the ceiling — but both
         # checks are required, so that ordering never creates a pass.) Without
         # this the cap bounds the cost of a runaway without ever detecting one.
+        # Plain attribute access on purpose: the protocol requires the flag, and
+        # a permissive getattr default classified a non-conforming backend as
+        # cap-honouring — every long output misread as a runaway, retries and
+        # sentence-split burned on correct audio. Failing loudly is the
+        # library's stated preference (see the sample_rate guard in render()).
         hit_cap = (
-            getattr(backend, "honours_frame_cap", True)
+            backend.honours_frame_cap
             and duration >= (cap / backend.frames_per_second()) - 1e-6
         )
         duration_ok = floor <= duration <= ceiling
@@ -223,8 +223,12 @@ def _best_attempt(
 
 def _sentence_split(
     text: str, backend: Backend, verifier: Verifier, voice: Voice, cfg: SynthConfig
-) -> tuple[Audio, float] | None:
+) -> tuple[Audio, float, int] | None:
     """Render sentence by sentence. Returns None unless every sentence passes.
+
+    The third element is the synthesis attempts actually spent across the
+    sentences, so ChunkResult.attempts can report the real cost — the old
+    `+ len(sentences)` undercounted by up to max_attempts per sentence.
 
     At this granularity "the model dropped a sentence" stops being expressible:
     a sentence rendered alone either succeeds or fails visibly. It is the same
@@ -238,14 +242,16 @@ def _sentence_split(
     pieces: list[Audio] = []
     gap = np.zeros(int(cfg.sentence_gap_s * backend.sample_rate), dtype=np.float32)
     worst = 1.0
+    attempts = 0
     for sentence in sentences:
         attempt = _best_attempt(sentence, backend, verifier, voice, cfg)
         if attempt is None or not attempt.ok:
             return None
+        attempts += attempt.number
         pieces.extend([attempt.audio, gap])
         worst = min(worst, attempt.verdict.coverage)
 
-    return np.concatenate(pieces[:-1]), worst
+    return np.concatenate(pieces[:-1]), worst, attempts
 
 
 def _result(index: int, text: str, attempt: _Attempt, recovered_by: str = "") -> ChunkResult:

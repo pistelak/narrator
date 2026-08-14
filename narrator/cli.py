@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 from narrator.audio import MasterConfig
+from narrator.chunking import MAX_CHARS
 from narrator.render import RenderConfig, RenderFailed, render
 from narrator.types import ChunkResult, Gap, Segment, Text, Voice
 
@@ -49,7 +50,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--voice-text", required=True, help="transcript of the reference clip")
     parser.add_argument("--lang", default="en")
     parser.add_argument("--paragraph-gap", type=float, default=0.35)
-    parser.add_argument("--max-chars", type=int, default=250)
+    parser.add_argument("--max-chars", type=int, default=MAX_CHARS)
     parser.add_argument("--mono", action="store_true",
                         help="mono output; use to match an existing mono back-catalogue")
     parser.add_argument("--no-verify", action="store_true",
