@@ -39,5 +39,13 @@ build-backend = "setuptools.build_meta"
 [tool.ruff]
 line-length = 100
 
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "W", "I", "B", "UP", "RUF"]
+# B008/RUF009: frozen-dataclass config objects as defaults are deliberate —
+# they are immutable, and a None-dance would obscure every signature.
+# RUF001: typographic quotes and dashes are load-bearing here — the sentence
+# regex and chunk split-priority table match them on purpose.
+ignore = ["B008", "RUF009", "RUF001"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

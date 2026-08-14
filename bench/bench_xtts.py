@@ -76,8 +76,8 @@ def main():
     args = parser.parse_args()
 
     try:
-        from TTS.api import TTS
         import soundfile as sf
+        from TTS.api import TTS
     except ImportError as exc:
         sys.exit(
             f"Missing dependency: {exc}\n"

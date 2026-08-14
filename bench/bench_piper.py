@@ -95,7 +95,6 @@ def main():
     onnx = ensure_voice(args.voice)
     print(f"Loading Piper voice '{args.voice}' ...")
     voice = PiperVoice.load(str(onnx))
-    sample_rate = voice.config.sample_rate
 
     if not args.no_warmup:
         print("Warming up ...", flush=True)

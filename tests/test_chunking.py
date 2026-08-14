@@ -13,7 +13,7 @@ import re
 
 import pytest
 
-from narrator.chunking import MAX_CHARS, MIN_WORDS, chunk, split_sentences
+from narrator.chunking import MIN_WORDS, chunk, split_sentences
 
 CZECH = (
     "Na severním pobřeží stojí maják, kolem kterého nikdy nikdo nepropluje. "

@@ -104,7 +104,7 @@ def test_style_is_resolved_once_and_cached(backend: SupertonicBackend) -> None:
 
 
 def test_unknown_preset_names_the_voice_bank(backend: SupertonicBackend) -> None:
-    with pytest.raises(ValueError, match="M1..M5"):
+    with pytest.raises(ValueError, match=r"M1\.\.M5"):
         backend.synthesize(TEXT, Voice(preset="nope", lang="en"), max_frames=999, temperature=0.4)
 
 
@@ -128,7 +128,6 @@ def test_documented_waveform_shape_is_not_collapsed(backend: SupertonicBackend) 
     """Supertonic documents (1, num_samples); mean(axis=1) on that returns ONE
     sample — the whole utterance averaged to a point. The double returned 1-D,
     so no test caught it."""
-    import numpy as np
 
     class TwoDimTTS(FakeTTS):
         def synthesize(self, **kwargs):

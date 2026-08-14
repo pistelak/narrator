@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from narrator.backends.fake import FakeASR, FakeBackend, Failure
+from narrator.backends.fake import Failure, FakeASR, FakeBackend
 from narrator.synth import SynthConfig, duration_bounds, frame_cap, synthesize_chunk
 from narrator.types import Voice
 from narrator.verify import CoverageVerifier, NullVerifier

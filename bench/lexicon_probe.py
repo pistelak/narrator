@@ -80,10 +80,10 @@ def verdict(raw_ok, say_ok):
 
 def main():
     try:
-        from supertonic import TTS
-        import soundfile as sf
         import librosa
         import mlx_whisper
+        import soundfile as sf  # noqa: F401 — availability probe
+        from supertonic import TTS
     except ImportError as exc:
         sys.exit(f"Missing dependency: {exc}\nActivate .venv (see bench/README.md).")
 
@@ -128,11 +128,11 @@ def main():
                 f"round-trip {WHISPER}. {len(PROBES)} terms in {elapsed:.0f}s.\n\n")
         f.write("| term | respelling | raw RT | say RT | verdict |\n")
         f.write("|---|---|:--:|:--:|---|\n")
-        for slug, raw_tok, say_tok, raw_ok, say_ok, tag, why, _, _ in rows:
+        for _slug, raw_tok, say_tok, raw_ok, say_ok, tag, why, _, _ in rows:
             f.write(f"| `{raw_tok}` | `{say_tok}` | {'ok' if raw_ok else 'BAD'} | "
                     f"{'ok' if say_ok else 'BAD'} | {tag} — {why} |\n")
         f.write("\n## Transcripts\n\n")
-        for slug, raw_tok, say_tok, raw_ok, say_ok, tag, why, raw_tr, say_tr in rows:
+        for _slug, raw_tok, say_tok, _raw_ok, _say_ok, _tag, _why, raw_tr, say_tr in rows:
             f.write(f"**{raw_tok}**\n\n")
             f.write(f"- raw `{raw_tok}` → {raw_tr}\n")
             f.write(f"- say `{say_tok}` → {say_tr}\n\n")

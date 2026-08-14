@@ -21,9 +21,8 @@ right audio" are different answers.
 from narrator.audio import MasterConfig
 from narrator.render import RenderConfig, RenderFailed, render
 from narrator.synth import SynthConfig
-from narrator.types import ASR
-from narrator.verify import CascadeVerifier, CoverageVerifier, NullVerifier, default_verifier
 from narrator.types import (
+    ASR,
     Audio,
     Backend,
     ChunkResult,
@@ -35,12 +34,30 @@ from narrator.types import (
     Verifier,
     Voice,
 )
+from narrator.verify import CascadeVerifier, CoverageVerifier, NullVerifier, default_verifier
 
 __version__ = "0.1.0"
 
 __all__ = [
-    "ASR", "Audio", "Backend", "CascadeVerifier", "ChunkResult", "CoverageVerifier",
-    "Gap", "MasterConfig", "NullVerifier", "RenderConfig", "RenderFailed",
-    "RenderReport", "Segment", "SynthConfig", "Text", "Verdict", "Voice",
-    "default_verifier", "render", "__version__",
+    "ASR",
+    "Audio",
+    "Backend",
+    "CascadeVerifier",
+    "ChunkResult",
+    "CoverageVerifier",
+    "Gap",
+    "MasterConfig",
+    "NullVerifier",
+    "RenderConfig",
+    "RenderFailed",
+    "RenderReport",
+    "Segment",
+    "SynthConfig",
+    "Text",
+    "Verdict",
+    "Verifier",
+    "Voice",
+    "__version__",
+    "default_verifier",
+    "render",
 ]

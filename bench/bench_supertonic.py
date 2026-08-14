@@ -90,8 +90,8 @@ def main():
     args = parser.parse_args()
 
     try:
-        from supertonic import TTS
         import soundfile as sf
+        from supertonic import TTS
     except ImportError as exc:
         sys.exit(
             f"Missing dependency: {exc}\n"

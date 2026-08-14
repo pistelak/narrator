@@ -30,7 +30,6 @@ import argparse
 import json
 import random
 import re
-import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -40,8 +39,8 @@ import numpy as np
 from narrator.asr import WhisperASR
 from narrator.backends.higgs import HiggsBackend
 from narrator.chunking import chunk
-from narrator.verify import CoverageVerifier
 from narrator.types import Voice
+from narrator.verify import CoverageVerifier
 
 SENTENCE_END = re.compile(r'(?<=[.!?])["”’\')\]]*\s+')
 

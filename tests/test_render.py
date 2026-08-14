@@ -9,9 +9,8 @@ import pytest
 import soundfile as sf
 
 from narrator.audio import MasterConfig, concatenate, declick, soft_limit, to_channels, trim_silence
-from narrator.backends.fake import FakeASR, FakeBackend, Failure
+from narrator.backends.fake import Failure, FakeASR, FakeBackend
 from narrator.render import RenderConfig, RenderFailed, render
-from narrator.synth import SynthConfig
 from narrator.types import Gap, Text, Voice
 from narrator.verify import CoverageVerifier
 

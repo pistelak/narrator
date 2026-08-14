@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 import numpy as np
 
@@ -25,7 +25,7 @@ from narrator.chunking import split_sentences
 from narrator.types import Audio, Voice
 
 
-class Failure(str, Enum):
+class Failure(StrEnum):
     """Failure modes observed in real engines, reproducible on demand."""
 
     NONE = "none"
@@ -114,7 +114,7 @@ class FakeBackend:
     def heard(self, audio: Audio) -> str:
         if audio.size == 0:
             return ""
-        index = int(round(float(audio[0]) / 1e-4)) - 1
+        index = round(float(audio[0]) / 1e-4) - 1
         return self._spoken.get(index, "")
 
 

@@ -20,7 +20,17 @@ import numpy as np
 from narrator.audio import MasterConfig, concatenate, declick, master, trim_silence
 from narrator.chunking import MAX_CHARS, chunk
 from narrator.synth import SynthConfig, synthesize_chunk
-from narrator.types import Audio, Backend, ChunkResult, Gap, RenderReport, Segment, Text, Verifier, Voice
+from narrator.types import (
+    Audio,
+    Backend,
+    ChunkResult,
+    Gap,
+    RenderReport,
+    Segment,
+    Text,
+    Verifier,
+    Voice,
+)
 from narrator.verify import default_verifier
 
 

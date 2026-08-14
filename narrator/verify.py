@@ -33,7 +33,6 @@ import difflib
 import re
 import unicodedata
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
 
 from narrator.chunking import split_sentences
 from narrator.types import ASR, Audio, Verdict, Verifier
@@ -280,7 +279,7 @@ def coverage(reference: str, hypothesis: str, lang: str = "en") -> tuple[float, 
     # Restricted to UNCLAIMED hypothesis text, so a word cannot be rescued by an
     # occurrence that another sentence already matched. That restriction is what
     # keeps a genuinely dropped sentence detectable.
-    unclaimed = "".join(w for w, taken in zip(hyp_words, hyp_claimed) if not taken)
+    unclaimed = "".join(w for w, taken in zip(hyp_words, hyp_claimed, strict=True) if not taken)
     for k, word in enumerate(ref_words):
         if not covered[k] and len(word) > 2 and word in unclaimed:
             covered[k] = True
@@ -332,7 +331,7 @@ def coverage(reference: str, hypothesis: str, lang: str = "en") -> tuple[float, 
             # transcript could not tell those apart at any window size, because
             # global alignment had already matched the sentence to the wrong
             # occurrence.
-            leftover = [w for w, claimed in zip(hyp_words, hyp_claimed) if not claimed]
+            leftover = [w for w, claimed in zip(hyp_words, hyp_claimed, strict=True) if not claimed]
             present = _bounded_count(leftover, [fold(w, lang) for w in content_words(sentence)]) >= 1
             # `or score > 0` used to turn ANY partial coverage into a pass, so a
             # two-word sentence rendered as one word scored 1.0. Only genuine
