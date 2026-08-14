@@ -36,14 +36,11 @@ def main() -> int:
     ap.add_argument("report", type=Path)
     ap.add_argument("--lang", default="cs")
     ap.add_argument("--limit", type=int, default=12)
-    ap.add_argument("--voice", type=Path, default=None)
+    ap.add_argument("--voice", type=Path, required=True,
+                    help="reference clip; a .txt sidecar with its transcript must sit beside it")
     args = ap.parse_args()
 
-    voice_path = args.voice or (
-        Path.home() / "Developer/voices" /
-        (f"voice-reference.{args.lang}.wav" if args.lang != "en" else "voice-reference.wav")
-    )
-    voice = Voice(voice_path, voice_path.with_suffix(".txt").read_text(encoding="utf-8").strip(),
+    voice = Voice(args.voice, args.voice.with_suffix(".txt").read_text(encoding="utf-8").strip(),
                   args.lang)
 
     rows = json.load(args.report.open(encoding="utf-8"))["results"]

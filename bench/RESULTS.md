@@ -621,3 +621,39 @@ ls outputs/*.stt.txt
 All WAVs, round-trip transcripts, and `results.csv` from this run are
 preserved in `bench/outputs/`. The Bark smoke artifact is
 `outputs/bark_smoke_cs_command_pl-speaker-0.{wav,stt.txt}`.
+
+---
+
+# ASR head-to-head (2026-08-14) — is the verifier's oracle the bottleneck?
+
+`asr_headtohead.py` ran every chunk of two real Czech episodes (82 chunks) and
+two English ones (40 chunks) through three recognisers on the same freshly
+synthesized Higgs audio, gated by synth.py's own cheap checks. Aggregates
+(threshold 0.90, per-attempt, no retries):
+
+| | Czech (82) | English (40) |
+|---|---|---|
+| whisper-large-v3-turbo rejects | 44 (54%) | 14 (35%) |
+| parakeet-tdt-0.6b-v3 rejects | 45 (55%) | 11 (28%) |
+| canary-1b-v2 rejects | 44 (54%) | 12 (30%) |
+| rejected by all three | 37 (45%) | 10 (25%) |
+| whisper-only reject (parakeet rescues) | 4 | 3 |
+| parakeet-only reject (whisper rescues) | 5 | 0 |
+
+Findings that drove the library changes:
+
+- **A better oracle does not reduce the rejection rate** — canary-1b-v2 has the
+  best published Czech WER of the three and rejects exactly as much. The
+  rejections decompose into genuine single-attempt truncations (the retry
+  ladder's job), inaudible Czech orthography (fixed by the voicing-assimilation
+  fold), and a small solo-reject band (rescued by the cascade).
+- **Two-model agreement is not evidence of a TTS defect when the models share a
+  weakness**: every Czech-mode recogniser mangles code-switched English words
+  and foreign proper nouns the same way.
+- Per-attempt rejections after the fold fix + cascade: 54% → 44% (cs). All
+  three English whisper-only rejections were Whisper misreadings of correct
+  audio, confirmed by both other models at 1.0.
+
+The per-chunk transcripts backing these numbers are working data
+(`bench/outputs/`, gitignored) — regenerate with `asr_headtohead.py
+<report.json> --lang cs`.

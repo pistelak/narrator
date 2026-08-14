@@ -59,11 +59,10 @@ word (*kódování*) and turned *check* into *hack*. Higgs produced
 (Supertonic 16.7 % vs Higgs 5.6 %).
 
 **Declined foreign names are a tie, not a discriminator.** *"od Kalleho
-Lindkvista"* — an English surname carrying a Czech genitive — came back
+Lindkvista"* — a foreign surname carrying a Czech genitive — came back
 verbatim from **both** engines (6.2 % WER, identical). This was predicted to be
-the deciding test and it wasn't; it is consistent with the note already in
-the earlier listening notes, which record that Kalle/Lindkvist reads fine
-raw in Czech (unlike in English, where Supertonic collapses *Kalle* → "Cal").
+the deciding test and it wasn't; declined foreign names read fine raw in Czech
+(unlike in English, where Supertonic collapses *Kalle* → "Cal").
 
 **Rare acronyms defeat both.** Each engine mangled them several distinct ways,
 and never the same way twice. Neither is reliable; this still

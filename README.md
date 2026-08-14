@@ -32,7 +32,20 @@ class this library exists to make impossible.
 - **Verification is not optional.** Duration heuristics caught zero of eight real
   content drops in the measurements that motivated this library.
 
+## Requirements
+
+The core library (chunking, verification scoring, assembly, mastering) is pure
+Python ≥3.12 and runs anywhere. The bundled engines and recognisers are
+**Apple-Silicon only**: the `[higgs]` extra (Higgs Audio v3 + mlx-whisper) and
+the `[parakeet]` extra (the cascade's fast first opinion) both build on MLX.
+On other hardware, implement the small `Backend`/`ASR` protocols against your
+engine of choice — that seam is the point of the library.
+
 ## Status
 
 Early. Extracted from a working pipeline; being rebuilt with the tests that
 pipeline never had.
+
+## License
+
+MIT.

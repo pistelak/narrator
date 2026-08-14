@@ -53,7 +53,7 @@ PROBES = [
      "HMAC", "aitch mack", r"\bhmac\b|h\s*mac|aitch\s*mack"),
     # Author first name: raw "Kalle" collapses to one syllable ("Cal"); the
     # respelling must keep two syllables AND not break the surname (no hyphens).
-    ("author", "This is the field guide, by {}.",
+    ("author", "This book is by {}.",
      "Kalle Lindkvist", "Kalleh Lindkvist", r"kah?l(?:i|eh|e)\b"),
     ("amira", "A new colleague named {} joins the night shift.",
      "Amira", "ah-mee-rah", r"\bam[iy]?ra\b|ah\s*mee\s*ra|\bamera\b"),

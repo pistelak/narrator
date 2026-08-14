@@ -100,8 +100,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("script", type=Path)
     ap.add_argument("--lang", default="en")
-    ap.add_argument("--voice", type=Path,
-                    default=Path.home() / "Developer/voices/voice-reference.wav")
+    ap.add_argument("--voice", type=Path, required=True,
+                    help="reference clip; a .txt sidecar with its transcript must sit beside it")
     ap.add_argument("--limit", type=int, default=40, help="chunks to sample")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", type=Path, default=Path("bench/acceptance-results.json"))
