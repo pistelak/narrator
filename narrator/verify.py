@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from narrator.chunking import split_sentences
-from narrator.types import Audio, Verdict, Verifier
+from narrator.types import ASR, Audio, Verdict, Verifier
 
 MIN_COVERAGE = 0.90
 """Near-complete, deliberately.
@@ -141,13 +141,6 @@ def isolated_numerals(words: list[str]) -> list[int]:
     return values
 
 
-
-
-@runtime_checkable
-class ASR(Protocol):
-    """Speech recognition, behind a seam so verification is testable without a model."""
-
-    def transcribe(self, audio: Audio, lang: str) -> str: ...
 
 
 # Czech orthography encodes distinctions that its phonology does not, so an ASR
@@ -477,13 +470,13 @@ def default_verifier(source_rate: int) -> Verifier:
     verdict). Parakeet-first when the `[parakeet]` extra is installed, plain
     Whisper otherwise.
     """
-    from narrator.backends.higgs import WhisperASR
+    from narrator.asr import WhisperASR
 
     whisper = CoverageVerifier(WhisperASR(source_rate=source_rate))
     import importlib.util
     if importlib.util.find_spec("parakeet_mlx") is None:
         return whisper
-    from narrator.backends.parakeet import ParakeetASR
+    from narrator.asr import ParakeetASR
 
     return CascadeVerifier([
         CoverageVerifier(ParakeetASR(source_rate=source_rate)),

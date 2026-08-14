@@ -37,7 +37,8 @@ from pathlib import Path
 
 import numpy as np
 
-from narrator.backends.higgs import HiggsBackend, WhisperASR
+from narrator.asr import WhisperASR
+from narrator.backends.higgs import HiggsBackend
 from narrator.chunking import chunk
 from narrator.verify import CoverageVerifier
 from narrator.types import Voice

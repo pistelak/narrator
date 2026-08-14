@@ -30,9 +30,9 @@ import json
 import time
 from pathlib import Path
 
+from narrator.asr import ParakeetASR, WhisperASR
 from narrator.audio import resample_to_16k
-from narrator.backends.higgs import HiggsBackend, WhisperASR
-from narrator.backends.parakeet import ParakeetASR
+from narrator.backends.higgs import HiggsBackend
 from narrator.synth import SynthConfig, _best_attempt
 from narrator.types import Voice
 from narrator.verify import MIN_COVERAGE, NullVerifier, coverage

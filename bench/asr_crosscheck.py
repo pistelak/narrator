@@ -25,8 +25,8 @@ import argparse
 import json
 from pathlib import Path
 
-from narrator.backends.higgs import HiggsBackend, WhisperASR
-from narrator.backends.parakeet import ParakeetASR
+from narrator.asr import ParakeetASR, WhisperASR
+from narrator.backends.higgs import HiggsBackend
 from narrator.types import Voice
 from narrator.verify import coverage
 

@@ -22,7 +22,8 @@ right audio" are different answers.
 from narrator.audio import MasterConfig
 from narrator.render import RenderConfig, RenderFailed, render
 from narrator.synth import SynthConfig
-from narrator.verify import ASR, CascadeVerifier, CoverageVerifier, NullVerifier, default_verifier
+from narrator.types import ASR
+from narrator.verify import CascadeVerifier, CoverageVerifier, NullVerifier, default_verifier
 from narrator.types import (
     Audio,
     Backend,

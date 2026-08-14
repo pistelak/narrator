@@ -198,12 +198,19 @@ class Verifier(Protocol):
     This is the load-bearing component. Duration heuristics alone caught zero of
     eight real content drops in the measurement that motivated this library.
 
-    An INTERNAL seam, deliberately not exported. There is one verification policy
-    and good reason for it to stay singular — an alternative policy is far more
-    likely to be a weaker one. The genuinely replaceable dependency is `ASR`
-    (`narrator.verify.ASR`), which is exported: swapping the speech recogniser is
-    a real need, swapping what "correct" means is not.
+    Exported for typing, not for policy: there is one verification policy
+    (`default_verifier`) and good reason for it to stay singular — an
+    alternative policy is far more likely to be a weaker one. The genuinely
+    replaceable dependency is `ASR`: swapping the speech recogniser is a real
+    need, swapping what "correct" means is not.
     """
 
     def verify(self, audio: Audio, text: str, lang: str) -> Verdict:
         ...
+
+
+@runtime_checkable
+class ASR(Protocol):
+    """Speech recognition, behind a seam so verification is testable without a model."""
+
+    def transcribe(self, audio: Audio, lang: str) -> str: ...
