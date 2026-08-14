@@ -195,6 +195,7 @@ _FOLD = str.maketrans({
 # cluster positions where Czech phonology actually neutralises the contrast;
 # s and z between vowels stay distinct.
 _DOUBLED = re.compile(r"(.)\1+")
+_SH_AFTER_VOWEL = re.compile(r"(?<=[aeiou])sh")
 _Z_BEFORE_VOICELESS = re.compile(r"z(?=[ptťkfsšcč])")
 _S_BEFORE_VOICED = re.compile(r"s(?=[bdďgzž])")
 
@@ -204,7 +205,14 @@ def fold(word: str, lang: str) -> str:
     if not lang.startswith("cs"):
         return word
     w = word.translate(_FOLD)
-    w = w.replace("sh", "š")                 # English loanwords: hashe / haše
+    # [sx] spelled two ways: the script writes native s+h (shodí), the ASR
+    # writes sch (schodí). One spelling before the loanword rule below.
+    w = w.replace("sch", "sh")
+    # English loanwords: hashe / haše. Only after a vowel — word-initial sh is
+    # the native s+h prefix (shodí, shoda, shora), pronounced [sx], not [š];
+    # folding it corrupted a correct native word on a real render.
+    w = _SH_AFTER_VOWEL.sub("š", w)
+    w = w.replace("haš", "heš")              # the loanword is [heš]: hašování / hešování
     w = w.replace("ee", "i")                 # English loanwords: seed / síd —
     # no native Czech word contains "ee", so this collides with nothing
     w = _DOUBLED.sub(r"\1", w)               # doubled letters

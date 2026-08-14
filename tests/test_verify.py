@@ -450,3 +450,15 @@ def test_english_loanword_seed_folds_to_czech_transcription() -> None:
     assert coverage("Stejný seed, stejný strom, pokaždé.", "Stejný sít, stejný strom, pokaždé.", "cs")[0] >= 0.90
     assert coverage("Svazek klíčů vyrostlý z jednoho seedu.", "Svazek klíčů vyrostlý z jednoho sídu.", "cs")[0] >= 0.90
     assert coverage("Se zálohou seedu je ta ztráta nulová.", "Se zálohou sídů je ta stráta nulová.", "cs")[0] >= 0.90
+
+
+def test_native_sh_prefix_is_not_a_loanword() -> None:
+    """The sh->š rule is for loanwords (hash). Native s+h (shodí = s+hodit)
+    is pronounced [sx], the ASR correctly writes it "schodí", and folding it
+    to š corrupted a correct word on a real render. And the loanword itself is
+    pronounced [heš]: hashování comes back as hešování."""
+    ref = "Špatné slovo shodí kontrolní součet patnáctkrát ze šestnácti; slovo mimo seznam selže okamžitě."
+    hyp = "Špatné slovo schodí kontrolní součet patnáctkrát ze šestnácti. Slovo mimo seznam se lže okamžitě."
+    assert coverage(ref, hyp, "cs")[0] >= 0.90
+    assert coverage("Pod kapotou je to samé hashování až dolů.",
+                    "Pod kapotou je to samé hešování až dolů.", "cs")[0] >= 0.90
