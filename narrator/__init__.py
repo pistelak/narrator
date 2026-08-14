@@ -12,9 +12,8 @@ right audio" are different answers.
          Text("Not the keeper. Not a stranger.")],
         voice=Voice(Path("voice.wav"), "reference transcript"),
         backend=HiggsBackend(),
-        verifier=CoverageVerifier(WhisperASR()),
         out=Path("episode.wav"),
-    )
+    )  # verification defaults to the library's own policy, at the backend's rate
     if not report.clean:
         ...  # report.failures tells you which chunks and why
 """

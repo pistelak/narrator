@@ -33,7 +33,7 @@ def build(script=None):
 def test_writes_a_file_and_reports_clean(tmp_path: Path) -> None:
     backend, verifier = build()
     out = tmp_path / "episode.wav"
-    report = render(SEGMENTS, VOICE, backend, verifier, out)
+    report = render(SEGMENTS, VOICE, backend, out, verifier)
     assert report.clean
     assert out.is_file()
     assert len(report.chunks) == 2
@@ -42,11 +42,11 @@ def test_writes_a_file_and_reports_clean(tmp_path: Path) -> None:
 def test_gap_duration_is_honoured_exactly(tmp_path: Path) -> None:
     """A pause is content. A renderer that 'improves' the timing is editing."""
     backend, verifier = build()
-    short = render([Text("One two three four.")], VOICE, backend, verifier, tmp_path / "a.wav")
+    short = render([Text("One two three four.")], VOICE, backend, tmp_path / "a.wav", verifier)
 
     backend2, verifier2 = build()
     withgap = render(
-        [Text("One two three four."), Gap(5.0)], VOICE, backend2, verifier2, tmp_path / "b.wav"
+        [Text("One two three four."), Gap(5.0)], VOICE, backend2, tmp_path / "b.wav", verifier2
     )
     assert withgap.duration_s - short.duration_s == pytest.approx(5.0, abs=0.05)
 
@@ -54,7 +54,7 @@ def test_gap_duration_is_honoured_exactly(tmp_path: Path) -> None:
 def test_long_text_is_chunked(tmp_path: Path) -> None:
     backend, verifier = build()
     long = Text(" ".join(["This is a sentence of moderate length here."] * 30))
-    report = render([long], VOICE, backend, verifier, tmp_path / "c.wav")
+    report = render([long], VOICE, backend, tmp_path / "c.wav", verifier)
     assert len(report.chunks) > 3
     assert all(len(c.text) <= 250 for c in report.chunks)
 
@@ -66,7 +66,7 @@ def test_unrecoverable_chunk_raises_and_writes_nothing(tmp_path: Path) -> None:
     out = tmp_path / "episode.wav"
     backend, verifier = build({i: Failure.TRUNCATE for i in range(50)})
     with pytest.raises(RenderFailed) as excinfo:
-        render(SEGMENTS, VOICE, backend, verifier, out)
+        render(SEGMENTS, VOICE, backend, out, verifier)
     assert not out.exists()
     assert excinfo.value.report.failures
 
@@ -75,7 +75,7 @@ def test_quarantine_can_be_waived_but_the_report_still_says_so(tmp_path: Path) -
     out = tmp_path / "episode.wav"
     backend, verifier = build({i: Failure.TRUNCATE for i in range(50)})
     report = render(
-        SEGMENTS, VOICE, backend, verifier, out, RenderConfig(quarantine=False)
+        SEGMENTS, VOICE, backend, out, verifier, RenderConfig(quarantine=False)
     )
     assert out.is_file()
     assert not report.clean
@@ -85,14 +85,14 @@ def test_quarantine_can_be_waived_but_the_report_still_says_so(tmp_path: Path) -
 def test_failure_message_names_chunks_and_content(tmp_path: Path) -> None:
     backend, verifier = build({i: Failure.TRUNCATE for i in range(50)})
     with pytest.raises(RenderFailed, match="failed verification"):
-        render(SEGMENTS, VOICE, backend, verifier, tmp_path / "e.wav")
+        render(SEGMENTS, VOICE, backend, tmp_path / "e.wav", verifier)
 
 
 # ------------------------------------------------------------- reporting
 
 def test_report_counts_recoveries(tmp_path: Path) -> None:
     backend, verifier = build({0: Failure.DROP_SENTENCE})
-    report = render(SEGMENTS, VOICE, backend, verifier, tmp_path / "f.wav")
+    report = render(SEGMENTS, VOICE, backend, tmp_path / "f.wav", verifier)
     assert report.clean
     assert any(c.recovered_by for c in report.chunks)
     assert "chunks" in report.summary()
@@ -101,7 +101,7 @@ def test_report_counts_recoveries(tmp_path: Path) -> None:
 def test_progress_callback_fires_per_chunk(tmp_path: Path) -> None:
     seen = []
     backend, verifier = build()
-    render(SEGMENTS, VOICE, backend, verifier, tmp_path / "g.wav",
+    render(SEGMENTS, VOICE, backend, tmp_path / "g.wav", verifier,
            RenderConfig(on_progress=lambda r, total: seen.append((r.index, total))))
     assert [i for i, _ in seen] == [0, 1]
     assert all(total == 2 for _, total in seen)
@@ -113,7 +113,7 @@ def test_output_is_dual_mono_by_default(tmp_path: Path) -> None:
     """Sidesteps the BS.1770 mono offset without assuming player behaviour."""
     backend, verifier = build()
     out = tmp_path / "h.wav"
-    render(SEGMENTS, VOICE, backend, verifier, out)
+    render(SEGMENTS, VOICE, backend, out, verifier)
     data, _ = sf.read(str(out))
     assert data.ndim == 2 and data.shape[1] == 2
     assert np.allclose(data[:, 0], data[:, 1])
@@ -122,7 +122,7 @@ def test_output_is_dual_mono_by_default(tmp_path: Path) -> None:
 def test_mono_output_when_requested(tmp_path: Path) -> None:
     backend, verifier = build()
     out = tmp_path / "i.wav"
-    render(SEGMENTS, VOICE, backend, verifier, out,
+    render(SEGMENTS, VOICE, backend, out, verifier,
            RenderConfig(mastering=MasterConfig(channels=1)))
     data, _ = sf.read(str(out))
     assert data.ndim == 1
@@ -198,11 +198,12 @@ def test_backend_with_unknown_sample_rate_is_refused(tmp_path: Path) -> None:
     backend, verifier = build()
     backend.sample_rate = 0
     with pytest.raises(ValueError, match="sample_rate is 0"):
-        render([Gap(3.0), Text("Alpha beta gamma.")], VOICE, backend, verifier, tmp_path / "x.wav")
+        render([Gap(3.0), Text("Alpha beta gamma.")], VOICE, backend, tmp_path / "x.wav", verifier)
 
 
 def test_leading_gap_is_rendered_at_full_length(tmp_path: Path) -> None:
     backend, verifier = build()
-    a = render([Text("Alpha beta gamma.")], VOICE, backend, verifier, tmp_path / "a.wav")
-    b = render(*[[Gap(3.0), Text("Alpha beta gamma.")], VOICE, *build(), tmp_path / "b.wav"])
+    a = render([Text("Alpha beta gamma.")], VOICE, backend, tmp_path / "a.wav", verifier)
+    backend2, verifier2 = build()
+    b = render([Gap(3.0), Text("Alpha beta gamma.")], VOICE, backend2, tmp_path / "b.wav", verifier2)
     assert b.duration_s - a.duration_s == pytest.approx(3.0, abs=0.05)

@@ -60,10 +60,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     from narrator.backends.higgs import HiggsBackend
-    from narrator.verify import NullVerifier, default_verifier
+    from narrator.verify import NullVerifier
 
     backend = HiggsBackend()
-    verifier = NullVerifier() if args.no_verify else default_verifier(backend.sample_rate)
+    verifier = NullVerifier() if args.no_verify else None  # None -> render's default
     voice = Voice(args.voice, args.voice_text, args.lang)
     segments = parse_text(args.text.read_text(encoding="utf-8"), args.paragraph_gap)
     if not segments:
@@ -78,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        report = render(segments, voice, backend, verifier, args.out, cfg)
+        report = render(segments, voice, backend, args.out, verifier, cfg)
     except RenderFailed as exc:
         print(f"\n{exc}", file=sys.stderr)
         return 1

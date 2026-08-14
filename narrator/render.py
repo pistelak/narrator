@@ -20,6 +20,7 @@ from narrator.audio import MasterConfig, concatenate, declick, master, trim_sile
 from narrator.chunking import MAX_CHARS, chunk
 from narrator.synth import SynthConfig, synthesize_chunk
 from narrator.types import Audio, Backend, ChunkResult, Gap, RenderReport, Segment, Text, Verifier, Voice
+from narrator.verify import default_verifier
 
 
 class RenderFailed(RuntimeError):
@@ -54,8 +55,8 @@ def render(
     segments: list[Segment],
     voice: Voice,
     backend: Backend,
-    verifier: Verifier,
     out: Path,
+    verifier: Verifier | None = None,
     cfg: RenderConfig = RenderConfig(),
 ) -> RenderReport:
     """Render `segments` to `out`.
@@ -63,6 +64,12 @@ def render(
     Gaps are honoured exactly as given. This library never invents, lengthens or
     shortens one: in a teaching script a pause is content — the listener is meant
     to answer during it — and a renderer that "improves" the timing is editing.
+
+    `verifier=None` means the library's own policy, `default_verifier`, built
+    against the backend's actual sample rate — the assembly callers used to do
+    by hand, and got wrong (one forgot `source_rate`, which silently corrupts
+    every verdict). Pass `NullVerifier()` to opt out of verification, or a
+    custom verifier to override.
     """
     if not getattr(backend, "sample_rate", 0):
         raise ValueError(
@@ -71,6 +78,8 @@ def render(
             "vanish from an otherwise clean render. Call the backend's load()/prepare "
             "step, or set sample_rate explicitly."
         )
+    if verifier is None:
+        verifier = default_verifier(backend.sample_rate)
     started = time.perf_counter()
     plan = _plan(segments, cfg.max_chars)
     total = sum(1 for kind, _ in plan if kind == "text")
