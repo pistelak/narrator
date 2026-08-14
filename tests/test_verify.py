@@ -462,3 +462,12 @@ def test_native_sh_prefix_is_not_a_loanword() -> None:
     assert coverage(ref, hyp, "cs")[0] >= 0.90
     assert coverage("Pod kapotou je to samé hashování až dolů.",
                     "Pod kapotou je to samé hešování až dolů.", "cs")[0] >= 0.90
+
+
+def test_sha_acronym_matches_its_pronunciation() -> None:
+    """The lexicon makes the engine say [ša]; the ASR writes what it hears.
+    The word-initial-sh exemption (correct for shodí) must not orphan the
+    acronym: script "HMAC SHA pět set dvanáct", transcript "HMAC šá 512"."""
+    ref = "Jde do hashe zvaného HMAC SHA pět set dvanáct a ven vypadne pět set dvanáct bitů."
+    hyp = "Jde do haše zvaného HMAC šá 512 a ven vypadne 512 bytů."
+    assert coverage(ref, hyp, "cs")[0] >= 0.90

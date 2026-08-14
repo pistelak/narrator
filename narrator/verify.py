@@ -212,6 +212,11 @@ def fold(word: str, lang: str) -> str:
     # the native s+h prefix (shodí, shoda, shora), pronounced [sx], not [š];
     # folding it corrupted a correct native word on a real render.
     w = _SH_AFTER_VOWEL.sub("š", w)
+    if w == "sha":
+        # The acronym, pronounced [ša] (and respelled so by the pronunciation
+        # lexicon); exact-word because the vowel restriction above rightly
+        # exempts word-initial sh.
+        w = "ša"
     w = w.replace("haš", "heš")              # the loanword is [heš]: hašování / hešování
     w = w.replace("ee", "i")                 # English loanwords: seed / síd —
     # no native Czech word contains "ee", so this collides with nothing
