@@ -50,6 +50,13 @@ SHORT_SENTENCE_WORDS = 3
 
 # Spelled-out numerals in the languages this is used on. Anything matching is
 # dropped from BOTH sides before comparison — see trap 3.
+#
+# Czech declines its numerals, and prose uses the oblique forms constantly:
+# "dvou tisíc čtyřiceti osmi slov" is 2048 in the genitive. The ASR writes
+# "2048", so a blind list holding only the citation forms left every inflected
+# numeral unmatched — measured on a real render as four chunks failing at
+# 0.52-0.89 on orthography, not audio. The oblique forms are numerals and
+# nothing else in Czech, so blinding them collides with no content word.
 _NUMBER_WORDS = set(
     """
     zero one two three four five six seven eight nine ten eleven twelve thirteen
@@ -59,6 +66,11 @@ _NUMBER_WORDS = set(
     jedenáct dvanáct třináct čtrnáct patnáct šestnáct sedmnáct osmnáct devatenáct
     dvacet třicet čtyřicet padesát šedesát sedmdesát osmdesát devadesát
     sto stě sta set tisíc tisíce milion miliony milionů miliarda miliard miliardy
+    jedné jednoho jednomu jedním jednou dvou dvěma tří třech třem třemi
+    čtyř čtyřech čtyřem čtyřmi pěti šesti sedmi osmi devíti deseti
+    jedenácti dvanácti třinácti čtrnácti patnácti šestnácti sedmnácti osmnácti
+    devatenácti dvaceti třiceti čtyřiceti padesáti šedesáti sedmdesáti
+    osmdesáti devadesáti stu tisíci tisících milionu miliardě
     """.split()
 )
 
@@ -105,6 +117,19 @@ _NUMERAL_VALUES: dict[str, int] = {
     "šestnáct": 16, "sedmnáct": 17, "osmnáct": 18, "devatenáct": 19, "dvacet": 20,
     "třicet": 30, "čtyřicet": 40, "padesát": 50, "šedesát": 60, "sedmdesát": 70,
     "osmdesát": 80, "devadesát": 90, "sto": 100, "tisíc": 1000,
+    # Oblique-case forms, so an inflected numeral is COMPARED, not merely
+    # blinded — without these the ref side skipped "šestnácti" while the hyp
+    # side counted "16", and a correct transcription hard-failed as a changed
+    # number.
+    "jedné": 1, "jednoho": 1, "jednomu": 1, "jedním": 1, "jednou": 1,
+    "dvou": 2, "dvěma": 2, "tří": 3, "třech": 3, "třem": 3, "třemi": 3,
+    "čtyř": 4, "čtyřech": 4, "čtyřem": 4, "čtyřmi": 4, "pěti": 5, "šesti": 6,
+    "sedmi": 7, "osmi": 8, "devíti": 9, "deseti": 10, "jedenácti": 11,
+    "dvanácti": 12, "třinácti": 13, "čtrnácti": 14, "patnácti": 15,
+    "šestnácti": 16, "sedmnácti": 17, "osmnácti": 18, "devatenácti": 19,
+    "dvaceti": 20, "třiceti": 30, "čtyřiceti": 40, "padesáti": 50,
+    "šedesáti": 60, "sedmdesáti": 70, "osmdesáti": 80, "devadesáti": 90,
+    "stu": 100, "tisíci": 1000,
 }
 
 
@@ -183,6 +208,12 @@ def fold(word: str, lang: str) -> str:
     w = _DOUBLED.sub(r"\1", w)               # doubled letters
     w = _Z_BEFORE_VOICELESS.sub("s", w)
     w = _S_BEFORE_VOICED.sub("z", w)
+    if w in ("ze", "ke", "ve", "se"):
+        # Vocalized prepositions: the -e exists only for pronunciation before
+        # certain clusters, so "ze šestnácti" and "z 16" are the same word.
+        # Surfaced by number-blinding: the ASR writes the digit, drops the
+        # vowel, and the preposition mismatched on spelling alone.
+        w = w[0]
     if w.endswith("z"):                      # final devoicing: odpověz / odpověs
         w = w[:-1] + "s"
     return w

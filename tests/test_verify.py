@@ -425,3 +425,18 @@ def test_cascade_survives_an_erroring_verifier() -> None:
 def test_cascade_raises_only_when_every_verifier_errors() -> None:
     with pytest.raises(RuntimeError):
         CascadeVerifier([RaisingVerifier(), RaisingVerifier()]).verify(SILENCE, CHUNK, "en")
+
+
+def test_inflected_czech_numerals_are_number_blind() -> None:
+    """Czech declines its numerals and prose lives in the oblique cases.
+
+    "dvou tisíc čtyřiceti osmi slov" is 2048 in the genitive; the ASR writes
+    digits. With only citation forms in the blind list, four chunks of a real
+    render failed at 0.52-0.89 on this alone — orthography, not audio.
+    """
+    ref = "Každá skupina vybere jedno slovo ze seznamu dvou tisíc čtyřiceti osmi anglických slov."
+    hyp = "Každá skupina vybere jedno slovo ze seznamu 2048 anglických slov."
+    assert coverage(ref, hyp, "cs")[0] == 1.0
+    ref2 = "Shodí kontrolní součet patnáctkrát ze šestnácti pokusů tady."
+    hyp2 = "Shodí kontrolní součet patnáctkrát z 16 pokusů tady."
+    assert coverage(ref2, hyp2, "cs")[0] >= 0.90
