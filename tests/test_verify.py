@@ -14,6 +14,7 @@ import pytest
 
 from narrator.types import Audio
 from narrator.verify import (
+    CascadeVerifier,
     CoverageVerifier,
     NullVerifier,
     content_words,
@@ -365,3 +366,62 @@ def test_folding_cannot_hide_a_missing_word() -> None:
     """
     assert coverage("Ztíží to třídění ale neznemožní.", "Ztíží to ale.", "cs")[0] < 0.90
     assert coverage("Ne surový záznam ale souhrn.", "Ne surový záznam.", "cs")[0] < 0.90
+
+
+# --------------- Cascade: a second opinion consulted on rejection only
+
+@dataclass
+class CountingASR(FakeASR):
+    calls: int = 0
+
+    def transcribe(self, audio: Audio, lang: str) -> str:
+        self.calls += 1
+        return super().transcribe(audio, lang)
+
+
+def test_cascade_accepts_when_any_recogniser_confirms() -> None:
+    """A recogniser never sees the script, so a transcript that matches it is
+    evidence the audio is right regardless of which model produced it. This is
+    the measured ~10% of rejections that were one model's misreading."""
+    first = CoverageVerifier(FakeASR(ASR_DROPPED))
+    second = CoverageVerifier(FakeASR(CHUNK))
+    assert CascadeVerifier([first, second]).verify(SILENCE, CHUNK, "en").ok
+
+
+def test_cascade_escalates_only_on_rejection() -> None:
+    """The fallback's cost must be paid only when the primary rejects — that is
+    what makes putting the fast model first nearly free."""
+    fallback = CountingASR(CHUNK)
+    cascade = CascadeVerifier([CoverageVerifier(FakeASR(CHUNK)), CoverageVerifier(fallback)])
+    assert cascade.verify(SILENCE, CHUNK, "en").ok
+    assert fallback.calls == 0
+
+
+def test_cascade_total_failure_returns_best_coverage() -> None:
+    """The retry ladder ranks attempts by coverage, so the cascade must surface
+    the least-bad verdict, not the first or the last."""
+    dropped = CoverageVerifier(FakeASR(ASR_DROPPED))
+    silent = CoverageVerifier(FakeASR(""))
+    verdict = CascadeVerifier([silent, dropped]).verify(SILENCE, CHUNK, "en")
+    assert not verdict.ok
+    assert verdict.coverage == pytest.approx(
+        CoverageVerifier(FakeASR(ASR_DROPPED)).verify(SILENCE, CHUNK, "en").coverage
+    )
+
+
+class RaisingVerifier:
+    def verify(self, audio: Audio, text: str, lang: str):
+        raise RuntimeError("model download failed")
+
+
+def test_cascade_survives_an_erroring_verifier() -> None:
+    """find_spec proves the package exists, not that the model loads. A primary
+    that raises mid-render must be skipped — aborting would defeat the fallback
+    this class exists to provide."""
+    cascade = CascadeVerifier([RaisingVerifier(), CoverageVerifier(FakeASR(CHUNK))])
+    assert cascade.verify(SILENCE, CHUNK, "en").ok
+
+
+def test_cascade_raises_only_when_every_verifier_errors() -> None:
+    with pytest.raises(RuntimeError):
+        CascadeVerifier([RaisingVerifier(), RaisingVerifier()]).verify(SILENCE, CHUNK, "en")

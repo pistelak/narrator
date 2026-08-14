@@ -59,11 +59,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="write the file even if some chunk failed verification")
     args = parser.parse_args(argv)
 
-    from narrator.backends.higgs import HiggsBackend, WhisperASR
-    from narrator.verify import CoverageVerifier, NullVerifier
+    from narrator.backends.higgs import HiggsBackend
+    from narrator.verify import NullVerifier, default_verifier
 
     backend = HiggsBackend()
-    verifier = NullVerifier() if args.no_verify else CoverageVerifier(WhisperASR())
+    verifier = NullVerifier() if args.no_verify else default_verifier(backend.sample_rate)
     voice = Voice(args.voice, args.voice_text, args.lang)
     segments = parse_text(args.text.read_text(encoding="utf-8"), args.paragraph_gap)
     if not segments:

@@ -35,7 +35,7 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
-from narrator.types import Audio, Verdict
+from narrator.types import Audio, Verdict, Verifier
 
 MIN_COVERAGE = 0.90
 """Near-complete, deliberately.
@@ -421,6 +421,89 @@ class CoverageVerifier:
             dropped_sentence="" if score >= self.min_coverage else dropped,
             transcript=transcript,
         )
+
+
+@dataclass
+class CascadeVerifier:
+    """Accept when ANY verifier confirms the text; escalate only on rejection.
+
+    A recogniser never sees the script, so a transcript that independently
+    matches it is strong evidence the audio is right — no matter which model
+    produced it. Requiring every recogniser to fail before rejecting therefore
+    removes each model's idiosyncratic misreadings without weakening drop
+    detection: defective audio doesn't transcribe into the correct script by
+    accident.
+
+    Measured on 82 real Czech chunks (bench/asr_headtohead.py): ~10% of
+    single-model rejections were solo — the other recogniser read the same audio
+    as correct — and every rejection costs up to three re-synthesis attempts
+    plus a sentence-split fallback, each vastly more expensive than one extra
+    ASR pass. Order verifiers fastest-first: later ones run only when earlier
+    ones reject, so the escalation is nearly free in the common case.
+
+    On total failure the verdict with the best coverage is returned, so the
+    retry ladder ranks attempts the same way it would with one verifier. Two
+    consequences of that, named because they are deliberate: a hard-fail 0.0
+    (changed numeral, critical token) can be superseded in the REPORTED verdict
+    by a sibling's higher soft score — accept/reject is unaffected, only the
+    diagnostic and the ranking of already-failed attempts. And accepting on any
+    single pass makes the false-accept rate the union of the members' — the
+    price of removing their idiosyncratic false rejections. Requiring
+    concurrence instead would re-buy the measured false-rejection class and
+    double the ASR cost of every chunk; a recogniser that never saw the script
+    transcribing it back is evidence enough.
+
+    A verifier that RAISES (model download failed, backend broke mid-render) is
+    skipped, not fatal — otherwise the fallback this class promises would be
+    defeated by exactly the situations that need it. Only when every verifier
+    errors is there nothing to report, and the last error propagates.
+    """
+
+    verifiers: list[Verifier]  # ordered fastest-first
+
+    def __post_init__(self) -> None:
+        if not self.verifiers:
+            raise ValueError("CascadeVerifier needs at least one verifier")
+
+    def verify(self, audio: Audio, text: str, lang: str) -> Verdict:
+        best: Verdict | None = None
+        error: Exception | None = None
+        for verifier in self.verifiers:
+            try:
+                verdict = verifier.verify(audio, text, lang)
+            except Exception as exc:
+                error = exc
+                continue
+            if verdict.ok:
+                return verdict
+            if best is None or verdict.coverage > best.coverage:
+                best = verdict
+        if best is None:
+            raise RuntimeError("every verifier in the cascade errored") from error
+        return best
+
+
+def default_verifier(source_rate: int) -> Verifier:
+    """The verification stack render entry points should use.
+
+    One policy, owned here rather than assembled by every caller — the cascade
+    ordering is derived from this library's own bench and callers were already
+    diverging on it (one forgot `source_rate`, which silently corrupts every
+    verdict). Parakeet-first when the `[parakeet]` extra is installed, plain
+    Whisper otherwise.
+    """
+    from narrator.backends.higgs import WhisperASR
+
+    whisper = CoverageVerifier(WhisperASR(source_rate=source_rate))
+    import importlib.util
+    if importlib.util.find_spec("parakeet_mlx") is None:
+        return whisper
+    from narrator.backends.parakeet import ParakeetASR
+
+    return CascadeVerifier([
+        CoverageVerifier(ParakeetASR(source_rate=source_rate)),
+        whisper,
+    ])
 
 
 @dataclass
