@@ -38,6 +38,11 @@ _WINDOW = 30
 # Closing quotes and brackets may sit between the terminator and the space.
 # Missing them merged sentences, which silently restored the aggregate
 # scoring that per-sentence coverage exists to replace.
+#
+# This is THE sentence boundary for the whole library. synth's sentence-split
+# fallback, verify's per-sentence scoring, and the fake backend's failure
+# injection all import it: they must segment identically, or a "rescued"
+# sentence and a "scored" sentence stop being the same unit.
 _SENTENCE_END = re.compile(r'(?<=[.!?])["”’\')\]]*\s+')
 
 

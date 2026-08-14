@@ -35,6 +35,7 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+from narrator.chunking import split_sentences
 from narrator.types import Audio, Verdict, Verifier
 
 MIN_COVERAGE = 0.90
@@ -62,9 +63,6 @@ _NUMBER_WORDS = set(
     """.split()
 )
 
-# Closing quotes and brackets may sit between the terminator and the space.
-# Missing them merged sentences, which silently restored the aggregate
-# scoring that per-sentence coverage exists to replace.
 # Words whose loss or insertion inverts meaning. A fuzzy threshold cannot protect
 # these: dropping one word from a twelve-word sentence is ~8% of its coverage, so
 # "The keeper can open these doors" rendered as "cannot open" scored 0.9167
@@ -143,7 +141,6 @@ def isolated_numerals(words: list[str]) -> list[int]:
     return values
 
 
-_SENTENCE_END = re.compile(r'(?<=[.!?])["”’\')\]]*\s+')
 
 
 @runtime_checkable
@@ -308,7 +305,7 @@ def coverage(reference: str, hypothesis: str, lang: str = "en") -> tuple[float, 
     worst, worst_sentence, pos = 1.0, "", 0
     unverifiable: list[str] = []
 
-    for sentence in (s for s in _SENTENCE_END.split(reference.strip()) if s.strip()):
+    for sentence in split_sentences(reference):
         n = len(content_words(sentence))
 
         if n == 0:

@@ -21,12 +21,8 @@ from enum import Enum
 
 import numpy as np
 
+from narrator.chunking import split_sentences
 from narrator.types import Audio, Voice
-
-# Closing quotes and brackets may sit between the terminator and the space.
-# Missing them merged sentences, which silently restored the aggregate
-# scoring that per-sentence coverage exists to replace.
-_SENTENCE_END = re.compile(r'(?<=[.!?])["”’\')\]]*\s+')
 
 
 class Failure(str, Enum):
@@ -96,7 +92,7 @@ class FakeBackend:
         return audio
 
     def _apply(self, text: str, mode: Failure) -> str:
-        sentences = [s for s in _SENTENCE_END.split(text.strip()) if s.strip()]
+        sentences = split_sentences(text)
         if mode is Failure.DROP_SENTENCE and len(sentences) > 1:
             return " ".join(sentences[:-1])
         if mode is Failure.REPEAT and sentences:

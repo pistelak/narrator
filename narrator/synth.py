@@ -23,12 +23,8 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
+from narrator.chunking import split_sentences
 from narrator.types import Audio, Backend, ChunkResult, Verdict, Verifier, Voice
-
-# Closing quotes and brackets may sit between the terminator and the space.
-# Missing them merged sentences, which silently restored the aggregate
-# scoring that per-sentence coverage exists to replace.
-_SENTENCE_END = re.compile(r'(?<=[.!?])["”’\')\]]*\s+')
 
 
 @dataclass(frozen=True)
@@ -139,7 +135,7 @@ def synthesize_chunk(
             return ChunkResult(
                 index=index, text=text, audio=audio,
                 duration_s=len(audio) / backend.sample_rate,
-                attempts=cfg.max_attempts + len(_sentences(text)),
+                attempts=cfg.max_attempts + len(split_sentences(text)),
                 ok=True, coverage=coverage_, recovered_by="sentence-split",
             )
 
@@ -235,7 +231,7 @@ def _sentence_split(
     containment a strictly per-sentence pipeline gets for free, applied only
     where it is needed so the rest keeps the prosody that chunking buys.
     """
-    sentences = _sentences(text)
+    sentences = split_sentences(text)
     if len(sentences) < 2:
         return None
 
@@ -252,10 +248,6 @@ def _sentence_split(
         worst = min(worst, attempt.verdict.coverage)
 
     return np.concatenate(pieces[:-1]), worst
-
-
-def _sentences(text: str) -> list[str]:
-    return [s.strip() for s in _SENTENCE_END.split(text.strip()) if s.strip()]
 
 
 def _result(index: int, text: str, attempt: _Attempt, recovered_by: str = "") -> ChunkResult:
