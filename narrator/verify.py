@@ -234,11 +234,6 @@ def _bounded_count(hyp_words: list[str], needle_words: list[str]) -> int:
     return count
 
 
-def _squashed(text: str) -> str:
-    """Letters only, no spaces. Immune to word-boundary disagreement."""
-    return re.sub(r"\s+", "", normalize(text))
-
-
 def coverage(reference: str, hypothesis: str, lang: str = "en") -> tuple[float, str]:
     """Worst per-sentence coverage in [0,1], and the sentence that scored it.
 
@@ -261,9 +256,7 @@ def coverage(reference: str, hypothesis: str, lang: str = "en") -> tuple[float, 
     covered = [False] * len(ref_words)
     hyp_claimed = [False] * len(hyp_words)
     matcher = difflib.SequenceMatcher(None, ref_words, hyp_words, autojunk=False)
-    matched = 0
     for i, j, size in matcher.get_matching_blocks():
-        matched += size
         for k in range(i, i + size):
             covered[k] = True
         for k in range(j, j + size):
@@ -298,10 +291,7 @@ def coverage(reference: str, hypothesis: str, lang: str = "en") -> tuple[float, 
     for k, word in enumerate(ref_words):
         if not covered[k] and len(word) > 2 and word in unclaimed:
             covered[k] = True
-            matched += 1
 
-    hyp_squashed = _squashed(hypothesis)
-    seen: dict[str, int] = {}
     worst, worst_sentence, pos = 1.0, "", 0
     unverifiable: list[str] = []
 
@@ -329,8 +319,6 @@ def coverage(reference: str, hypothesis: str, lang: str = "en") -> tuple[float, 
             # identical sentence elsewhere in the chunk satisfies it while this
             # one is genuinely absent. Count occurrences instead of asking
             # "does it appear at all".
-            needle = "".join(fold(w, lang) for w in content_words(sentence))
-            seen[needle] = seen.get(needle, 0) + 1
             # Boundaries matter: an unanchored substring search found "go now"
             # inside "under-go now-here". Require the match to sit at a word
             # boundary in the squashed hypothesis, reconstructed from the words.

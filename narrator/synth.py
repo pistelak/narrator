@@ -19,7 +19,7 @@ thing, indistinguishable from success".
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -239,9 +239,7 @@ def _sentence_split(
     gap = np.zeros(int(cfg.sentence_gap_s * backend.sample_rate), dtype=np.float32)
     worst = 1.0
     for sentence in sentences:
-        attempt = _best_attempt(
-            sentence, backend, verifier, voice, replace(cfg, allow_sentence_split=False)
-        )
+        attempt = _best_attempt(sentence, backend, verifier, voice, cfg)
         if attempt is None or not attempt.ok:
             return None
         pieces.extend([attempt.audio, gap])

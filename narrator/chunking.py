@@ -20,7 +20,6 @@ import re
 
 MAX_CHARS = 250
 MIN_WORDS = 3
-ORPHAN_WORDS = 20
 
 # Scored split points, Auralis-style. The distance decay is the important part:
 # a comma *at* the target beats a full stop 25 characters away, where a plain
