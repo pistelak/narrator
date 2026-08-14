@@ -1,6 +1,6 @@
 """The pipeline: segments in, one mastered file out, and the truth about it.
 
-    render(segments, voice, backend, verifier, out) -> RenderReport
+    render(segments, voice, backend, out) -> RenderReport
 
 `RenderReport.clean` is the field that matters. By default a render that could not
 produce correct audio for some chunk **raises** rather than writing a file, because
@@ -97,7 +97,7 @@ def render(
         result = synthesize_chunk(segment.text, index, backend, verifier, voice, cfg.synth)
         results.append(result)
         index += 1
-        if cfg.on_progress:
+        if cfg.on_progress is not None:
             cfg.on_progress(result, total)
         if result.audio.size:
             pieces.append(declick(trim_silence(result.audio, backend.sample_rate), backend.sample_rate))
