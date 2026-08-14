@@ -38,8 +38,8 @@ WHISPER = "mlx-community/whisper-large-v3-turbo"
 PROBES = [
     ("sha",   "First the archive goes through one called {} two fifty-six.",
      "SHA", "shah", r"\bshaw?\b"),
-    ("crc", "Then it runs through a second function called {} thirty-two.",
-     "CRC", "see are see", r"\bcrc\b"),
+    ("crc",   "Then it runs through a second function called {} thirty-two.",
+     "CRC", "see are see", r"\bcrc\b|see\s*are\s*see"),
     ("fcs",   "The result is called the frame check sequence, {} for short.",
      "FCS", "eff see ess", r"\bfcs\b|\bf\s*c\s*s\b|eff\s*see"),
     ("nsa",   "One was designed by government cryptographers at the {}.",

@@ -64,9 +64,9 @@ verbatim from **both** engines (6.2 % WER, identical). This was predicted to be
 the deciding test and it wasn't; declined foreign names read fine raw in Czech
 (unlike in English, where Supertonic collapses *Kalle* → "Cal").
 
-**Rare acronyms defeat both.** Each engine mangled them several distinct ways,
-and never the same way twice. Neither is reliable; this still
-needs a lexicon entry whichever engine is used.
+**Rare acronyms defeat both.** Each engine rendered the rarer checksum
+acronyms several distinct wrong ways across repetitions. Neither is reliable;
+this still needs a lexicon entry whichever engine is used.
 
 ## 4. Temperature matters more than expected
 
