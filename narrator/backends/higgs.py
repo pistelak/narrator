@@ -130,18 +130,13 @@ class WhisperASR:
     def transcribe(self, audio: Audio, lang: str) -> str:
         try:
             import mlx_whisper
-            from scipy.signal import resample_poly
         except ImportError as exc:  # pragma: no cover - environment-dependent
             raise RuntimeError("Whisper verification needs: pip install 'narrator[higgs]'") from exc
 
         if audio.size == 0:
             return ""
-        # Whisper wants 16 kHz. Derive the ratio from the ACTUAL source rate.
-        from math import gcd
-        divisor = gcd(16_000, self.source_rate)
-        audio_16k = resample_poly(
-            audio, 16_000 // divisor, self.source_rate // divisor
-        ).astype(np.float32)
+        from narrator.audio import resample_to_16k
+        audio_16k = resample_to_16k(audio, self.source_rate)
         return mlx_whisper.transcribe(
             audio_16k,
             path_or_hf_repo=self.repo,

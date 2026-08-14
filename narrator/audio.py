@@ -67,6 +67,21 @@ class MasterConfig:
     """
 
 
+def resample_to_16k(audio: Audio, source_rate: int) -> Audio:
+    """Resample to the 16 kHz every recogniser expects.
+
+    The ratio MUST derive from the actual source rate: paired with a 44.1 kHz
+    engine while assuming 24 kHz, the resample silently changes time and pitch
+    and every verdict becomes unreliable.
+    """
+    from math import gcd
+
+    from scipy.signal import resample_poly
+
+    divisor = gcd(16_000, source_rate)
+    return resample_poly(audio, 16_000 // divisor, source_rate // divisor).astype(np.float32)
+
+
 def trim_silence(audio: Audio, sample_rate: int) -> Audio:
     """Strip leading and trailing silence, keeping a guard band."""
     frame = int(0.030 * sample_rate)
