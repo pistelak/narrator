@@ -212,3 +212,24 @@ def test_longer_lexicon_keys_win() -> None:
     from narrator.synth import apply_pronunciation
     pairs = (("cafe", "café"), ("cafe counter", "café kaunter"))
     assert apply_pronunciation("at the cafe counter", pairs) == "at the café kaunter"
+
+
+# ----------------------------------------------------------- acronym spelling
+
+def test_acronyms_are_spelled_as_letter_names_when_enabled() -> None:
+    """Reading an all-caps token letter by letter is how acronyms are read —
+    a language rule, not project vocabulary, so no word lists anywhere."""
+    from narrator.synth import spell_acronyms
+    assert spell_acronyms("Jde do XY kódu.", "cs") == "Jde do iks ypsilon kódu."
+    assert spell_acronyms("The QR code.", "en") == "The cue are code."
+    assert spell_acronyms("Ahoj světe.", "cs") == "Ahoj světe."
+
+
+def test_lexicon_overrides_acronym_spelling() -> None:
+    """The lexicon runs first, so a project can give one acronym a word-like
+    reading while everything else gets the general treatment."""
+    backend = FakeBackend()
+    cfg = SynthConfig(pronunciation=(("XY", "iksík"),), spell_acronyms=True,
+                      max_attempts=1, allow_sentence_split=False)
+    synthesize_chunk("The XY and the QR here.", 0, backend, NullVerifier(), VOICE, cfg)
+    assert backend.requests == ["The iksík and the cue are here."]

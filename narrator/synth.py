@@ -55,6 +55,10 @@ class SynthConfig:
     sentence_gap_s: float = 0.12
     allow_sentence_split: bool = True
 
+    spell_acronyms: bool = False
+    """Read all-caps tokens as letter names for the render language. Off by
+    default: it changes how the narration sounds, which is the caller's call."""
+
     pronunciation: tuple[tuple[str, str], ...] = ()
     """Written form -> spoken form, applied ONLY at synthesis.
 
@@ -112,6 +116,45 @@ def apply_pronunciation(text: str, pairs: tuple[tuple[str, str], ...]) -> str:
     for written, spoken in sorted(pairs, key=lambda kv: len(kv[0]), reverse=True):
         text = re.sub(rf"\b{re.escape(written)}\b", spoken, text)
     return text
+
+
+# Letter names per language — general linguistic data, like the numeral tables
+# in verify.py. Spelled phonetically so any engine can say them; the ASR side
+# needs nothing, because recognisers normalize spelled letters back into the
+# acronym (measured: a spelled six-letter pair came back verbatim as the two
+# acronyms, coverage 1.00).
+_LETTER_NAMES = {
+    "en": {
+        "a": "ay", "b": "bee", "c": "see", "d": "dee", "e": "ee", "f": "eff",
+        "g": "gee", "h": "aitch", "i": "eye", "j": "jay", "k": "kay", "l": "ell",
+        "m": "em", "n": "en", "o": "oh", "p": "pee", "q": "cue", "r": "are",
+        "s": "ess", "t": "tee", "u": "you", "v": "vee", "w": "double you",
+        "x": "ex", "y": "why", "z": "zed",
+    },
+    "cs": {
+        "a": "á", "b": "bé", "c": "cé", "d": "dé", "e": "é", "f": "ef",
+        "g": "gé", "h": "há", "i": "í", "j": "jé", "k": "ká", "l": "el",
+        "m": "em", "n": "en", "o": "ó", "p": "pé", "q": "kvé", "r": "er",
+        "s": "es", "t": "té", "u": "ú", "v": "vé", "w": "dvojité vé",
+        "x": "iks", "y": "ypsilon", "z": "zet",
+    },
+}
+
+_ACRONYM = re.compile(r"\b[A-Z]{2,6}\b")
+
+
+def spell_acronyms(text: str, lang: str) -> str:
+    """Respell every all-caps token as its letter names — how acronyms are read.
+
+    Runs AFTER the pronunciation lexicon, so a project that wants a word-like
+    reading for a specific acronym overrides it with a lexicon entry; anything
+    still all-caps gets the general treatment. The verifier needs no pairing:
+    recognisers write spelled letters back as the acronym itself.
+    """
+    names = _LETTER_NAMES.get(lang.split("-")[0])
+    if names is None:
+        return text
+    return _ACRONYM.sub(lambda m: " ".join(names[c] for c in m.group().lower()), text)
 
 
 def synthesize_chunk(
@@ -177,6 +220,8 @@ def _best_attempt(
     best: _Attempt | None = None
 
     spoken = apply_pronunciation(text, cfg.pronunciation) if cfg.pronunciation else text
+    if cfg.spell_acronyms:
+        spoken = spell_acronyms(spoken, voice.lang)
 
     for number in range(1, cfg.max_attempts + 1):
         try:
