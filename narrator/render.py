@@ -98,13 +98,23 @@ def render(
     plan = _plan(segments, cfg.max_chars)
     total = sum(1 for s in plan if isinstance(s, Text))
 
-    pieces: list[Audio] = []
+    pieces: list[Audio | Gap] = []
     results: list[ChunkResult] = []
     index = 0
 
     for segment in plan:
         if isinstance(segment, Gap):
-            pieces.append(np.zeros(int(segment.seconds * backend.sample_rate), dtype=np.float32))
+            # Kept as a placeholder, not allocated here: a gap must be sized at
+            # the rate the file is written at, and that rate may not be settled
+            # yet. Supertonic declares 44100 at construction and corrects it to
+            # the true rate during the first synthesis, so a leading 3.0 s Gap
+            # allocated in this loop landed at the stale rate and played as
+            # 5.51 s — the same corruption class _DeferredDefaultVerifier below
+            # exists to prevent. Materializing after the loop makes allocation
+            # and _write read the same value by construction; a gaps-only
+            # render never settles the rate, but then the file is written at
+            # the declared rate too, so samples and header still agree.
+            pieces.append(segment)
             continue
 
         result = synthesize_chunk(segment.text, index, backend, verifier, voice, cfg.synth)
@@ -115,7 +125,11 @@ def render(
         if result.audio.size:
             pieces.append(declick(trim_silence(result.audio, backend.sample_rate), backend.sample_rate))
 
-    raw = concatenate(pieces)
+    raw = concatenate([
+        np.zeros(int(p.seconds * backend.sample_rate), dtype=np.float32)
+        if isinstance(p, Gap) else p
+        for p in pieces
+    ])
     audio, lufs, peak = master(raw, backend.sample_rate, cfg.mastering)
 
     frames = audio.shape[0] if audio.ndim else 0
