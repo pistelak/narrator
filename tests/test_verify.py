@@ -19,6 +19,7 @@ from narrator.verify import (
     NullVerifier,
     content_words,
     coverage,
+    coverage_detail,
     is_numberish,
     normalize,
 )
@@ -782,3 +783,182 @@ def test_merge_rescue_does_not_excuse_a_genuinely_changed_number() -> None:
     assert coverage("It has four bytes here.", "It has nine bytes here.")[0] == 0.0
     assert coverage("Vezmi dva klíče domů.", "Vezmi klíče domů.", "cs")[0] == 0.0
     assert coverage("Vezmi klíče domů.", "Vezmi dva klíče domů.", "cs")[0] == 0.0
+
+
+# ------------------------------------------------- word-level diagnostics
+
+def test_diagnostics_report_a_dropped_sentence_as_a_run_of_d_codes() -> None:
+    """The typed codes exist because the SHAPE is the signal: a contiguous run
+    of d: is a drop or truncation, which no scalar score can distinguish from
+    scattered spelling noise. Pinned to the same real chunk as the aggregate-
+    similarity trap above."""
+    detail = coverage_detail(CHUNK, ASR_DROPPED)
+    assert detail.word_diagnostics == (
+        "d:a", "d:d", "d:where", "d:a", "d:c", "d:should", "d:be",
+    )
+
+
+def test_hard_fail_diagnostics_name_the_dropped_negation() -> None:
+    """The codes ride along on hard fails too: the bracketed reason says a
+    critical token changed, the codes say which word and in which direction."""
+    detail = coverage_detail(
+        "Never share the master password with anyone.",
+        "Share the master password with anyone.",
+    )
+    assert detail.score == 0.0
+    assert "meaning-critical" in detail.worst_sentence
+    assert detail.word_diagnostics == ("d:never",)
+
+
+def test_inserted_negation_diagnostics_point_the_other_way() -> None:
+    detail = coverage_detail("The key is safe.", "The key is not safe.")
+    assert detail.score == 0.0
+    assert detail.word_diagnostics == ("i:not",)
+
+
+def test_boundary_rescued_word_is_not_reported_missing() -> None:
+    """A rescue means the audio was right; a diagnostic that contradicts the
+    score is a false alarm. The co-worker's split rescued at 1.0 above must
+    produce neither d:coworkers nor i:co / i:worker / i:s."""
+    detail = coverage_detail(
+        "The coworkers reaction is not subtle here today.",
+        "The co-worker's reaction is not subtle here today.",
+    )
+    assert detail.score == 1.0
+    assert detail.word_diagnostics == ()
+
+
+def test_short_sentence_rescue_suppresses_diagnostics() -> None:
+    """Same rule for the other rescue: 'Ne znemožní.' returned merged as
+    'Neznemožní.' is correct audio, so it must not surface as codes."""
+    detail = coverage_detail(
+        "Nová známka na každý dopis. Což třídění ztíží. Ne znemožní.",
+        "Nová známka na každý dopis. Což třídění ztíží. Neznemožní.",
+        "cs",
+    )
+    assert detail.score == 1.0
+    assert detail.word_diagnostics == ()
+
+
+def test_hallucinated_content_reads_as_a_mass_of_i_codes() -> None:
+    detail = coverage_detail(
+        "Alpha beta gamma.", "Alpha beta gamma. And then some invented extra sentence."
+    )
+    assert "[inserted content]" in detail.worst_sentence
+    assert detail.word_diagnostics == (
+        "i:and", "i:then", "i:some", "i:invented", "i:extra", "i:sentence",
+    )
+
+
+def test_substitution_reports_the_pair_in_reading_order() -> None:
+    detail = coverage_detail("The key is safe here.", "The kay is safe here.")
+    assert detail.score < 0.90
+    assert detail.word_diagnostics == ("s:key/kay",)
+
+
+def test_coverage_is_exactly_the_detail_pair() -> None:
+    """The stable two-tuple view must never drift from the detail it fronts."""
+    pairs = (
+        (CHUNK, ASR_DROPPED, "en"),
+        ("Never share the master password with anyone.",
+         "Share the master password with anyone.", "en"),
+        ("Nová známka na každý dopis. Což třídění ztíží. Ne znemožní.",
+         "Nová známka na každý dopis. Což třídění ztíží. Neznemožní.", "cs"),
+        ("", "anything", "en"),
+    )
+    for ref, hyp, lang in pairs:
+        detail = coverage_detail(ref, hyp, lang)
+        assert coverage(ref, hyp, lang) == (detail.score, detail.worst_sentence)
+
+
+def test_verifier_attaches_word_diagnostics_only_on_rejection() -> None:
+    """Gated exactly like dropped_sentence: a passing chunk with tolerated ASR
+    quirks must not print alarming codes."""
+    rejected = CoverageVerifier(FakeASR(ASR_DROPPED)).verify(SILENCE, CHUNK, "en")
+    assert not rejected.ok
+    assert "d:where" in rejected.word_diagnostics
+    accepted = CoverageVerifier(FakeASR(ASR_NUMERALS)).verify(SILENCE, CHUNK, "en")
+    assert accepted.ok
+    assert accepted.word_diagnostics == ()
+    # The numeral fixture has no raw codes to begin with, so it cannot prove
+    # the gate. This pass DOES carry a raw code (s:keeper/keper at 0.917 —
+    # verified above the 0.90 gate) and the verdict must still blank it.
+    ref = "The keeper walks the long pier before dawn and counts lantern posts."
+    quirk = CoverageVerifier(FakeASR(ref.replace("keeper", "keper"))).verify(SILENCE, ref, "en")
+    assert quirk.ok and quirk.coverage == pytest.approx(11 / 12)
+    assert quirk.word_diagnostics == ()
+
+
+def test_cascade_reports_the_best_siblings_diagnostics() -> None:
+    """The codes ride inside the verdict, so they follow the documented choice:
+    the reported diagnostics belong to the best-scoring sibling, consistent
+    with the coverage and sentence it already reports — NOT a merge of all
+    members, and not the strongest hard fail."""
+    ref = "The keeper walks the long pier before dawn and counts the lantern posts."
+    truncated = "The keeper walks the long pier before dawn."
+    silent = CoverageVerifier(FakeASR(""))
+    partial = CoverageVerifier(FakeASR(truncated))
+    verdict = CascadeVerifier([silent, partial]).verify(SILENCE, ref, "en")
+    expected = CoverageVerifier(FakeASR(truncated)).verify(SILENCE, ref, "en")
+    assert not verdict.ok
+    assert verdict.coverage == expected.coverage > 0.0
+    assert verdict.word_diagnostics == expected.word_diagnostics != ()
+    # Both orders, or an "always report the last rejection" regression passes.
+    silent2 = CoverageVerifier(FakeASR(""))
+    partial2 = CoverageVerifier(FakeASR(truncated))
+    reversed_verdict = CascadeVerifier([partial2, silent2]).verify(SILENCE, ref, "en")
+    assert reversed_verdict.word_diagnostics == expected.word_diagnostics
+
+
+def test_short_rescue_marks_hyp_tokens_through_the_leftover_mapping() -> None:
+    """Pins the index translation two independent reviewers misread.
+
+    The short-sentence rescue matches inside `leftover` (unclaimed hyp words
+    only) and must translate match indices back through `leftover_idx` before
+    marking. Here "misty"->"foggy" puts an unclaimed token BEFORE the merged
+    "Goup", so the match starts at leftover index 1: marking raw indices
+    would leak i:goup and suppress nothing. "Go up." rather than "Go now.",
+    because "now" is long enough for the word-boundary rescue to claim the
+    merged token first, which masked exactly the mutant this test exists to
+    kill; both words of "go up" are too short for that rescue, so only the
+    short-sentence path can claim the token. Only the genuine substitution
+    may surface."""
+    detail = coverage_detail(
+        "The keeper guards the misty harbor gate. Go up.",
+        "The keeper guards the foggy harbor gate. Goup.",
+    )
+    assert detail.word_diagnostics == ("s:misty/foggy",)
+
+
+def test_hallucinated_duplicate_of_a_short_sentence_is_named() -> None:
+    """A rescue is for sentences that NEED rescuing. When "Go now." is already
+    fully aligned, the second "Go now." is an insertion — the rescue used to
+    consume it anyway, so the render rejected on precision (0.5) while the
+    diagnostics named nothing. A refusal that names nothing is the failure
+    this feature exists to fix."""
+    detail = coverage_detail("Go now.", "Go now. Go now.")
+    assert detail.score == 0.5
+    assert "[inserted content]" in detail.worst_sentence
+    assert detail.word_diagnostics == ("i:go", "i:now")
+
+
+def test_repeated_boundary_rescues_consume_distinct_spans() -> None:
+    """Two coworkers rendered as two co-worker's pairs are both correct audio.
+    Searching from the string start each time claimed the first span twice,
+    so the second pair's tokens surfaced as i:co, i:worker, i:s beside a
+    passing score. Each repeat must consume the next occurrence."""
+    detail = coverage_detail(
+        "The coworkers helped the coworkers finish early.",
+        "The co-worker's helped the co-worker's finish early.",
+    )
+    assert detail.score == 1.0
+    assert detail.word_diagnostics == ()
+
+
+def test_format_word_diagnostics_rejects_a_useless_limit() -> None:
+    """limit=0 rendered an empty payload and limit=-1 corrupted the +N more
+    arithmetic — fail loudly instead, per the library's stated preference."""
+    from narrator.verify import format_word_diagnostics
+    for limit in (0, -1):
+        with pytest.raises(ValueError, match="limit"):
+            format_word_diagnostics(("d:one",), limit=limit)

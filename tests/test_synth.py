@@ -266,3 +266,41 @@ def test_lexicon_overrides_acronym_spelling() -> None:
                       max_attempts=1, allow_sentence_split=False)
     synthesize_chunk("The XY and the QR here.", 0, backend, NullVerifier(), VOICE, cfg)
     assert backend.requests == ["The iksík and the cue are here."]
+
+
+def test_failed_chunk_result_carries_word_diagnostics() -> None:
+    """The retry ladder must hand the verifier's word-level evidence to the
+    report, or the render error can only say a score and a sentence."""
+    cfg = SynthConfig(allow_sentence_split=False)
+    result, _ = run({i: Failure.DROP_SENTENCE for i in range(3)}, cfg=cfg)
+    assert not result.ok
+    assert "d:council" in result.word_diagnostics
+
+
+def test_cheap_check_failure_gains_codes_from_the_diagnostic_reverify() -> None:
+    """A duration-failed attempt skips verification, so it has no transcript
+    and no codes. The failure-path re-verify exists to add that evidence —
+    it must carry the codes across AND must not rescue the attempt, the same
+    rule already pinned for the transcript."""
+    cfg = SynthConfig(max_attempts=1, allow_sentence_split=False)
+    result, _ = run({0: Failure.TRUNCATE}, cfg=cfg)
+    assert not result.ok, "the re-verify must never rescue a cheap-check failure"
+    assert result.transcript, "the re-verify ran and named what the audio said"
+    assert "d:stranger" in result.word_diagnostics
+
+
+def test_a_passing_diagnostic_reverify_cannot_rescue_a_capped_attempt() -> None:
+    """The sharp end of the non-rescue rule: here the re-verification PASSES.
+
+    A half-speed engine says the whole text but hits the frame cap doing it,
+    so the cheap check fails while the ASR round-trip scores a perfect 1.0.
+    That verdict must inform the report (coverage 1.0, full transcript: it
+    stopped early, it did not say the wrong thing) and must still not flip
+    the failure — a flaky ASR succeeding on this second call once turned a
+    failed chunk into a passing one without generating any new audio."""
+    backend = FakeBackend(words_per_second=1.0)   # cap fires before the text ends
+    cfg = SynthConfig(max_attempts=1, allow_sentence_split=False)
+    result = synthesize_chunk(TEXT, 0, backend, CoverageVerifier(FakeASR(backend)), VOICE, cfg)
+    assert not result.ok, "a passing re-verification rescued a capped attempt"
+    assert result.coverage == 1.0
+    assert result.transcript == TEXT

@@ -365,31 +365,68 @@ def content_words(text: str, lang: str = "en") -> list[str]:
     return [w for w in normalize(text, lang).split() if not is_numberish(w)]
 
 
-def _bounded_count(hyp_words: list[str], needle_words: list[str]) -> int:
-    """How many times `needle_words` appears in `hyp_words`, allowing the words to
-    have merged or split in the transcript but not to straddle other words."""
+def _bounded_matches(hyp_words: list[str], needle_words: list[str]) -> list[tuple[int, int]]:
+    """Occurrences of `needle_words` in `hyp_words` as (start, end) index spans,
+    allowing the words to have merged or split in the transcript but not to
+    straddle other words. `_bounded_count` is the length of this list; the spans
+    themselves exist so the diagnostics can tell which hypothesis tokens a
+    short-sentence rescue consumed, rather than reporting them as insertions."""
     if not needle_words:
-        return 0
+        return []
     needle = "".join(needle_words)
-    count = 0
+    matches: list[tuple[int, int]] = []
     for start in range(len(hyp_words)):
         joined = ""
         for end in range(start, min(start + len(needle_words) + 2, len(hyp_words))):
             joined += hyp_words[end]
             if joined == needle:
-                count += 1
+                matches.append((start, end + 1))
                 break
             if len(joined) > len(needle):
                 break
-    return count
+    return matches
 
 
-def coverage(
+def _bounded_count(hyp_words: list[str], needle_words: list[str]) -> int:
+    """How many times `needle_words` appears in `hyp_words`, allowing the words to
+    have merged or split in the transcript but not to straddle other words."""
+    return len(_bounded_matches(hyp_words, needle_words))
+
+
+@dataclass(frozen=True)
+class CoverageDetail:
+    """coverage() plus the word-level evidence behind it.
+
+    `word_diagnostics` is an ordered tuple of typed codes — "d:word" (the
+    reference word is missing from the transcript), "i:word" (the transcript
+    added it), "s:ref/hyp" (one replaced the other) — in alignment order,
+    because the shape is the signal: a trailing run of d: is truncation, a
+    mass of i: is babble, scattered s: is mispronunciation. A scalar score
+    throws exactly that away. Words are reported in normalized, unfolded
+    spelling (lowercased, contractions expanded, punctuation stripped,
+    numerals blinded out), so a Czech reader sees znemožní, not its fold.
+
+    The codes reflect the FINAL covered state: a word the boundary rescue or
+    the short-sentence rescue accepted is not reported, because a rescue
+    means the audio was right and a diagnostic that contradicts the score is
+    a false alarm. They ride along on every outcome, hard fails included, so
+    a critical-token failure still names the dropped word; on the numeral
+    paths they are naturally silent — numerals are blinded out of the
+    alignment — and the bracketed reason in `worst_sentence` stays the
+    diagnostic there.
+    """
+
+    score: float
+    worst_sentence: str
+    word_diagnostics: tuple[str, ...] = ()
+
+
+def coverage_detail(
     reference: str,
     hypothesis: str,
     lang: str = "en",
     sound_alikes: tuple[tuple[str, str], ...] = (),
-) -> tuple[float, str]:
+) -> CoverageDetail:
     """Worst per-sentence coverage in [0,1], and the sentence that scored it.
 
     A dropped sentence scores ~0 regardless of how long the surrounding chunk is;
@@ -421,10 +458,14 @@ def coverage(
             w = w.replace(a, b)
         return w
 
-    ref_words = [_fold(w) for w in content_words(reference, lang)]
-    hyp_words = [_fold(w) for w in content_words(hypothesis, lang)]
+    # The display arrays are index-aligned with the folded ones by
+    # construction, so the diagnostics can name real spellings for free.
+    ref_display = content_words(reference, lang)
+    hyp_display = content_words(hypothesis, lang)
+    ref_words = [_fold(w) for w in ref_display]
+    hyp_words = [_fold(w) for w in hyp_display]
     if not ref_words:
-        return 1.0, ""
+        return CoverageDetail(1.0, "")
 
     covered = [False] * len(ref_words)
     hyp_claimed = [False] * len(hyp_words)
@@ -434,6 +475,12 @@ def coverage(
             covered[k] = True
         for k in range(j, j + size):
             hyp_claimed[k] = True
+
+    # Diagnostic bookkeeping lives on COPIES, never on the arrays the score
+    # reads. Marking `hyp_claimed` for a rescue would change `leftover` below
+    # and could flip a short-sentence verdict — the diagnostics must describe
+    # the decision, not participate in it.
+    hyp_diag_claimed = list(hyp_claimed)
 
     # Recall alone is not enough, and this was the library's worst blind spot.
     # Marking only reference words made everything the engine ADDED invisible:
@@ -460,13 +507,35 @@ def coverage(
     # Restricted to UNCLAIMED hypothesis text, so a word cannot be rescued by an
     # occurrence that another sentence already matched. That restriction is what
     # keeps a genuinely dropped sentence detectable.
-    unclaimed = "".join(w for w, taken in zip(hyp_words, hyp_claimed, strict=True) if not taken)
+    unclaimed_spans: list[tuple[int, int, int]] = []   # (hyp index, start, end)
+    offset = 0
+    for j, (w, taken) in enumerate(zip(hyp_words, hyp_claimed, strict=True)):
+        if not taken:
+            unclaimed_spans.append((j, offset, offset + len(w)))
+            offset += len(w)
+    unclaimed = "".join(hyp_words[j] for j, _, _ in unclaimed_spans)
+    consumed: dict[str, int] = {}
     for k, word in enumerate(ref_words):
         if not covered[k] and len(word) > 2 and word in unclaimed:
             covered[k] = True
+            # The hypothesis tokens this rescue consumed are accounted for in
+            # the diagnostics too: the script's "coworkers" rescued from the
+            # transcript's "co worker s" must not then report i:co, i:worker,
+            # i:s — a false alarm beside a passing score. Each repeat of the
+            # same word consumes the NEXT occurrence: searching from the start
+            # every time claimed one span twice, so the second of two rescued
+            # co-worker's pairs still surfaced as insertions (found in review).
+            at = unclaimed.find(word, consumed.get(word, 0))
+            if at == -1:
+                at = unclaimed.find(word)
+            consumed[word] = at + len(word)
+            for j, s, e in unclaimed_spans:
+                if s < at + len(word) and e > at:
+                    hyp_diag_claimed[j] = True
 
     worst, worst_sentence, pos = 1.0, "", 0
     unverifiable: list[str] = []
+    short_rescued: list[tuple[int, int]] = []   # reference ranges, for diagnostics
 
     for sentence in split_sentences(reference):
         n = len(content_words(sentence, lang))
@@ -512,15 +581,63 @@ def coverage(
             # transcript could not tell those apart at any window size, because
             # global alignment had already matched the sentence to the wrong
             # occurrence.
-            leftover = [w for w, claimed in zip(hyp_words, hyp_claimed, strict=True) if not claimed]
-            present = _bounded_count(leftover, [_fold(w) for w in content_words(sentence, lang)]) >= 1
-            # `or score > 0` used to turn ANY partial coverage into a pass, so a
-            # two-word sentence rendered as one word scored 1.0. Only genuine
-            # containment rescues a short sentence now.
-            score = 1.0 if present else score
+            # Only a sentence that NEEDS rescuing consumes leftover text. At
+            # score 1.0 the assignment below was a no-op, but the diagnostic
+            # marking was not: "Go now." against "Go now. Go now." ate the
+            # hallucinated duplicate, so the render rejected on precision with
+            # word_diagnostics=() — a refusal that named nothing (found in
+            # review). Skipping the whole block at 1.0 changes no verdict and
+            # lets the duplicate surface as the i: codes it is.
+            if score < 1.0:
+                leftover_idx = [j for j, claimed in enumerate(hyp_claimed) if not claimed]
+                leftover = [hyp_words[j] for j in leftover_idx]
+                matches = _bounded_matches(leftover, [_fold(w) for w in content_words(sentence, lang)])
+                # `or score > 0` used to turn ANY partial coverage into a pass, so a
+                # two-word sentence rendered as one word scored 1.0. Only genuine
+                # containment rescues a short sentence now.
+                if matches:
+                    # A rescued sentence is right, so its words must not surface in
+                    # the diagnostics — mark its reference range and the hypothesis
+                    # tokens its first match consumed, both on the diagnostic copies.
+                    short_rescued.append((pos - n, pos))
+                    for j in range(*matches[0]):
+                        hyp_diag_claimed[leftover_idx[j]] = True
+                    score = 1.0
 
         if score < worst:
             worst, worst_sentence = score, sentence.strip()
+
+    # The typed codes, computed once and attached to every return below —
+    # uniformly, so no path needs its own decision and no path can forget.
+    # Walking get_opcodes() on the word matcher adds no alignment cost: the
+    # equal opcodes are exactly the matching blocks already consumed above.
+    # Every emission is gated on the final diagnostic state, so a rescued word
+    # reports nothing. A replace block pairs positionally into s: codes for as
+    # long as both sides last; the overhang degrades to d:/i:, which is honest
+    # — alignment has no opinion on how a 1:3 replace pairs up.
+    covered_diag = list(covered)
+    for start, end in short_rescued:
+        covered_diag[start:end] = [True] * (end - start)
+    codes: list[str] = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "delete":
+            codes.extend(f"d:{ref_display[k]}" for k in range(i1, i2) if not covered_diag[k])
+        elif tag == "insert":
+            codes.extend(f"i:{hyp_display[j]}" for j in range(j1, j2) if not hyp_diag_claimed[j])
+        elif tag == "replace":
+            paired = min(i2 - i1, j2 - j1)
+            for o in range(paired):
+                k, j = i1 + o, j1 + o
+                if not covered_diag[k] and not hyp_diag_claimed[j]:
+                    codes.append(f"s:{ref_display[k]}/{hyp_display[j]}")
+                else:
+                    if not covered_diag[k]:
+                        codes.append(f"d:{ref_display[k]}")
+                    if not hyp_diag_claimed[j]:
+                        codes.append(f"i:{hyp_display[j]}")
+            codes.extend(f"d:{ref_display[k]}" for k in range(i1 + paired, i2) if not covered_diag[k])
+            codes.extend(f"i:{hyp_display[j]}" for j in range(j1 + paired, j2) if not hyp_diag_claimed[j])
+    word_diagnostics = tuple(codes)
 
     # An isolated numeral that changed value is a content error, not an ASR
     # spelling difference. Compounds are excluded above, so this cannot fire on
@@ -556,7 +673,8 @@ def coverage(
             if any(f in t for f in forms for t in welded):
                 missing.remove(v)
         if missing or extra:
-            return 0.0, f"[numeral changed: {ref_nums} became {hyp_nums}]"
+            return CoverageDetail(
+                0.0, f"[numeral changed: {ref_nums} became {hyp_nums}]", word_diagnostics)
 
     # A meaning-inverting token that appears or disappears fails outright,
     # regardless of how good the surrounding coverage looks. Tokens the
@@ -605,12 +723,14 @@ def coverage(
         changed = sorted(set(ref_critical) ^ set(hyp_critical)) or sorted(
             w for w in ref_critical if ref_critical[w] != hyp_critical.get(w)
         )
-        return 0.0, f"[meaning-critical token changed: {', '.join(changed)}]"
+        return CoverageDetail(
+            0.0, f"[meaning-critical token changed: {', '.join(changed)}]", word_diagnostics)
 
     if precision < worst:
         # Something was inserted rather than dropped. Report the whole chunk,
         # since an insertion does not belong to any one reference sentence.
-        return precision, f"[inserted content] {reference.strip()[:70]}"
+        return CoverageDetail(
+            precision, f"[inserted content] {reference.strip()[:70]}", word_diagnostics)
 
     if unverifiable:
         # Fail closed. These sentences are all-numeral, so number-blinding left
@@ -618,9 +738,53 @@ def coverage(
         # The list was previously built and then ignored, which meant a dropped
         # all-numeral sentence scored a clean 1.0 — documenting a blind spot is
         # not the same as refusing to certify what you cannot see.
-        return 0.0, f"[unverifiable, all-numeral] {unverifiable[0]}"
+        return CoverageDetail(
+            0.0, f"[unverifiable, all-numeral] {unverifiable[0]}", word_diagnostics)
 
-    return worst, worst_sentence
+    return CoverageDetail(worst, worst_sentence, word_diagnostics)
+
+
+def coverage(
+    reference: str,
+    hypothesis: str,
+    lang: str = "en",
+    sound_alikes: tuple[tuple[str, str], ...] = (),
+) -> tuple[float, str]:
+    """The (score, worst_sentence) view of `coverage_detail`, kept stable.
+
+    Existing callers — the tests and the bench tools — consume exactly this
+    pair; the word-level evidence is additive and lives on CoverageDetail.
+    """
+    detail = coverage_detail(reference, hypothesis, lang, sound_alikes)
+    return detail.score, detail.worst_sentence
+
+
+def format_word_diagnostics(codes: tuple[str, ...], limit: int = 6) -> str:
+    """One compact human line from the typed codes.
+
+    Grouped for reading — "missing: never · inserted: not · substituted:
+    key→kay" — while the raw ordered tuple stays on the dataclasses for
+    anyone who needs the alignment shape. `limit` bounds each group with a
+    +N more marker: a dropped paragraph should read as a headline, not a
+    flood of every word it contained.
+    """
+    if limit < 1:
+        raise ValueError(f"limit must be >= 1, got {limit}")
+    groups: dict[str, list[str]] = {"d": [], "i": [], "s": []}
+    for code in codes:
+        kind, _, rest = code.partition(":")
+        if kind in groups:
+            groups[kind].append(rest.replace("/", "→", 1) if kind == "s" else rest)
+    parts = []
+    for kind, label in (("d", "missing"), ("i", "inserted"), ("s", "substituted")):
+        words = groups[kind]
+        if not words:
+            continue
+        shown = ", ".join(words[:limit])
+        if len(words) > limit:
+            shown += f" +{len(words) - limit} more"
+        parts.append(f"{label}: {shown}")
+    return " · ".join(parts)
 
 
 @dataclass
@@ -633,12 +797,16 @@ class CoverageVerifier:
 
     def verify(self, audio: Audio, text: str, lang: str) -> Verdict:
         transcript = self.asr.transcribe(audio, lang)
-        score, dropped = coverage(text, transcript, lang, self.sound_alikes)
+        detail = coverage_detail(text, transcript, lang, self.sound_alikes)
+        ok = detail.score >= self.min_coverage
+        # Diagnostics are gated exactly like dropped_sentence: a passing chunk
+        # with tolerated ASR spelling quirks must not print alarming codes.
         return Verdict(
-            ok=score >= self.min_coverage,
-            coverage=score,
-            dropped_sentence="" if score >= self.min_coverage else dropped,
+            ok=ok,
+            coverage=detail.score,
+            dropped_sentence="" if ok else detail.worst_sentence,
             transcript=transcript,
+            word_diagnostics=() if ok else detail.word_diagnostics,
         )
 
 
@@ -665,7 +833,9 @@ class CascadeVerifier:
     consequences of that, named because they are deliberate: a hard-fail 0.0
     (changed numeral, critical token) can be superseded in the REPORTED verdict
     by a sibling's higher soft score — accept/reject is unaffected, only the
-    diagnostic and the ranking of already-failed attempts. And accepting on any
+    diagnostic and the ranking of already-failed attempts. The word_diagnostics
+    ride inside the verdict, so they follow the same choice: the reported codes
+    are the best-scoring sibling's, consistent with the sentence it names. And accepting on any
     single pass makes the false-accept rate the union of the members' — the
     price of removing their idiosyncratic false rejections. Requiring
     concurrence instead would re-buy the measured false-rejection class and

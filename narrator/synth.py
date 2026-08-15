@@ -313,4 +313,5 @@ def _result(index: int, text: str, attempt: _Attempt, recovered_by: str = "") ->
         attempts=attempt.number, ok=attempt.ok, coverage=attempt.verdict.coverage,
         dropped_sentence=attempt.verdict.dropped_sentence,
         transcript=attempt.verdict.transcript, recovered_by=recovered_by,
+        word_diagnostics=attempt.verdict.word_diagnostics,
     )

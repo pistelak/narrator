@@ -267,3 +267,24 @@ def test_leading_gap_survives_a_backend_that_settles_its_rate(tmp_path: Path) ->
     settling(backend2)
     b = render([Gap(3.0), Text("Alpha beta gamma.")], VOICE, backend2, tmp_path / "b.wav", verifier2)
     assert b.duration_s - a.duration_s == pytest.approx(3.0, abs=0.05)
+
+
+def test_render_failed_message_names_the_missing_words(tmp_path: Path) -> None:
+    """The refusal is the product, so the refusal must explain itself: not just
+    a score and a sentence, but which words the audio lost."""
+    backend, verifier = build({i: Failure.TRUNCATE for i in range(50)})
+    with pytest.raises(RenderFailed, match="missing:"):
+        render(SEGMENTS, VOICE, backend, tmp_path / "d.wav", verifier)
+
+
+def test_progress_line_names_the_missing_words(capsys: pytest.CaptureFixture[str]) -> None:
+    from narrator.cli import _progress
+    from narrator.types import ChunkResult
+    result = ChunkResult(
+        index=0, text="The keeper counts the lantern posts.",
+        audio=np.zeros(0, dtype=np.float32), duration_s=1.0, attempts=3, ok=False,
+        coverage=0.5, dropped_sentence="The keeper counts the lantern posts.",
+        word_diagnostics=("d:lantern", "d:posts"),
+    )
+    _progress(result, 3)
+    assert "missing: lantern, posts" in capsys.readouterr().out

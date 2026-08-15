@@ -32,7 +32,7 @@ from narrator.types import (
     Verifier,
     Voice,
 )
-from narrator.verify import default_verifier
+from narrator.verify import default_verifier, format_word_diagnostics
 
 
 class RenderFailed(RuntimeError):
@@ -44,6 +44,8 @@ class RenderFailed(RuntimeError):
             f"  chunk {c.index}: coverage {c.coverage:.2f}"
             + (f", dropped {c.dropped_sentence!r}" if c.dropped_sentence else "")
             + f" :: {c.text[:60]}..."
+            + (f"\n    {format_word_diagnostics(c.word_diagnostics)}"
+               if c.word_diagnostics else "")
             for c in failures[:10]
         )
         super().__init__(
