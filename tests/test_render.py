@@ -239,6 +239,36 @@ def test_default_verifier_is_built_after_the_backend_settles_its_rate(monkeypatc
     assert seen == [24000], "verifier was built with the pre-settlement rate"
 
 
+def test_leading_gap_survives_a_backend_that_settles_its_rate(tmp_path: Path) -> None:
+    """The gap-side twin of the deferred-verifier test above.
+
+    Gaps used to be allocated inside the segment loop, at whatever rate the
+    backend declared at that moment. Against a Supertonic-style backend that
+    corrects 44100 to its true rate during the first synthesis, a leading
+    3.0 s Gap was allocated at the stale rate and written at the corrected
+    one: measured 5.51 s (3.0 x 44100 / 24000). A gap must be allocated at
+    the same rate the file is written at, which is only settled after the
+    segment loop.
+    """
+    def settling(backend: FakeBackend) -> None:
+        real = backend.synthesize
+
+        def synthesize(*a, **kw):
+            backend.sample_rate = 24000   # the engine's true rate, discovered here
+            return real(*a, **kw)
+
+        backend.sample_rate = 44100       # wrong until the engine first runs
+        backend.synthesize = synthesize
+
+    backend, verifier = build()
+    settling(backend)
+    a = render([Text("Alpha beta gamma.")], VOICE, backend, tmp_path / "a.wav", verifier)
+    backend2, verifier2 = build()
+    settling(backend2)
+    b = render([Gap(3.0), Text("Alpha beta gamma.")], VOICE, backend2, tmp_path / "b.wav", verifier2)
+    assert b.duration_s - a.duration_s == pytest.approx(3.0, abs=0.05)
+
+
 def test_render_failed_message_names_the_missing_words(tmp_path: Path) -> None:
     """The refusal is the product, so the refusal must explain itself: not just
     a score and a sentence, but which words the audio lost."""

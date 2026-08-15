@@ -149,6 +149,39 @@ def test_sentence_split_rescues_a_chunk_that_fails_every_attempt() -> None:
     assert any(r == "Not a stranger." for r in backend.requests)
 
 
+def test_sentence_split_gap_uses_the_settled_rate() -> None:
+    """The sentence-split twin of render's leading-gap case.
+
+    When every whole-chunk attempt raises, the backend has never produced audio
+    by the time the sentence-split fallback starts, so a Supertonic-style
+    backend still declares its construction-time rate. The 0.12 s inter-sentence
+    gap allocated at 44100 and written at the settled 24000 measured 0.22 s
+    each — the joins audibly dragged. The gap must be allocated only after the
+    rate has settled, i.e. after a sentence has actually been synthesized.
+    """
+    backend = FakeBackend(script={i: Failure.RAISE for i in range(3)})
+    real = backend.synthesize
+
+    def synthesize(*a, **kw):
+        declared = backend.sample_rate
+        backend.sample_rate = 24000        # the engine speaks at its true rate
+        try:
+            return real(*a, **kw)
+        except Exception:
+            backend.sample_rate = declared  # a failed call discovers nothing
+            raise
+
+    backend.sample_rate = 44100             # wrong until audio first comes back
+    backend.synthesize = synthesize
+
+    verifier = CoverageVerifier(FakeASR(backend))
+    result = synthesize_chunk(TEXT, 0, backend, verifier, VOICE, CFG)
+    assert result.ok
+    assert result.recovered_by == "sentence-split"
+    expected = len(TEXT.split()) / backend.words_per_second + 2 * CFG.sentence_gap_s
+    assert result.duration_s == pytest.approx(expected, abs=0.01)
+
+
 def test_sentence_split_declines_when_a_sentence_itself_fails() -> None:
     """Partial success must not be dressed up as success.
 
