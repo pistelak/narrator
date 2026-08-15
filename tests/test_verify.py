@@ -959,5 +959,6 @@ def test_format_word_diagnostics_rejects_a_useless_limit() -> None:
     """limit=0 rendered an empty payload and limit=-1 corrupted the +N more
     arithmetic — fail loudly instead, per the library's stated preference."""
     from narrator.verify import format_word_diagnostics
-    with pytest.raises(ValueError, match="limit"):
-        format_word_diagnostics(("d:one",), limit=0)
+    for limit in (0, -1):
+        with pytest.raises(ValueError, match="limit"):
+            format_word_diagnostics(("d:one",), limit=limit)
