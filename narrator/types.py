@@ -103,6 +103,8 @@ class ChunkResult:
     dropped_sentence: str = ""
     transcript: str = ""
     recovered_by: str = ""      # "", "retry", or "sentence-split"
+    word_diagnostics: tuple[str, ...] = ()
+    """The failed verdict's typed word codes — see verify.CoverageDetail."""
 
     @property
     def words(self) -> int:
@@ -189,6 +191,10 @@ class Verdict:
     coverage: float
     dropped_sentence: str = ""
     transcript: str = ""
+    word_diagnostics: tuple[str, ...] = ()
+    """Typed word codes behind a rejection — see verify.CoverageDetail.
+    Empty on a pass, like `dropped_sentence`. Trailing with a default on
+    purpose: Verdict is constructed positionally on the cheap-check path."""
 
 
 @runtime_checkable

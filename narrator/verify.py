@@ -754,12 +754,16 @@ class CoverageVerifier:
 
     def verify(self, audio: Audio, text: str, lang: str) -> Verdict:
         transcript = self.asr.transcribe(audio, lang)
-        score, dropped = coverage(text, transcript, lang, self.sound_alikes)
+        detail = coverage_detail(text, transcript, lang, self.sound_alikes)
+        ok = detail.score >= self.min_coverage
+        # Diagnostics are gated exactly like dropped_sentence: a passing chunk
+        # with tolerated ASR spelling quirks must not print alarming codes.
         return Verdict(
-            ok=score >= self.min_coverage,
-            coverage=score,
-            dropped_sentence="" if score >= self.min_coverage else dropped,
+            ok=ok,
+            coverage=detail.score,
+            dropped_sentence="" if ok else detail.worst_sentence,
             transcript=transcript,
+            word_diagnostics=() if ok else detail.word_diagnostics,
         )
 
 
@@ -786,7 +790,9 @@ class CascadeVerifier:
     consequences of that, named because they are deliberate: a hard-fail 0.0
     (changed numeral, critical token) can be superseded in the REPORTED verdict
     by a sibling's higher soft score — accept/reject is unaffected, only the
-    diagnostic and the ranking of already-failed attempts. And accepting on any
+    diagnostic and the ranking of already-failed attempts. The word_diagnostics
+    ride inside the verdict, so they follow the same choice: the reported codes
+    are the best-scoring sibling's, consistent with the sentence it names. And accepting on any
     single pass makes the false-accept rate the union of the members' — the
     price of removing their idiosyncratic false rejections. Requiring
     concurrence instead would re-buy the measured false-rejection class and

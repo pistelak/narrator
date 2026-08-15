@@ -869,3 +869,30 @@ def test_coverage_is_exactly_the_detail_pair() -> None:
     for ref, hyp, lang in pairs:
         detail = coverage_detail(ref, hyp, lang)
         assert coverage(ref, hyp, lang) == (detail.score, detail.worst_sentence)
+
+
+def test_verifier_attaches_word_diagnostics_only_on_rejection() -> None:
+    """Gated exactly like dropped_sentence: a passing chunk with tolerated ASR
+    quirks must not print alarming codes."""
+    rejected = CoverageVerifier(FakeASR(ASR_DROPPED)).verify(SILENCE, CHUNK, "en")
+    assert not rejected.ok
+    assert "d:where" in rejected.word_diagnostics
+    accepted = CoverageVerifier(FakeASR(ASR_NUMERALS)).verify(SILENCE, CHUNK, "en")
+    assert accepted.ok
+    assert accepted.word_diagnostics == ()
+
+
+def test_cascade_reports_the_best_siblings_diagnostics() -> None:
+    """The codes ride inside the verdict, so they follow the documented choice:
+    the reported diagnostics belong to the best-scoring sibling, consistent
+    with the coverage and sentence it already reports — NOT a merge of all
+    members, and not the strongest hard fail."""
+    ref = "The keeper walks the long pier before dawn and counts the lantern posts."
+    truncated = "The keeper walks the long pier before dawn."
+    silent = CoverageVerifier(FakeASR(""))
+    partial = CoverageVerifier(FakeASR(truncated))
+    verdict = CascadeVerifier([silent, partial]).verify(SILENCE, ref, "en")
+    expected = CoverageVerifier(FakeASR(truncated)).verify(SILENCE, ref, "en")
+    assert not verdict.ok
+    assert verdict.coverage == expected.coverage > 0.0
+    assert verdict.word_diagnostics == expected.word_diagnostics != ()

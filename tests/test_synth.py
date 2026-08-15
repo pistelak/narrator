@@ -233,3 +233,12 @@ def test_lexicon_overrides_acronym_spelling() -> None:
                       max_attempts=1, allow_sentence_split=False)
     synthesize_chunk("The XY and the QR here.", 0, backend, NullVerifier(), VOICE, cfg)
     assert backend.requests == ["The iksík and the cue are here."]
+
+
+def test_failed_chunk_result_carries_word_diagnostics() -> None:
+    """The retry ladder must hand the verifier's word-level evidence to the
+    report, or the render error can only say a score and a sentence."""
+    cfg = SynthConfig(allow_sentence_split=False)
+    result, _ = run({i: Failure.DROP_SENTENCE for i in range(3)}, cfg=cfg)
+    assert not result.ok
+    assert "d:council" in result.word_diagnostics
