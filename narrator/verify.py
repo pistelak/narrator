@@ -84,10 +84,41 @@ _NUMBER_WORDS = set(
 # must tolerate: the ASR returns "Ne znemožní." as "Neznemožní.", which then read
 # as a dropped negation. Prefix negation is caught by coverage instead, since the
 # prefixed and unprefixed forms are different tokens.
+# APOSTROPHIZED contractions never reach this count as themselves: `normalize`
+# expands them to their two-word forms — except can't and ain't, which land on
+# the single protected tokens cannot and aint — so a listed token carries every
+# one of them. Listing
+# them was expected to work and did not — normalize spaced the apostrophe into
+# "don t", no token ever matched, and "can't open" rendered as "can open"
+# scored 0.923 and PASSED while "don't" against an ASR's "do not" hard-failed
+# correct audio. The COMMON bare spellings (dont, wont, cant...) are listed and
+# reachable: they occur only when a side genuinely contains that spelling
+# (a sloppy script, or bare "wont"/"cant" as real words), and there the
+# fail-closed hard fail is the cheap direction — expanding them instead cost
+# three false-accept classes, recorded at the expansion tables. The RARE bare
+# forms (shant, darent, maynt, havent...) are deliberately NOT listed: Shant
+# and Darent are real proper names (an Armenian given name; a Kentish river)
+# that reached the veto through ordinary text and even through caller
+# sound_alikes, while the misspellings they would protect are emitted by no
+# recogniser. A rare bare form against its expanded transcript still fails,
+# and fails HARD: the expansion puts a "not" on one side only, and the
+# asymmetric critical count returns 0.0 — the fail-closed direction for a
+# script that misspelled its own contraction.
+# "cannot" IS listed, and "can't" expands to it rather than to "can not":
+# collapsing both to a bare "not" made "cannot open" and "will not open" agree
+# on their critical counts, and inability became refusal at 0.923 — auxiliary
+# identity is meaning, and one "not" looks like any other. That protection stops
+# at cannot: pairing every "not" with its auxiliary (so won't/wouldn't differ)
+# was considered and rejected, because the auxiliary token is unstable on
+# correct audio — "it's not" against "it is not" pairs "s not" vs "is not" and
+# would hard-fail a routine contraction. "aint" is listed because ain't
+# collapses to that single token — no expansion is faithful to its
+# subject-dependent auxiliary, but a dropped ain't must still be a drop.
 _CRITICAL_TOKENS = frozenset(
     """
-    not no never none nor cannot cant dont doesnt didnt isnt arent wasnt werent
-    wont wouldnt shouldnt couldnt without nothing neither
+    not no never none nor cannot aint without nothing neither
+    arent cant couldnt didnt doesnt dont isnt shouldnt wasnt werent
+    wont wouldnt
     nikdy nic nikdo žádný žádná žádné nelze bez ani nesmí nesmíš nemůže
     always must all every only
     vždy musí všechny každý pouze jen
@@ -233,8 +264,90 @@ def fold(word: str, lang: str) -> str:
     return w
 
 
-def normalize(text: str) -> str:
+# Script and ASR freely disagree on contracting a negation — the script writes
+# "don't", Whisper writes "do not", or the reverse. Expanding both sides to the
+# two-word form aligns the tokens and lets "not" carry the meaning-critical
+# protection. The apostrophe is REQUIRED: bare "wont" (habit) and "cant"
+# (jargon) are genuine English words, and an unconditional table read "he was
+# wont to visit" as "he was will not to visit" — a fabricated negation the
+# critical check then trusted. "ain't" collapses to the single token "aint"
+# rather than expanding: no expansion is faithful to its subject-dependent
+# auxiliary — mapping it to bare "not" accepted "I not ready" at 1.0 — but the
+# single token can be protected, so a dropped ain't is still a drop. "can't"
+# expands to the single token "cannot", not "can not" — see _CRITICAL_TOKENS.
+# These tables are ENGLISH ORTHOGRAPHY and apply only to English, the same way
+# fold() applies only to Czech: language-blind expansion turned the uppercase
+# acronym ISNT in a Czech sentence into "is not" and certified audio that
+# never spelled the letters.
+# STRICT "n't" only: the apostrophe directly between the n and the t, no
+# whitespace on either side, no guard on what follows. Every looser separator
+# was tried and each rewrote real English, because a loosened contraction is
+# indistinguishable BY STRING from quotation: whitespace-only welded
+# "Don T Harris" and "can T-test" into negations; whitespace-with-apostrophe
+# welded the quoted letter in "Can 'T' represent" and, spaced, "Can ' T '";
+# apostrophe-then-whitespace welded the closing quote plus initial in
+# "After 'can' T. S. Eliot". Trailing-apostrophe guards then hard-failed the
+# QUOTED contraction — "the word 'Don't'" against its unquoted transcript.
+# The strict form has none of these: a space on either side of the apostrophe
+# breaks the match, and a following quote is fine because no real text
+# attaches a quoted bare T to a word ("don'T'" exists nowhere).
+#
+# The cost, deliberate: tokenized-apart spellings ("don 't", "don' t",
+# "don ' t", whitespace-only "ain t") do NOT expand and fail closed against
+# their expanded counterparts. No recogniser emits them — the predecessor
+# only "passed" them because it spaced every apostrophe and the two sides
+# happened to collapse identically.
+#
+# Matched before punctuation is stripped — a sentence terminator must keep
+# blocking any cross-boundary reading, as in "the Ain. T cells", where a
+# post-strip fold once welded two sentences and an IDENTICAL ref/hyp pair
+# scored 0.857 because per-sentence word counts stopped matching the
+# full-chunk tokens.
+_NT_GENERIC = re.compile(
+    r"\b(am|are|could|dare|did|does|do|had|has|have|is|may|might|must|need|"
+    r"ought|should|used|was|were|would)n't\b"
+)
+_NT_SPECIAL = (
+    (re.compile(r"\bwon't\b"), "will not"),
+    (re.compile(r"\bcan't\b"), "cannot"),
+    (re.compile(r"\bshan't\b"), "shall not"),
+    (re.compile(r"\bain't\b"), "aint"),
+)
+# The APOSTROPHE-LESS spellings (dont, isnt, wouldnt...) deliberately do NOT
+# expand. A bare-token expansion table was tried, as armor for a hypothetical
+# punctuation-stripping ASR, and it opened three false-accept paths at once:
+# the uppercase acronym ISNT lowercased into the table and "the ISNT rule"
+# certified audio that said "is not"; "won't" against a transcript's bare
+# "wouldnt" normalized to will not / would not, agreed on the critical "not",
+# and a changed auxiliary passed at 0.923 where it had hard-failed; and
+# keeping bare "wont"/"cant" out of the table forced them out of the critical
+# list, so deleting either word from the audio passed at 0.91. Neither Whisper
+# nor Parakeet ever emits the bare spelling — the armor protected against
+# nothing and cost three real defect classes. Bare forms are critical tokens
+# instead: reachable only when a side genuinely contains that spelling, where
+# failing closed is the cheap direction.
+
+# Typographic apostrophes an editor or ASR may emit — the right and left
+# single quotation marks (U+2019, U+2018), the modifier letter apostrophe
+# (U+02BC) and the fullwidth form (U+FF07). NFC does NOT unify them, and
+# expansion regexes matching only the ASCII and U+2019 forms left the others
+# unexpanded — the dropped-negation hole reopened through a side door, at the
+# same 0.92 it was closed at.
+_APOSTROPHES = re.compile(r"[’‘ʼ＇]")
+
+
+def normalize(text: str, lang: str = "en") -> str:
     text = unicodedata.normalize("NFC", text.lower())
+    text = _APOSTROPHES.sub("'", text)
+    if lang.startswith("en"):
+        text = _NT_GENERIC.sub(r"\1 not", text)
+        for pattern, expansion in _NT_SPECIAL:
+            text = pattern.sub(expansion, text)
+    # Every remaining apostrophe is spaced along with the rest of the
+    # punctuation, NOT deleted. Deletion was tried and it reached beyond the
+    # negation class: "we'll" collapsed into "well" (a changed word scoring
+    # 1.0), and "two's" into the non-numberish "twos", which blinded the
+    # isolated-numeral hard-fail to two's/ten's complement.
     return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", text)).strip()
 
 
@@ -248,8 +361,8 @@ def is_numberish(word: str) -> bool:
     return word.isdigit() or word in _NUMBER_WORDS
 
 
-def content_words(text: str) -> list[str]:
-    return [w for w in normalize(text).split() if not is_numberish(w)]
+def content_words(text: str, lang: str = "en") -> list[str]:
+    return [w for w in normalize(text, lang).split() if not is_numberish(w)]
 
 
 def _bounded_count(hyp_words: list[str], needle_words: list[str]) -> int:
@@ -297,8 +410,8 @@ def coverage(
     # multi-word forms are skipped (the boundary rescue already covers merges).
     alike_pairs = []
     for written, spoken in sound_alikes:
-        wf = [fold(w, lang) for w in content_words(written)]
-        sf = [fold(w, lang) for w in content_words(spoken)]
+        wf = [fold(w, lang) for w in content_words(written, lang)]
+        sf = [fold(w, lang) for w in content_words(spoken, lang)]
         if len(wf) == 1 and len(sf) == 1 and wf[0] != sf[0]:
             alike_pairs.append((wf[0], sf[0]))
 
@@ -308,8 +421,8 @@ def coverage(
             w = w.replace(a, b)
         return w
 
-    ref_words = [_fold(w) for w in content_words(reference)]
-    hyp_words = [_fold(w) for w in content_words(hypothesis)]
+    ref_words = [_fold(w) for w in content_words(reference, lang)]
+    hyp_words = [_fold(w) for w in content_words(hypothesis, lang)]
     if not ref_words:
         return 1.0, ""
 
@@ -356,7 +469,7 @@ def coverage(
     unverifiable: list[str] = []
 
     for sentence in split_sentences(reference):
-        n = len(content_words(sentence))
+        n = len(content_words(sentence, lang))
 
         if n == 0:
             # Every content word was a numeral, so number-blinding left nothing to
@@ -400,7 +513,7 @@ def coverage(
             # global alignment had already matched the sentence to the wrong
             # occurrence.
             leftover = [w for w, claimed in zip(hyp_words, hyp_claimed, strict=True) if not claimed]
-            present = _bounded_count(leftover, [_fold(w) for w in content_words(sentence)]) >= 1
+            present = _bounded_count(leftover, [_fold(w) for w in content_words(sentence, lang)]) >= 1
             # `or score > 0` used to turn ANY partial coverage into a pass, so a
             # two-word sentence rendered as one word scored 1.0. Only genuine
             # containment rescues a short sentence now.
@@ -412,8 +525,8 @@ def coverage(
     # An isolated numeral that changed value is a content error, not an ASR
     # spelling difference. Compounds are excluded above, so this cannot fire on
     # "two fifty six" vs "256".
-    ref_tokens = normalize(reference).split()
-    hyp_tokens = normalize(hypothesis).split()
+    ref_tokens = normalize(reference, lang).split()
+    hyp_tokens = normalize(hypothesis, lang).split()
     # Skip if EITHER side compounds. The check must be symmetric: "two fifty six"
     # is three adjacent numerals in the script and collapses to the single
     # isolated "256" in the transcript, so an asymmetric rule reads a correct
@@ -446,9 +559,48 @@ def coverage(
             return 0.0, f"[numeral changed: {ref_nums} became {hyp_nums}]"
 
     # A meaning-inverting token that appears or disappears fails outright,
-    # regardless of how good the surrounding coverage looks.
-    ref_critical = critical_counts(normalize(reference).split())
-    hyp_critical = critical_counts(normalize(hypothesis).split())
+    # regardless of how good the surrounding coverage looks. Tokens the
+    # caller's sound_alikes pair with a critical token are CANONICALIZED into
+    # it first, never exempted: a pair is the caller declaring two spellings
+    # one sound, and the hard fail must not veto that equivalence — the AINT
+    # acronym transcribed "aynt" under a caller lexicon hard-failed as a
+    # changed negation. But an early version exempted both endpoints from the
+    # count, which excused OMISSION as well as substitution: with a
+    # ("knot", "not") pair, dropping the grammatical "not" itself passed at
+    # 0.93. Mapping the paired spellings into the critical form makes the
+    # declared substitution invisible while a drop or insertion still counts.
+    # Single-token pairs only, so a multi-word spoken form like "do not enter"
+    # cannot touch the protection of "not". Pairs are grouped into equivalence
+    # CLASSES first, because alignment composes them — ("AINT","aynt") plus
+    # ("aynt","eint") verifies "eint", and mapping only direct partners
+    # hard-failed the chained spelling alignment had already accepted. A class
+    # holding TWO protected tokens (("cannot","cant")) refuses to map at all:
+    # collapsing them would erase a distinction this list exists to keep, so
+    # that pair fails closed.
+    clusters: list[set[str]] = []
+    for written, spoken in sound_alikes:
+        wf = normalize(written, lang).split()
+        sf = normalize(spoken, lang).split()
+        if len(wf) != 1 or len(sf) != 1 or wf[0] == sf[0]:
+            continue
+        cluster = {wf[0], sf[0]}
+        untouched = []
+        for group in clusters:
+            if group & cluster:
+                cluster |= group
+            else:
+                untouched.append(group)
+        clusters = [*untouched, cluster]
+    critical_canon: dict[str, str] = {}
+    for cluster in clusters:
+        protected = sorted(cluster & _CRITICAL_TOKENS)
+        if len(protected) == 1:
+            critical_canon.update(
+                {m: protected[0] for m in cluster if m != protected[0]})
+    ref_critical = critical_counts(
+        [critical_canon.get(w, w) for w in normalize(reference, lang).split()])
+    hyp_critical = critical_counts(
+        [critical_canon.get(w, w) for w in normalize(hypothesis, lang).split()])
     if ref_critical != hyp_critical:
         changed = sorted(set(ref_critical) ^ set(hyp_critical)) or sorted(
             w for w in ref_critical if ref_critical[w] != hyp_critical.get(w)
