@@ -20,6 +20,7 @@ from narrator.verify import (
     content_words,
     coverage,
     is_numberish,
+    normalize,
 )
 
 # The real 227-character chunk that exposed the aggregate-similarity problem.
@@ -267,6 +268,289 @@ def test_inserted_negation_in_a_long_sentence_fails() -> None:
     """Scored 0.9167 — above the tightened threshold — before token protection."""
     ref = "The visitor can open these doors after presenting the matching front key."
     assert coverage(ref, ref.replace("can open", "cannot open"))[0] == 0.0
+
+
+def test_contracted_negation_dropped_is_caught() -> None:
+    """The critical-token protection did not fire through a contraction.
+
+    normalize spaced the apostrophe, so "can't" became the tokens "can t" and
+    matched no critical token: "can't open" rendered as "can open" scored 0.923
+    and PASSED the 0.90 gate — the exact corruption the hard-fail rule exists
+    for, already pinned below in its uncontracted form. Contractions now expand
+    to their two-word forms, so "not" carries the protection.
+    """
+    ref = "The visitor can't open these doors after presenting the matching front key."
+    score, sentence = coverage(ref, ref.replace("can't", "can"))
+    assert score == 0.0
+    assert "meaning-critical" in sentence
+    assert coverage("Don't share the master password.",
+                    "Share the master password.")[0] == 0.0
+
+
+def test_contraction_and_expansion_are_the_same_words() -> None:
+    """The same bug's other face: "don't" against an ASR that writes "do not"
+    hard-failed CORRECT audio at 0.0 with [meaning-critical token changed: not].
+    Both sides expand, so contracting is a spelling choice, not a content change."""
+    assert coverage("Don't share the master password.",
+                    "Do not share the master password.")[0] == 1.0
+    assert coverage("You cannot enter the vault today.",
+                    "You can't enter the vault today.")[0] == 1.0
+    assert coverage("It won't open without the key.",
+                    "It will not open without the key.")[0] == 1.0
+    # The full n't family, not just the common few: "mightn't" was missing from
+    # the first expansion table, and its dropped negation passed at 0.9167 —
+    # the original bug reproduced one auxiliary over. Each root is pinned:
+    # removing any single one from the regex must turn a test red.
+    ref = "The visitor mightn't open these doors after presenting the matching front key."
+    assert coverage(ref, ref.replace("mightn't", "might not"))[0] == 1.0
+    assert coverage(ref, ref.replace("mightn't", "might"))[0] == 0.0
+    for contraction, expansion in [
+        ("amn't", "am not"), ("aren't", "are not"), ("couldn't", "could not"),
+        ("daren't", "dare not"), ("didn't", "did not"), ("doesn't", "does not"),
+        ("don't", "do not"), ("hadn't", "had not"), ("hasn't", "has not"),
+        ("haven't", "have not"), ("isn't", "is not"), ("mayn't", "may not"),
+        ("mightn't", "might not"), ("mustn't", "must not"),
+        ("needn't", "need not"), ("oughtn't", "ought not"),
+        ("shan't", "shall not"), ("shouldn't", "should not"),
+        ("usedn't", "used not"), ("wasn't", "was not"), ("weren't", "were not"),
+        ("won't", "will not"), ("wouldn't", "would not"), ("can't", "cannot"),
+    ]:
+        assert normalize(contraction) == expansion, contraction
+        # The apostrophe-less spelling must NOT expand — a bare-token table was
+        # tried and opened three false-accept paths (acronyms lowercasing into
+        # it, auxiliary identity erased, wont/cant unprotectable). Bare forms
+        # stay themselves and are critical tokens instead.
+        bare = contraction.replace("'", "")
+        assert normalize(bare) == bare, contraction
+
+
+# ------------- contraction expansion overreach (found by independent review)
+
+def test_apostrophe_is_required_to_expand_wont_and_cant() -> None:
+    """Bare "wont" (habit) and "cant" (jargon) are genuine English words. An
+    unconditional table read "he was wont to visit" as "was will not to visit",
+    and the fabricated negation scored 0.923 — a false accept manufactured by
+    the fix itself. Unexpanded, the transcript's inserted "not" hard-fails."""
+    assert coverage("He was wont to visit the old harbor every winter before sunrise.",
+                    "He was not to visit the old harbor every winter before sunrise.")[0] == 0.0
+    assert normalize("wont") == "wont"
+    assert normalize("cant") == "cant"
+
+
+def test_every_apostrophe_codepoint_expands() -> None:
+    """The expansion regexes matched only the ASCII and U+2019 apostrophes, so
+    the left quotation mark (U+2018) and modifier letter apostrophe (U+02BC) —
+    codepoints editors and ASRs genuinely emit, which NFC does not unify —
+    slipped past, and the dropped negation passed again at 0.92: the original
+    hole reopened through a side door."""
+    ref = "The visitor can{0}t open these doors after presenting the matching front key."
+    hyp = "The visitor can open these doors after presenting the matching front key."
+    for apostrophe in ("'", "’", "‘", "ʼ", "＇"):
+        assert coverage(ref.format(apostrophe), hyp)[0] == 0.0, repr(apostrophe)
+        assert coverage(ref.format(apostrophe), ref.format("'"))[0] == 1.0, repr(apostrophe)
+
+
+def test_aint_collapses_to_one_protected_token() -> None:
+    """No expansion of ain't is faithful — its auxiliary depends on the subject,
+    and mapping it to bare "not" accepted "I not ready" at 1.0. Collapsed to the
+    single critical token "aint" instead: a dropped ain't hard-fails (it passed
+    at 0.92 unprotected), and ain't against an ASR's "am not" keeps rejecting —
+    the fail-closed side, adjudicated by hand like Czech case inflection.
+    The bare spelling "aint" lands on the same token; tokenized-apart variants
+    ("ain t", "ain 't") are deliberately NOT folded — see the strict-separator
+    rationale at the expansion tables — and fail closed."""
+    ref = "The keeper ain't ready to open these doors for any visitor before sunrise."
+    assert coverage(ref, ref.replace("ain't ", ""))[0] == 0.0
+    assert coverage(ref, ref)[0] == 1.0
+    assert coverage(ref, ref.replace("ain't", "aint"))[0] == 1.0
+    assert coverage(ref, ref.replace("ain't", "am not"))[0] == 0.0  # fail closed
+
+
+def test_tokenized_apart_contractions_fail_closed() -> None:
+    """A deliberate limit, pinned as one. Widening the separator to accept
+    "don 't", "don' t" or "don ' t" was tried in three shapes, and every shape
+    rewrote real English, because a loosened contraction is the same string as
+    quotation: "Don T Harris", the quoted letter in "Can 'T'", and the closing
+    quote in "After 'can' T. S. Eliot" all welded into negations. No
+    recogniser emits the tokenized-apart spellings, so they stay unexpanded
+    and hard-fail against their expanded counterparts — fail closed, like the
+    bare misspellings."""
+    ref = "The visitors don't open these doors after presenting the matching front key."
+    for variant in ("don 't", "don' t", "don ' t"):
+        assert coverage(ref, ref.replace("don't", variant))[0] == 0.0, repr(variant)
+    ain = "The keeper ain't ready to open these doors for any visitor before sunrise."
+    assert coverage(ain, ain.replace("ain't", "ain t"))[0] == 0.0
+
+
+def test_a_standalone_letter_t_is_not_a_contraction() -> None:
+    """Loosened separators were tried and rewrote real English: whitespace-only
+    welded "Don T Harris" and "can T-test" into negations — a name and a
+    statistics term becoming "will not"/"cannot" in both directions — and the
+    apostrophe-tolerant forms welded the quoted letter in "Can 'T' represent".
+    The pattern is strict "n't": a space on either side of the apostrophe
+    breaks the match, and nothing after the t is guarded."""
+    ref = "Don T Harris will inspect the harbor gates with the deputy before sunrise today."
+    assert coverage(ref, ref)[0] == 1.0
+    assert coverage(ref, ref.replace(" T ", " tee "))[0] >= 0.90
+    ref2 = "You can T-test the samples in the laboratory before the sunrise shift today."
+    assert coverage(ref2, ref2)[0] == 1.0
+    assert coverage(ref2, ref2.replace("can T-test", "cannot test"))[0] == 0.0
+    ref3 = "Can 'T' represent temperature in the harbor logs we keep today?"
+    assert coverage(ref3, ref3)[0] == 1.0
+    assert coverage(ref3, ref3.replace("Can 'T' represent", "Cannot represent"))[0] == 0.0
+    # The quotes spaced apart are the same quoted letter: "Can ' T '" welded
+    # into "cannot" under a looser separator — wrong audio accepted in one
+    # direction, an identical pair hard-failed in the other.
+    ref4 = "Can ' T ' represent temperature in the harbor logs we keep today?"
+    assert coverage(ref4, ref4)[0] == 1.0
+    assert coverage(ref4, ref4.replace("Can ' T ' represent", "Cannot represent"))[0] == 0.0
+    # A contraction followed by quotation is ordinary text: trailing-apostrophe
+    # guards broke both of these while chasing the quoted-letter cases.
+    assert normalize("don't 'cause") == "do not cause"
+    quoted = "The guide emphasized the word 'Don't' during the harbor safety briefing today."
+    assert coverage(quoted, quoted.replace("'Don't'", "Don't"))[0] == 1.0
+    # And apostrophe-then-space is a CLOSING quote, not a contraction:
+    # "After 'can' T. S. Eliot" welded into "cannot" under the loosened
+    # separator, erasing the very distinction the critical list protects.
+    eliot = "After 'can' T. S. Eliot inserts a deliberate pause for emphasis in this reading."
+    assert coverage(eliot, eliot)[0] == 1.0
+    assert coverage(eliot, eliot.replace("'can' T.", "'cannot'"))[0] == 0.0
+
+
+def test_sound_alikes_override_the_critical_veto() -> None:
+    """A sound_alikes pair is the caller declaring two spellings one sound —
+    authoritative vocabulary per the lexicon contract. The critical hard-fail
+    compared raw tokens and vetoed it: the AINT acronym transcribed "aynt"
+    under a caller lexicon hard-failed as a changed negation. Tokens named in
+    a pair are CANONICALIZED into the critical form, never exempted — an
+    exemption excused omission too: with a ("knot", "not") pair, dropping the
+    grammatical "not" itself passed at 0.93. Substitution is invisible; a drop
+    or insertion still counts. Without the pair, the change still hard-fails."""
+    ref = "The AINT algorithm tracks storms across the continent today."
+    hyp = "The aynt algorithm tracks storms across the continent today."
+    assert coverage(ref, hyp, sound_alikes=(("AINT", "aynt"),))[0] == 1.0
+    assert coverage(ref, hyp)[0] == 0.0
+    knot = "Tie this knot securely but do not open the sealed harbor door before sunrise."
+    assert coverage(knot, knot.replace("do not open", "do open"),
+                    sound_alikes=(("knot", "not"),))[0] == 0.0
+    assert coverage(knot, knot, sound_alikes=(("knot", "not"),))[0] == 1.0
+
+
+def test_sound_alike_chains_and_protected_pairs() -> None:
+    """Alignment composes pairs — ("AINT","aynt") plus ("aynt","eint") verifies
+    "eint" — so the critical canonicalization must group them into classes, or
+    it hard-fails the chained spelling alignment already accepted. And a pair
+    naming TWO protected tokens refuses to map: honoring ("cannot","cant")
+    would erase a distinction the critical list exists to keep."""
+    ref = "The AINT algorithm tracks storms across the continent today."
+    chain = (("AINT", "aynt"), ("aynt", "eint"))
+    assert coverage(ref, ref.replace("AINT", "eint"), sound_alikes=chain)[0] == 1.0
+    assert coverage(ref, ref.replace("AINT ", ""), sound_alikes=chain)[0] == 0.0
+    both = "The visitor cannot open these doors after presenting the matching front key."
+    assert coverage(both, both.replace("cannot", "cant"),
+                    sound_alikes=(("cannot", "cant"),))[0] == 0.0
+
+
+def test_bare_contraction_spellings_stay_meaning_critical() -> None:
+    """The regressions a bare-token expansion table bought, each measured against
+    the pre-change behavior it broke:
+
+    - "won't" vs a transcript's bare "wouldnt" normalized to will not /
+      would not, agreed on the critical "not", and a changed auxiliary passed
+      at 0.923 where it had hard-failed as a changed token.
+    - deleting "wont" (habit) or "cant" (jargon) from the audio passed at
+      0.91-0.92 once the words left the critical list.
+
+    Bare spellings expand nowhere and hard-fail as critical tokens instead."""
+    ref = "The visitor won't open these doors after presenting the matching front key."
+    assert coverage(ref, ref.replace("won't", "wouldnt"))[0] == 0.0
+    assert coverage("He was wont to visit the old harbor every winter before sunrise.",
+                    "He was to visit the old harbor every winter before sunrise.")[0] == 0.0
+    assert coverage("The engineer discussed cant in the old harbor before sunrise today.",
+                    "The engineer discussed in the old harbor before sunrise today.")[0] == 0.0
+
+
+def test_contraction_tables_are_english_language_data() -> None:
+    """The tables are English orthography, gated on lang exactly as fold() gates
+    Czech phonology. Applied language-blind, the uppercase acronym ISNT in a
+    Czech sentence expanded to "is not" and certified audio that never spelled
+    the letters — and the same script/transcript pair must still verify when
+    both sides carry the acronym."""
+    ref = "Oční lékař použil pravidlo ISNT při vyšetření okraje zrakového nervu."
+    assert coverage(ref, ref.replace("ISNT", "is not"), "cs")[0] < 0.90
+    assert coverage(ref, ref, "cs")[0] == 1.0
+
+
+def test_ain_t_fold_does_not_weld_sentences() -> None:
+    """The "ain t" -> "aint" fold first ran AFTER punctuation stripping, where
+    "the Ain. T cells" had also become "ain t" — the fold welded two sentences
+    together, per-sentence word counts stopped matching the full-chunk tokens,
+    and an IDENTICAL ref/hyp pair scored 0.857. The fold now runs while the
+    terminator still stands. Ain is a real river; ref == hyp must be 1.0."""
+    ref = "Our route follows the Ain. T cells protect the body during infection."
+    assert coverage(ref, ref)[0] == 1.0
+
+
+def test_rare_bare_lookalikes_are_not_critical_tokens() -> None:
+    """The critical list briefly held every bare n't spelling, and the rare ones
+    vetoed real vocabulary: "Shant" (an Armenian given name) hard-failed even
+    through the caller's own sound_alikes pair, and river "Darent" against the
+    ASR's "Darenth" went from a rescued pass to 0.0. The list holds only the
+    common bare forms. A rare bare form against its expanded transcript still
+    fails, hard, on the asymmetric "not" the expansion introduces — fail-closed
+    for a script that misspelled its own contraction, and pinned as such."""
+    ref = "Shant will inspect these unusual harbor doors before sunrise today."
+    hyp = "Shahnt will inspect these unusual harbor doors before sunrise today."
+    assert coverage(ref, hyp, sound_alikes=(("Shant", "Shahnt"),))[0] == 1.0
+    assert coverage("The river Darent flows quietly past the village mill before sunrise.",
+                    "The river Darenth flows quietly past the village mill before sunrise.")[0] >= 0.90
+    assert coverage("They havent finished the harbor inspection before sunrise today.",
+                    "They haven't finished the harbor inspection before sunrise today.")[0] == 0.0
+
+
+def test_uppercase_acronym_is_never_a_contraction() -> None:
+    """English too, not only Czech: lowercasing fed the acronym ISNT into the
+    bare-token expansion table and "the ISNT rule" scored a perfect 1.0 against
+    audio that said "is not" instead of spelling the letters. Bare spellings no
+    longer expand in any language, so the acronym round-trips as itself and the
+    wrong audio hard-fails."""
+    ref = "The clinician applied the ISNT rule while examining the optic nerve rim today."
+    assert coverage(ref, ref)[0] == 1.0
+    assert coverage(ref, ref.replace("ISNT", "is not"))[0] == 0.0
+
+
+def test_affirmative_contractions_are_not_collapsed_into_other_words() -> None:
+    """Deleting apostrophes wholesale turned "we'll" into "well" — a changed
+    word scoring a perfect 1.0 — and "he'll" into "hell". Only the n't negation
+    class expands; every other apostrophe spaces out as punctuation always did."""
+    assert coverage("We'll wait.", "Well, wait.")[0] < 0.90
+    assert coverage("He'll return to the harbor before the tide turns tonight.",
+                    "Hell return to the harbor before the tide turns tonight.")[0] < 0.90
+
+
+def test_possessive_numeral_still_reaches_the_numeral_check() -> None:
+    """Apostrophe deletion collapsed "two's" into the non-numberish "twos", so
+    two's complement rendered as ten's complement passed at 0.909 — the
+    isolated-numeral hard-fail saw [] == []. Spaced, "two" is isolated again."""
+    assert coverage("The device stores signed integers using two's complement representation in memory.",
+                    "The device stores signed integers using ten's complement representation in memory.")[0] == 0.0
+
+
+def test_cannot_is_not_the_same_negation_as_will_not() -> None:
+    """Expanding can't/cannot to "can not" left one "not" looking like any
+    other: "cannot open" against "will not open" agreed on critical counts and
+    passed at 0.923, turning inability into refusal. "can't" therefore expands
+    to the single protected token "cannot", never to "can not"."""
+    ref = "The visitor cannot open these doors after presenting the matching front key."
+    assert coverage(ref, ref.replace("cannot", "will not"))[0] == 0.0
+
+
+def test_yall_expanding_to_you_all_is_not_a_changed_critical_token() -> None:
+    """"y'all" -> "yall" under apostrophe deletion, while the ASR's "you all"
+    carries the protected token "all" — correct audio hard-failed at 0.0 with
+    [meaning-critical token changed: all]. Spaced, both sides count one "all"."""
+    assert coverage("Y'all can enter the vault after presenting the correct master key today.",
+                    "You all can enter the vault after presenting the correct master key today.")[0] >= 0.90
 
 
 def test_closing_quote_does_not_merge_sentences() -> None:
