@@ -32,6 +32,9 @@ product — do not weaken it to make something pass.
 - **`source_rate` must be the backend's actual rate** everywhere an ASR is
   constructed — a mismatch silently corrupts every verdict. `default_verifier`
   exists so callers stop assembling this by hand; keep it the single policy.
+  Note a backend may only settle its true rate during its first synthesis,
+  which is why `render()` builds the default verifier on first use, never
+  eagerly.
 - The input vocabulary is `Text` and `Gap` only. Narrator never learns markup;
   callers translate their own conventions into segments.
 - Verification policy is a cascade: fast recogniser on every chunk, second
@@ -45,4 +48,6 @@ importers), `synth` (retry ladder, cheap checks, pronunciation + acronym
 spelling), `verify` (coverage scoring, folds, hard-fail rules, verifiers),
 `render` (orchestration, quarantine), `audio` (DSP/mastering), `asr`
 (recognisers), `backends/` (TTS engines + deterministic fake), `types`
-(protocols). `bench/` is measurement tooling; its results justify the design.
+(protocols), `cli` (the `narrate` entry point), `__init__` (the public API —
+new exports go in `__all__`). `bench/` is measurement tooling; its results
+justify the design.

@@ -28,6 +28,7 @@ from narrator.types import (
     RenderReport,
     Segment,
     Text,
+    Verdict,
     Verifier,
     Voice,
 )
@@ -92,8 +93,7 @@ def render(
     if verifier is None:
         # The pronunciation lexicon doubles as the verifier's sound-alike list:
         # each pair names a written form and what the audio will actually say.
-        verifier = default_verifier(backend.sample_rate,
-                                    sound_alikes=cfg.synth.pronunciation)
+        verifier = _DeferredDefaultVerifier(backend, cfg.synth.pronunciation)
     started = time.perf_counter()
     plan = _plan(segments, cfg.max_chars)
     total = sum(1 for s in plan if isinstance(s, Text))
@@ -133,6 +133,29 @@ def render(
 
     _write(out, audio, backend.sample_rate)   # master() already laid out the channels
     return report
+
+
+@dataclass
+class _DeferredDefaultVerifier:
+    """default_verifier, constructed on first use rather than up front.
+
+    A backend may only learn its true sample rate during its first synthesis —
+    Supertonic corrects 44100 to 22050 there — and ASRs freeze the rate they
+    are constructed with. Building eagerly would bake in the stale rate, the
+    exact silent corruption the source_rate rule exists to prevent. The first
+    verification necessarily runs after the first synthesis, so building here
+    always sees the corrected rate.
+    """
+
+    backend: Backend
+    sound_alikes: tuple[tuple[str, str], ...]
+    _verifier: Verifier | None = None
+
+    def verify(self, audio: Audio, text: str, lang: str) -> Verdict:
+        if self._verifier is None:
+            self._verifier = default_verifier(self.backend.sample_rate,
+                                              sound_alikes=self.sound_alikes)
+        return self._verifier.verify(audio, text, lang)
 
 
 def _plan(segments: list[Segment], max_chars: int) -> list[Segment]:

@@ -206,3 +206,34 @@ def test_leading_gap_is_rendered_at_full_length(tmp_path: Path) -> None:
     backend2, verifier2 = build()
     b = render([Gap(3.0), Text("Alpha beta gamma.")], VOICE, backend2, tmp_path / "b.wav", verifier2)
     assert b.duration_s - a.duration_s == pytest.approx(3.0, abs=0.05)
+
+
+def test_default_verifier_is_built_after_the_backend_settles_its_rate(monkeypatch, tmp_path: Path) -> None:
+    """Supertonic corrects its sample rate during the first synthesis; an ASR
+    constructed before that freezes the stale rate — the silent-corruption case
+    the source_rate rule exists to prevent. The default verifier must therefore
+    be built on first use, which is always after the first synthesis."""
+    import importlib
+
+    render_mod = importlib.import_module("narrator.render")
+
+    backend = FakeBackend()
+    backend.sample_rate = 44100          # wrong until the engine first runs
+
+    real_synthesize = backend.synthesize
+
+    def settling_synthesize(*a, **kw):
+        backend.sample_rate = 24000      # the engine's true rate
+        return real_synthesize(*a, **kw)
+
+    backend.synthesize = settling_synthesize
+
+    seen = []
+
+    def fake_default_verifier(rate, sound_alikes=()):
+        seen.append(rate)
+        return CoverageVerifier(FakeASR(backend))
+
+    monkeypatch.setattr(render_mod, "default_verifier", fake_default_verifier)
+    render(SEGMENTS, VOICE, backend, tmp_path / "v.wav")
+    assert seen == [24000], "verifier was built with the pre-settlement rate"
