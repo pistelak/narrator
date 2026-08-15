@@ -19,6 +19,7 @@ from narrator.verify import (
     NullVerifier,
     content_words,
     coverage,
+    coverage_detail,
     is_numberish,
     normalize,
 )
@@ -782,3 +783,89 @@ def test_merge_rescue_does_not_excuse_a_genuinely_changed_number() -> None:
     assert coverage("It has four bytes here.", "It has nine bytes here.")[0] == 0.0
     assert coverage("Vezmi dva klíče domů.", "Vezmi klíče domů.", "cs")[0] == 0.0
     assert coverage("Vezmi klíče domů.", "Vezmi dva klíče domů.", "cs")[0] == 0.0
+
+
+# ------------------------------------------------- word-level diagnostics
+
+def test_diagnostics_report_a_dropped_sentence_as_a_run_of_d_codes() -> None:
+    """The typed codes exist because the SHAPE is the signal: a contiguous run
+    of d: is a drop or truncation, which no scalar score can distinguish from
+    scattered spelling noise. Pinned to the same real chunk as the aggregate-
+    similarity trap above."""
+    detail = coverage_detail(CHUNK, ASR_DROPPED)
+    assert detail.word_diagnostics == (
+        "d:a", "d:d", "d:where", "d:a", "d:c", "d:should", "d:be",
+    )
+
+
+def test_hard_fail_diagnostics_name_the_dropped_negation() -> None:
+    """The codes ride along on hard fails too: the bracketed reason says a
+    critical token changed, the codes say which word and in which direction."""
+    detail = coverage_detail(
+        "Never share the master password with anyone.",
+        "Share the master password with anyone.",
+    )
+    assert detail.score == 0.0
+    assert "meaning-critical" in detail.worst_sentence
+    assert detail.word_diagnostics == ("d:never",)
+
+
+def test_inserted_negation_diagnostics_point_the_other_way() -> None:
+    detail = coverage_detail("The key is safe.", "The key is not safe.")
+    assert detail.score == 0.0
+    assert detail.word_diagnostics == ("i:not",)
+
+
+def test_boundary_rescued_word_is_not_reported_missing() -> None:
+    """A rescue means the audio was right; a diagnostic that contradicts the
+    score is a false alarm. The co-worker's split rescued at 1.0 above must
+    produce neither d:coworkers nor i:co / i:worker / i:s."""
+    detail = coverage_detail(
+        "The coworkers reaction is not subtle here today.",
+        "The co-worker's reaction is not subtle here today.",
+    )
+    assert detail.score == 1.0
+    assert detail.word_diagnostics == ()
+
+
+def test_short_sentence_rescue_suppresses_diagnostics() -> None:
+    """Same rule for the other rescue: 'Ne znemožní.' returned merged as
+    'Neznemožní.' is correct audio, so it must not surface as codes."""
+    detail = coverage_detail(
+        "Nová známka na každý dopis. Což třídění ztíží. Ne znemožní.",
+        "Nová známka na každý dopis. Což třídění ztíží. Neznemožní.",
+        "cs",
+    )
+    assert detail.score == 1.0
+    assert detail.word_diagnostics == ()
+
+
+def test_hallucinated_content_reads_as_a_mass_of_i_codes() -> None:
+    detail = coverage_detail(
+        "Alpha beta gamma.", "Alpha beta gamma. And then some invented extra sentence."
+    )
+    assert "[inserted content]" in detail.worst_sentence
+    assert detail.word_diagnostics == (
+        "i:and", "i:then", "i:some", "i:invented", "i:extra", "i:sentence",
+    )
+
+
+def test_substitution_reports_the_pair_in_reading_order() -> None:
+    detail = coverage_detail("The key is safe here.", "The kay is safe here.")
+    assert detail.score < 0.90
+    assert detail.word_diagnostics == ("s:key/kay",)
+
+
+def test_coverage_is_exactly_the_detail_pair() -> None:
+    """The stable two-tuple view must never drift from the detail it fronts."""
+    pairs = (
+        (CHUNK, ASR_DROPPED, "en"),
+        ("Never share the master password with anyone.",
+         "Share the master password with anyone.", "en"),
+        ("Nová známka na každý dopis. Což třídění ztíží. Ne znemožní.",
+         "Nová známka na každý dopis. Což třídění ztíží. Neznemožní.", "cs"),
+        ("", "anything", "en"),
+    )
+    for ref, hyp, lang in pairs:
+        detail = coverage_detail(ref, hyp, lang)
+        assert coverage(ref, hyp, lang) == (detail.score, detail.worst_sentence)
