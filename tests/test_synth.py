@@ -242,3 +242,15 @@ def test_failed_chunk_result_carries_word_diagnostics() -> None:
     result, _ = run({i: Failure.DROP_SENTENCE for i in range(3)}, cfg=cfg)
     assert not result.ok
     assert "d:council" in result.word_diagnostics
+
+
+def test_cheap_check_failure_gains_codes_from_the_diagnostic_reverify() -> None:
+    """A duration-failed attempt skips verification, so it has no transcript
+    and no codes. The failure-path re-verify exists to add that evidence —
+    it must carry the codes across AND must not rescue the attempt, the same
+    rule already pinned for the transcript."""
+    cfg = SynthConfig(max_attempts=1, allow_sentence_split=False)
+    result, _ = run({0: Failure.TRUNCATE}, cfg=cfg)
+    assert not result.ok, "the re-verify must never rescue a cheap-check failure"
+    assert result.transcript, "the re-verify ran and named what the audio said"
+    assert "d:stranger" in result.word_diagnostics

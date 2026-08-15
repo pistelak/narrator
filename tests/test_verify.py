@@ -880,6 +880,13 @@ def test_verifier_attaches_word_diagnostics_only_on_rejection() -> None:
     accepted = CoverageVerifier(FakeASR(ASR_NUMERALS)).verify(SILENCE, CHUNK, "en")
     assert accepted.ok
     assert accepted.word_diagnostics == ()
+    # The numeral fixture has no raw codes to begin with, so it cannot prove
+    # the gate. This pass DOES carry a raw code (s:keeper/keper at 0.917 —
+    # verified above the 0.90 gate) and the verdict must still blank it.
+    ref = "The keeper walks the long pier before dawn and counts lantern posts."
+    quirk = CoverageVerifier(FakeASR(ref.replace("keeper", "keper"))).verify(SILENCE, ref, "en")
+    assert quirk.ok and quirk.coverage == pytest.approx(11 / 12)
+    assert quirk.word_diagnostics == ()
 
 
 def test_cascade_reports_the_best_siblings_diagnostics() -> None:
@@ -896,6 +903,11 @@ def test_cascade_reports_the_best_siblings_diagnostics() -> None:
     assert not verdict.ok
     assert verdict.coverage == expected.coverage > 0.0
     assert verdict.word_diagnostics == expected.word_diagnostics != ()
+    # Both orders, or an "always report the last rejection" regression passes.
+    silent2 = CoverageVerifier(FakeASR(""))
+    partial2 = CoverageVerifier(FakeASR(truncated))
+    reversed_verdict = CascadeVerifier([partial2, silent2]).verify(SILENCE, ref, "en")
+    assert reversed_verdict.word_diagnostics == expected.word_diagnostics
 
 
 def test_short_rescue_marks_hyp_tokens_through_the_leftover_mapping() -> None:
@@ -904,11 +916,48 @@ def test_short_rescue_marks_hyp_tokens_through_the_leftover_mapping() -> None:
     The short-sentence rescue matches inside `leftover` (unclaimed hyp words
     only) and must translate match indices back through `leftover_idx` before
     marking. Here "misty"->"foggy" puts an unclaimed token BEFORE the merged
-    "Gonow", so the match starts at leftover index 1: marking raw indices
-    would leak i:gonow and suppress nothing. Only the genuine substitution
+    "Goup", so the match starts at leftover index 1: marking raw indices
+    would leak i:goup and suppress nothing. "Go up." rather than "Go now.",
+    because "now" is long enough for the word-boundary rescue to claim the
+    merged token first, which masked exactly the mutant this test exists to
+    kill; both words of "go up" are too short for that rescue, so only the
+    short-sentence path can claim the token. Only the genuine substitution
     may surface."""
     detail = coverage_detail(
-        "The keeper guards the misty harbor gate. Go now.",
-        "The keeper guards the foggy harbor gate. Gonow.",
+        "The keeper guards the misty harbor gate. Go up.",
+        "The keeper guards the foggy harbor gate. Goup.",
     )
     assert detail.word_diagnostics == ("s:misty/foggy",)
+
+
+def test_hallucinated_duplicate_of_a_short_sentence_is_named() -> None:
+    """A rescue is for sentences that NEED rescuing. When "Go now." is already
+    fully aligned, the second "Go now." is an insertion — the rescue used to
+    consume it anyway, so the render rejected on precision (0.5) while the
+    diagnostics named nothing. A refusal that names nothing is the failure
+    this feature exists to fix."""
+    detail = coverage_detail("Go now.", "Go now. Go now.")
+    assert detail.score == 0.5
+    assert "[inserted content]" in detail.worst_sentence
+    assert detail.word_diagnostics == ("i:go", "i:now")
+
+
+def test_repeated_boundary_rescues_consume_distinct_spans() -> None:
+    """Two coworkers rendered as two co-worker's pairs are both correct audio.
+    Searching from the string start each time claimed the first span twice,
+    so the second pair's tokens surfaced as i:co, i:worker, i:s beside a
+    passing score. Each repeat must consume the next occurrence."""
+    detail = coverage_detail(
+        "The coworkers helped the coworkers finish early.",
+        "The co-worker's helped the co-worker's finish early.",
+    )
+    assert detail.score == 1.0
+    assert detail.word_diagnostics == ()
+
+
+def test_format_word_diagnostics_rejects_a_useless_limit() -> None:
+    """limit=0 rendered an empty payload and limit=-1 corrupted the +N more
+    arithmetic — fail loudly instead, per the library's stated preference."""
+    from narrator.verify import format_word_diagnostics
+    with pytest.raises(ValueError, match="limit"):
+        format_word_diagnostics(("d:one",), limit=0)

@@ -514,14 +514,21 @@ def coverage_detail(
             unclaimed_spans.append((j, offset, offset + len(w)))
             offset += len(w)
     unclaimed = "".join(hyp_words[j] for j, _, _ in unclaimed_spans)
+    consumed: dict[str, int] = {}
     for k, word in enumerate(ref_words):
         if not covered[k] and len(word) > 2 and word in unclaimed:
             covered[k] = True
             # The hypothesis tokens this rescue consumed are accounted for in
             # the diagnostics too: the script's "coworkers" rescued from the
             # transcript's "co worker s" must not then report i:co, i:worker,
-            # i:s — a false alarm beside a passing score.
-            at = unclaimed.find(word)
+            # i:s — a false alarm beside a passing score. Each repeat of the
+            # same word consumes the NEXT occurrence: searching from the start
+            # every time claimed one span twice, so the second of two rescued
+            # co-worker's pairs still surfaced as insertions (found in review).
+            at = unclaimed.find(word, consumed.get(word, 0))
+            if at == -1:
+                at = unclaimed.find(word)
+            consumed[word] = at + len(word)
             for j, s, e in unclaimed_spans:
                 if s < at + len(word) and e > at:
                     hyp_diag_claimed[j] = True
@@ -574,20 +581,28 @@ def coverage_detail(
             # transcript could not tell those apart at any window size, because
             # global alignment had already matched the sentence to the wrong
             # occurrence.
-            leftover_idx = [j for j, claimed in enumerate(hyp_claimed) if not claimed]
-            leftover = [hyp_words[j] for j in leftover_idx]
-            matches = _bounded_matches(leftover, [_fold(w) for w in content_words(sentence, lang)])
-            # `or score > 0` used to turn ANY partial coverage into a pass, so a
-            # two-word sentence rendered as one word scored 1.0. Only genuine
-            # containment rescues a short sentence now.
-            if matches:
-                # A rescued sentence is right, so its words must not surface in
-                # the diagnostics — mark its reference range and the hypothesis
-                # tokens its first match consumed, both on the diagnostic copies.
-                short_rescued.append((pos - n, pos))
-                for j in range(*matches[0]):
-                    hyp_diag_claimed[leftover_idx[j]] = True
-                score = 1.0
+            # Only a sentence that NEEDS rescuing consumes leftover text. At
+            # score 1.0 the assignment below was a no-op, but the diagnostic
+            # marking was not: "Go now." against "Go now. Go now." ate the
+            # hallucinated duplicate, so the render rejected on precision with
+            # word_diagnostics=() — a refusal that named nothing (found in
+            # review). Skipping the whole block at 1.0 changes no verdict and
+            # lets the duplicate surface as the i: codes it is.
+            if score < 1.0:
+                leftover_idx = [j for j, claimed in enumerate(hyp_claimed) if not claimed]
+                leftover = [hyp_words[j] for j in leftover_idx]
+                matches = _bounded_matches(leftover, [_fold(w) for w in content_words(sentence, lang)])
+                # `or score > 0` used to turn ANY partial coverage into a pass, so a
+                # two-word sentence rendered as one word scored 1.0. Only genuine
+                # containment rescues a short sentence now.
+                if matches:
+                    # A rescued sentence is right, so its words must not surface in
+                    # the diagnostics — mark its reference range and the hypothesis
+                    # tokens its first match consumed, both on the diagnostic copies.
+                    short_rescued.append((pos - n, pos))
+                    for j in range(*matches[0]):
+                        hyp_diag_claimed[leftover_idx[j]] = True
+                    score = 1.0
 
         if score < worst:
             worst, worst_sentence = score, sentence.strip()
@@ -753,6 +768,8 @@ def format_word_diagnostics(codes: tuple[str, ...], limit: int = 6) -> str:
     +N more marker: a dropped paragraph should read as a headline, not a
     flood of every word it contained.
     """
+    if limit < 1:
+        raise ValueError(f"limit must be >= 1, got {limit}")
     groups: dict[str, list[str]] = {"d": [], "i": [], "s": []}
     for code in codes:
         kind, _, rest = code.partition(":")
