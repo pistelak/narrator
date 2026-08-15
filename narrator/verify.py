@@ -744,6 +744,32 @@ def coverage(
     return detail.score, detail.worst_sentence
 
 
+def format_word_diagnostics(codes: tuple[str, ...], limit: int = 6) -> str:
+    """One compact human line from the typed codes.
+
+    Grouped for reading — "missing: never · inserted: not · substituted:
+    key→kay" — while the raw ordered tuple stays on the dataclasses for
+    anyone who needs the alignment shape. `limit` bounds each group with a
+    +N more marker: a dropped paragraph should read as a headline, not a
+    flood of every word it contained.
+    """
+    groups: dict[str, list[str]] = {"d": [], "i": [], "s": []}
+    for code in codes:
+        kind, _, rest = code.partition(":")
+        if kind in groups:
+            groups[kind].append(rest.replace("/", "→", 1) if kind == "s" else rest)
+    parts = []
+    for kind, label in (("d", "missing"), ("i", "inserted"), ("s", "substituted")):
+        words = groups[kind]
+        if not words:
+            continue
+        shown = ", ".join(words[:limit])
+        if len(words) > limit:
+            shown += f" +{len(words) - limit} more"
+        parts.append(f"{label}: {shown}")
+    return " · ".join(parts)
+
+
 @dataclass
 class CoverageVerifier:
     """The default verifier: transcribe, then score per-sentence coverage."""

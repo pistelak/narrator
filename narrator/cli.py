@@ -15,6 +15,7 @@ from narrator.audio import MasterConfig
 from narrator.chunking import MAX_CHARS
 from narrator.render import RenderConfig, RenderFailed, render
 from narrator.types import ChunkResult, Gap, Segment, Text, Voice
+from narrator.verify import format_word_diagnostics
 
 
 def parse_text(raw: str, paragraph_gap: float) -> list[Segment]:
@@ -36,6 +37,8 @@ def _progress(result: ChunkResult, total: int) -> None:
         note = f" coverage {result.coverage:.2f}"
         if result.dropped_sentence:
             note += f", dropped: {result.dropped_sentence[:50]}..."
+        if result.word_diagnostics:
+            note += f", {format_word_diagnostics(result.word_diagnostics)}"
     print(f"  [{result.index + 1}/{total}] {mark} {result.duration_s:5.1f}s{note}", flush=True)
 
 
