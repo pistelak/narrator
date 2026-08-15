@@ -896,3 +896,19 @@ def test_cascade_reports_the_best_siblings_diagnostics() -> None:
     assert not verdict.ok
     assert verdict.coverage == expected.coverage > 0.0
     assert verdict.word_diagnostics == expected.word_diagnostics != ()
+
+
+def test_short_rescue_marks_hyp_tokens_through_the_leftover_mapping() -> None:
+    """Pins the index translation two independent reviewers misread.
+
+    The short-sentence rescue matches inside `leftover` (unclaimed hyp words
+    only) and must translate match indices back through `leftover_idx` before
+    marking. Here "misty"->"foggy" puts an unclaimed token BEFORE the merged
+    "Gonow", so the match starts at leftover index 1: marking raw indices
+    would leak i:gonow and suppress nothing. Only the genuine substitution
+    may surface."""
+    detail = coverage_detail(
+        "The keeper guards the misty harbor gate. Go now.",
+        "The keeper guards the foggy harbor gate. Gonow.",
+    )
+    assert detail.word_diagnostics == ("s:misty/foggy",)
