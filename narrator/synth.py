@@ -285,13 +285,21 @@ def _sentence_split(
         return None
 
     pieces: list[Audio] = []
-    gap = np.zeros(int(cfg.sentence_gap_s * backend.sample_rate), dtype=np.float32)
+    gap: Audio | None = None
     worst = 1.0
     attempts = 0
     for sentence in sentences:
         attempt = _best_attempt(sentence, backend, verifier, voice, cfg)
         if attempt is None or not attempt.ok:
             return None
+        if gap is None:
+            # Allocated only after a sentence has actually been synthesized.
+            # When every whole-chunk attempt raised, this fallback makes the
+            # backend's first real call, and a Supertonic-style backend only
+            # corrects its declared rate during that call — a gap allocated
+            # before the loop used the stale 44100 and 0.12 s of join played
+            # as 0.22 s at the settled rate.
+            gap = np.zeros(int(cfg.sentence_gap_s * backend.sample_rate), dtype=np.float32)
         attempts += attempt.number
         pieces.extend([attempt.audio, gap])
         worst = min(worst, attempt.verdict.coverage)
