@@ -78,18 +78,27 @@ def test_aggregate_similarity_cannot_separate_correct_from_dropped() -> None:
 
 # ---------------------------------------------------- trap 3: number-blind
 
-@pytest.mark.parametrize("word,expected", [
-    ("twenty", True), ("dvacet", True), ("256", True), ("padesát", True),
-    ("lantern", False), ("hash", False), ("paluba", False),
+@pytest.mark.parametrize("word,lang,expected", [
+    ("twenty", "en", True), ("dvacet", "cs", True), ("256", "en", True),
+    ("padesát", "cs", True),
+    ("lantern", "en", False), ("hash", "en", False), ("paluba", "cs", False),
     # Alphanumeric domain terms are CONTENT, not numerals. Treating "contains a
     # digit" as numeric deleted these from both sides, leaving the verifier blind
     # to whether the audio said them at all.
-    ("utf8", False), ("iso9001", False), ("rfc822", False), ("base64", False),
+    ("utf8", "en", False), ("iso9001", "en", False), ("rfc822", "en", False),
+    ("base64", "en", False),
+    # Per-language, not pooled: Czech "set" (genitive plural of sto, "pět set"
+    # = 500) is core English vocabulary — the pooled list deleted it from
+    # English text, and the all-numeral fail-closed then rejected a perfect
+    # "One set." as unverifiable. Czech keeps the union because these scripts
+    # quote English numerals ("SHA two fifty six") inside Czech prose.
+    ("set", "en", False), ("set", "cs", True),
+    ("twenty", "cs", True),
 ])
-def test_is_numberish(word: str, expected: bool) -> None:
+def test_is_numberish(word: str, lang: str, expected: bool) -> None:
     """Operates on normalized tokens: `normalize` strips punctuation first, so
     "20-byte" arrives as the two tokens "20" and "byte", never as one."""
-    assert is_numberish(word.lower()) is expected
+    assert is_numberish(word.lower(), lang) is expected
 
 
 def test_spelled_numerals_do_not_count_as_drops() -> None:
@@ -220,6 +229,97 @@ def test_all_numeral_sentence_fails_closed() -> None:
     score, sentence = coverage(ref, hyp)
     assert score == 0.0
     assert "unverifiable" in sentence
+
+
+def test_all_numeral_whole_reference_fails_closed_too() -> None:
+    """The same rule at the granularity the sentence-split fallback produces.
+
+    When "Two fifty six." IS the whole reference — a sentence rendered alone by
+    the fallback, or an all-numeral chunk — every content word blinds away and
+    the empty-reference early return scored it 1.0 against ANY transcript,
+    including the empty one. So the fallback laundered exactly the sentence the
+    per-sentence rule above refuses: the chunk failed whole, split, and passed
+    with its unverifiable sentence checked against nothing. Found by preflight's
+    identity oracle, which declared the chunk doomed and watched it render clean.
+    """
+    for hyp in ("", "256", "babble babble"):
+        score, sentence = coverage("Two fifty six.", hyp)
+        assert score == 0.0, hyp
+        assert "unverifiable" in sentence
+    # Czech oblique numerals blind away identically (2048 in the genitive).
+    assert coverage("Dvou tisíc čtyřiceti osmi.", "", "cs")[0] == 0.0
+    # A reference with no words at all still asks for nothing — unchanged.
+    assert coverage("...", "")[0] == 1.0
+
+
+def test_isolated_all_numeral_reference_is_verified_by_value() -> None:
+    """Fail closed only where there is genuinely nothing to compare.
+
+    The first fix above refused "Four." against the ASR's "4" as unverifiable —
+    but an ISOLATED numeral carries comparable value, and the sentence-split
+    fallback renders exactly such sentences alone ("Four." as the answer a
+    teaching script places after a Gap). Refusing them broke the fallback for
+    every chunk containing one. Compounds stay unverifiable: "two fifty six"
+    tokenizes as [2, 50, 6] against the transcript's [256], the ambiguity
+    number-blinding exists to absorb. (Frontier review of this change.)
+    """
+    assert coverage("Four.", "4")[0] == 1.0
+    assert coverage("Four.", "four")[0] == 1.0
+    assert coverage("Four.", "9")[0] == 0.0          # changed value
+    assert coverage("Four.", "")[0] == 0.0           # dropped outright
+    assert "numeral changed" in coverage("Four.", "")[1]
+    assert coverage("Four.", "babble 4")[0] == 0.0   # content the script never asked for
+    assert coverage("Čtyři.", "4", "cs")[0] == 1.0
+
+
+def test_valueless_blind_words_cannot_verify_vacuously() -> None:
+    """"Set." against the EMPTY transcript scored 1.0 (counter-review).
+
+    The large units' plural and oblique forms (set, stě, milionů, miliarda...)
+    were in the blind lists but not in the values table; isolated_numerals()
+    silently omits a value-less token, so the by-value branch compared [] == []
+    and certified silence — the exact laundering it was built to close,
+    reopened through a vocabulary gap. Every blind-list word now carries a
+    value, and the branch refuses any token that does not, so BOTH the mapped
+    and any future unmapped word must reject a silent transcript.
+    """
+    # The motivating trio, plus the whole blind vocabulary — exhaustively, so
+    # no future list addition can reopen the hole unnoticed.
+    from narrator.verify import _NUMBER_WORDS_CS, _NUMBER_WORDS_EN
+
+    for word in ("set", "stě", "miliarda"):
+        score, sentence = coverage(f"{word}.", "", "cs")
+        assert score == 0.0, word
+        assert sentence, word
+    for word in sorted(_NUMBER_WORDS_EN):
+        assert coverage(f"{word}.", "")[0] == 0.0, word
+    for word in sorted(_NUMBER_WORDS_CS):
+        assert coverage(f"{word}.", "", "cs")[0] == 0.0, word
+    # The legitimate direction the new values buy: an isolated large-unit form
+    # against the digits every ASR writes back is a match, not a refusal.
+    assert coverage("Tisíce.", "1000", "cs")[0] == 1.0
+    assert coverage("Miliarda.", "miliarda", "cs")[0] == 1.0
+    assert coverage("Set.", "100", "cs")[0] == 1.0
+    # And a changed value still fails by value, not vacuously anything.
+    assert coverage("Miliarda.", "1000000", "cs")[0] == 0.0
+
+
+def test_czech_set_is_english_content() -> None:
+    """"set" is the genitive plural of Czech sto AND core English vocabulary.
+
+    The pooled number-word list blinded it in English text, so "One set." lost
+    every content word and — once the whole-reference fail-closed landed — a
+    PERFECT transcript was rejected as all-numeral. Numerals are per-language
+    now: English keeps "set" as content; Czech still blinds it, because "pět
+    set" (500) must keep matching the ASR's "500". (Frontier review.)
+    """
+    assert coverage("One set.", "One set.")[0] == 1.0
+    assert coverage("Bring the tools. One set.", "Bring the tools. One set.")[0] == 1.0
+    # Dropping the sentence is still a drop — "set" is real content now.
+    assert coverage("Bring the tools. One set.", "Bring the tools.")[0] == 0.0
+    # Czech: "pět set" still blinds, so the digit transcript stays a match.
+    assert coverage("Zbývá pět set metrů. Jdeme dál.",
+                    "Zbývá 500 metrů. Jdeme dál.", "cs")[0] == 1.0
 
 
 # ------------------------------ insertion blindness (found by external review)
@@ -567,7 +667,9 @@ def test_wrong_isolated_number_is_caught() -> None:
     """Number-blinding made the rest of this verifier work, and left the wrong
     number scoring 1.00 — in a pipeline that teaches "four checksum bytes"."""
     assert coverage("The seal is four bytes long.", "The seal is nine bytes long.")[0] == 0.0
-    assert coverage("Pečeť má čtyři bajty.", "Pečeť má devět bajtů.")[0] == 0.0
+    # lang matters now that numerals are per-language ("set" is English
+    # content); a real render always supplies it via Voice.lang.
+    assert coverage("Pečeť má čtyři bajty.", "Pečeť má devět bajtů.", "cs")[0] == 0.0
 
 
 def test_word_to_digit_transcription_still_passes() -> None:
@@ -578,7 +680,7 @@ def test_compound_numerals_are_skipped_symmetrically() -> None:
     """"two fifty six" is three adjacent numerals and collapses to one "256".
     An asymmetric rule reads a correct transcription as a changed number."""
     assert coverage("It uses SHA two fifty six today.", "It uses SHA 256 today.")[0] == 1.0
-    assert coverage("Použije ša dvě stě padesát šest dnes.", "Použije ša 256 dnes.")[0] == 1.0
+    assert coverage("Použije ša dvě stě padesát šest dnes.", "Použije ša 256 dnes.", "cs")[0] == 1.0
 
 
 # ------------------- word-boundary disagreement (found by the acceptance run)
