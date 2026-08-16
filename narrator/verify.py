@@ -222,6 +222,42 @@ def has_compound_numeral(words: list[str], lang: str = "en") -> bool:
     )
 
 
+def isolated_numeral_positions(
+    words: list[str], lang: str = "en", quote_foreign: bool = False,
+) -> list[tuple[int, int | str]]:
+    """isolated_numerals with each element's token index, for the weld
+    rescue, which must know a missing numeral's NEIGHBORS to decide whether
+    a merged transcript token could really be that numeral's weld."""
+    def numberish(w: str) -> bool:
+        if is_numberish(w, lang):
+            return True
+        return quote_foreign and not w.isascii() and (
+            w in _NUMERAL_VALUES or w in _NUMERAL_CLASSES)
+
+    values: list[tuple[int, int | str]] = []
+    for i, word in enumerate(words):
+        if not numberish(word):
+            continue
+        prev_num = i > 0 and numberish(words[i - 1])
+        next_num = i + 1 < len(words) and numberish(words[i + 1])
+        if prev_num or next_num:
+            continue          # part of a compound; ambiguous, so skip
+        if _plain_digits(word) and len(word) <= 18 and str(int(word)) == word:
+            values.append((i, int(word)))
+        elif word in _NUMERAL_VALUES:
+            values.append((i, _NUMERAL_VALUES[word]))
+        elif word in _NUMERAL_CLASSES:
+            values.append((i, _NUMERAL_CLASSES[word]))
+        else:
+            # The FULL folded token, never a truncation: sentinels compare by
+            # equality, and truncating to a prefix made two 19-digit numbers
+            # differing past the cut identical (gate review). Pathological
+            # length only ever reaches the refusal message, where it is noise,
+            # not a verdict.
+            values.append((i, "?" + fold(word, lang)))
+    return values
+
+
 def isolated_numerals(
     words: list[str], lang: str = "en", quote_foreign: bool = False,
 ) -> list[int | str]:
@@ -260,34 +296,7 @@ def isolated_numerals(
     legitimate "four" was absorbed as one soft miss while the lone digit
     balanced both).
     """
-    def numberish(w: str) -> bool:
-        if is_numberish(w, lang):
-            return True
-        return quote_foreign and not w.isascii() and (
-            w in _NUMERAL_VALUES or w in _NUMERAL_CLASSES)
-
-    values: list[int | str] = []
-    for i, word in enumerate(words):
-        if not numberish(word):
-            continue
-        prev_num = i > 0 and numberish(words[i - 1])
-        next_num = i + 1 < len(words) and numberish(words[i + 1])
-        if prev_num or next_num:
-            continue          # part of a compound; ambiguous, so skip
-        if _plain_digits(word) and len(word) <= 18 and str(int(word)) == word:
-            values.append(int(word))
-        elif word in _NUMERAL_VALUES:
-            values.append(_NUMERAL_VALUES[word])
-        elif word in _NUMERAL_CLASSES:
-            values.append(_NUMERAL_CLASSES[word])
-        else:
-            # The FULL folded token, never a truncation: sentinels compare by
-            # equality, and truncating to a prefix made two 19-digit numbers
-            # differing past the cut identical (gate review). Pathological
-            # length only ever reaches the refusal message, where it is noise,
-            # not a verdict.
-            values.append("?" + fold(word, lang))
-    return values
+    return [v for _, v in isolated_numeral_positions(words, lang, quote_foreign)]
 
 
 def _fuse_digit_groups(tokens: list[str]) -> list[str]:
@@ -316,6 +325,22 @@ def _fuse_digit_groups(tokens: list[str]) -> list[str]:
         fused.append(t)
         i += 1
     return fused
+
+
+def _numeral_tokens(text: str, lang: str) -> list[str]:
+    """Normalized tokens for the numeral checks: fused per SENTENCE.
+
+    Fusing across the whole text let punctuation masquerade as grouping —
+    "4. 500." is two spoken numbers, but normalize erases the boundary and
+    a full-text fuse read it as the single 4500 an ASR wrote for different
+    audio (gate review). A grouped number never spans a sentence; two bare
+    numerals in adjacent sentences land adjacent after concatenation and
+    compound suppression refuses them, the fail-closed direction.
+    """
+    tokens: list[str] = []
+    for sentence in split_sentences(text):
+        tokens.extend(_fuse_digit_groups(normalize(sentence, lang).split()))
+    return tokens
 
 
 
@@ -665,12 +690,10 @@ def coverage_detail(
                     to_numeral.update(
                         {m: numeral[0] for m in cluster if m != numeral[0]})
             hyp_tokens = [
-                to_numeral.get(t, t)
-                for t in _fuse_digit_groups(normalize(hypothesis, lang).split())
+                to_numeral.get(t, t) for t in _numeral_tokens(hypothesis, lang)
             ]
             ref_tokens = [
-                to_numeral.get(t, t)
-                for t in _fuse_digit_groups(ref_tokens)
+                to_numeral.get(t, t) for t in _numeral_tokens(reference, lang)
             ]
 
             # Every isolated numeral now yields a typed element (see
@@ -909,8 +932,8 @@ def coverage_detail(
     # quoted foreign COMPOUND — "dvacet jedna" against the ASR's "21" —
     # still hard-fails; composing a value across foreign word sequences is
     # the [2,50,6]-vs-[256] ambiguity compound suppression exists to avoid.
-    ref_tokens = _fuse_digit_groups(normalize(reference, lang).split())
-    hyp_tokens = _fuse_digit_groups(normalize(hypothesis, lang).split())
+    ref_tokens = _numeral_tokens(reference, lang)
+    hyp_tokens = _numeral_tokens(hypothesis, lang)
     # Skip if EITHER side compounds. The check must be symmetric: "two fifty six"
     # is three adjacent numerals in the script and collapses to the single
     # isolated "256" in the transcript, so an asymmetric rule reads a correct
@@ -944,8 +967,10 @@ def coverage_detail(
         # construction, so it is always unclaimed.
         welded = [t for t, taken in zip(hyp_display, hyp_claimed, strict=True)
                   if not taken]
+        ref_positions = isolated_numeral_positions(
+            ref_tokens, lang, quote_foreign=True)
         for v in list(missing):
-            # Two more restrictions keep the rescue from excusing real
+            # Three restrictions keep the rescue from excusing real
             # deletions, each pinned to an accept it prevented (gate reviews):
             #
             # Only the CURRENT language's spellings can hide inside a welded
@@ -955,18 +980,40 @@ def coverage_detail(
             # rescue a dropped English "hundred" through "settings", and the
             # Czech "sto" would rescue a dropped English 100 through "stole".
             #
-            # And only as the PREFIX of the welded token — the weld this
-            # rescue exists for keeps the numeral's own spelling at the
-            # front ("dva" + "ze"). An anywhere-substring search let "stě"
-            # (a real singular form of sto) excuse a deleted "sto" through
-            # the unrelated "městě", and "one" hide inside "stone".
-            # Class sentinels rescue through their own forms the same way.
+            # Only as the PREFIX of the welded token — the weld this rescue
+            # exists for keeps the numeral's own spelling at the front
+            # ("dva" + "ze"). An anywhere-substring search let "stě" (a real
+            # singular form of sto) excuse a deleted "sto" through the
+            # unrelated "městě", and "one" hide inside "stone".
+            #
+            # And the REMAINDER must be the numeral's own neighbor from the
+            # reference — a weld is physically the numeral merged with the
+            # word beside it, which is why "dvaze" decomposes as "dva" +
+            # the "z" that follows in the script. Prefix alone let any
+            # unclaimed word starting with a numeral spelling qualify:
+            # "oneself" excused a deleted "one" whose neighbors were
+            # elsewhere entirely. Compared in fold space, one direction
+            # prefix-loose ("ze" against the script's "z" is the same
+            # preposition with its vowel variant).
             forms = [
                 w for w in (*_NUMERAL_VALUES, *_NUMERAL_CLASSES)
                 if (_NUMERAL_VALUES.get(w, _NUMERAL_CLASSES.get(w)) == v
                     and is_numberish(w, lang))
             ]
-            if any(t.startswith(f) and t != f for f in forms for t in welded):
+            neighbors = {
+                fold(ref_tokens[j], lang)
+                for i, val in ref_positions if val == v
+                for j in (i - 1, i + 1) if 0 <= j < len(ref_tokens)
+            }
+            def _weld_matches(
+                t: str, f: str, neighbors: set[str] = neighbors,
+            ) -> bool:
+                if not t.startswith(f) or t == f:
+                    return False
+                rest = fold(t[len(f):], lang)
+                return any(rest.startswith(nb) or nb.startswith(rest)
+                           for nb in neighbors if nb)
+            if any(_weld_matches(t, f) for f in forms for t in welded):
                 missing.remove(v)
         if missing or extra:
             return CoverageDetail(

@@ -439,6 +439,12 @@ def test_weld_rescue_requires_the_numeral_as_prefix() -> None:
     # still excusing a deleted "one" through its first letters (gate review).
     assert coverage("The onerous task needs one attempt before dawn arrives.",
                     "The onerous task needs attempt before dawn arrives.")[0] == 0.0
+    # And the remainder must be the numeral's own reference neighbor — a
+    # weld is the numeral merged with the word beside it. An unclaimed
+    # "oneself" elsewhere in the transcript excused a deleted "one" whose
+    # neighbors were entirely different words (gate review).
+    assert coverage("You must do it one time by yourself today, correctly.",
+                    "You must do it time by oneself today, correctly.")[0] == 0.0
 
 
 def test_all_numeral_refusal_outranks_the_insertion_score() -> None:
@@ -488,6 +494,12 @@ def test_grouped_digits_are_one_number() -> None:
     assert coverage("Thousand.", "1,000")[0] == 1.0
     # Not the grouped shape: a 1-digit tail is a compound, not a grouping.
     assert coverage("Million.", "1 0 000")[0] == 0.0
+    # Fusion never crosses a sentence boundary: "4. 500." is two spoken
+    # numbers, and a full-text fuse read it as the 4500 an ASR wrote for
+    # different audio (gate review). Adjacent bare numerals across the
+    # boundary are compound-ambiguous and refuse.
+    assert coverage("4. 500.", "4500")[0] == 0.0
+    assert coverage("4. 500.", "4 500")[0] == 0.0
 
 
 def test_sound_alikes_reach_the_all_numeral_branch() -> None:
