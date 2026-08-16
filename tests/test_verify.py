@@ -316,30 +316,38 @@ def test_added_large_unit_values_are_pinned() -> None:
     determinate entry is pinned to its integer here and the INDETERMINATE
     forms to their class sentinels: mapping miliony=10**6 certified a
     transcript's literal "1000000" against "Byly jich miliony." — "there were
-    millions", not exactly one (gate review). "sta" sat in the indeterminate
-    set for one round and hard-failed the genitive "jeden ze sta" against a
-    correct transcript's "100" — it is a singular case form (IJP: "bez sta
-    korun"), so it carries the exact value; the plural reading only occurs
-    in compounds, which are suppressed before any lookup."""
+    millions", not exactly one (gate review). "sta" moved BOTH ways across
+    review rounds and settled unvalued: it is the exact genitive singular in
+    "jeden ze sta" (IJP), which argued for 100 — but also the indeterminate
+    plural in "na sta hostů", "hundreds of guests" (ÚJČ), where value 100
+    certified a transcript's literal "100" against audio saying "hundreds".
+    An ambiguous token cannot carry a definite value; the genitive now burns
+    a retry, and the false accept is gone."""
     from narrator.verify import _NUMERAL_VALUES
 
     expected = {
-        "stě": 100, "sta": 100,
+        "stě": 100,
         "milion": 10**6, "milionu": 10**6,
         "miliarda": 10**9, "miliardě": 10**9,
     }
     for word, value in expected.items():
         assert _NUMERAL_VALUES[word] == value, word
-    for word in ("set", "tisíce", "tisících",
+    for word in ("sta", "set", "tisíce", "tisících",
                  "miliony", "milionů", "miliard", "miliardy"):
         assert word not in _NUMERAL_VALUES, word
     # And through the public surface, one per magnitude:
     assert coverage("Stě.", "100", "cs")[0] == 1.0
     assert coverage("Milionu.", "1000000", "cs")[0] == 1.0
     assert coverage("Miliardě.", "1000000000", "cs")[0] == 1.0
-    # The genitive that motivated restoring sta (gate review):
+    # Both readings of ambiguous "sta", pinned to the fail-closed side:
+    # the indeterminate plural must never equate to a digit, so the exact
+    # genitive refuses too and recovers by retry.
+    assert coverage("Na sta hostů čekala u brány.",
+                    "Na 100 hostů čekala u brány.", "cs")[0] == 0.0
     assert coverage("Jeden ze sta případů uspěl.",
-                    "Jeden ze 100 případů uspěl.", "cs")[0] == 1.0
+                    "Jeden ze 100 případů uspěl.", "cs")[0] == 0.0
+    assert coverage("Jeden ze sta případů uspěl.",
+                    "Jeden ze sta případů uspěl.", "cs")[0] == 1.0
 
 
 def test_quoted_foreign_numeral_is_coverage_evidence_not_a_changed_number() -> None:

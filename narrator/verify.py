@@ -185,14 +185,19 @@ _NUMERAL_VALUES: dict[str, int] = {
     # miliony." means "there were millions (of them)", and mapping
     # miliony=10**6 certified a transcript's literal "1000000" against it at
     # 1.0 (gate review of this change). Indeterminate forms deliberately
-    # appear NOWHERE — see the note below the table. "stě" and "sta" ARE determinate: both
-    # are singular case forms of sto — "ve stě případech" (locative, beside
-    # "stu"), "jeden ze sta" / "bez sta korun" (genitive; IJP, heslo sto) —
-    # and unvaluing "sta" hard-failed that genitive against a transcript's
-    # correct "100" (gate review). Their plural readings ("dvě stě",
-    # "tři sta") only occur inside compounds, which are suppressed before
-    # any value lookup.
-    "stě": 100, "sta": 100,
+    # appear NOWHERE — see the note below the table. "stě" IS determinate:
+    # a singular case form of sto ("ve stě případech", locative beside
+    # "stu"), whose plural reading ("dvě stě") only occurs inside
+    # compounds, which are suppressed before any value lookup. "sta" is
+    # NOT here, by a harder call than it looks: it is the exact genitive
+    # singular in "jeden ze sta" (IJP, heslo sto) — valuing it fixed that
+    # correct transcript — but ALSO the indeterminate plural in "na sta
+    # hostů", "hundreds of guests" (ÚJČ), where the same value certified
+    # a transcript's literal "100" against audio that said "hundreds".
+    # An ambiguous token cannot carry a definite value: it falls to the
+    # per-form sentinel, the genitive burns a retry, and the false accept
+    # is gone — the only direction this library trades in.
+    "stě": 100,
     # Both Czech spellings of the singular are current ("milion" post-reform,
     # "milión" traditional) and an ASR may write either; the accented plural
     # obliques fold onto their unaccented sentinels, which is how "milióny"
