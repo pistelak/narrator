@@ -443,6 +443,11 @@ def test_weld_rescue_requires_the_numeral_as_prefix() -> None:
                     "You must do it time by oneself today, correctly.")[0] == 0.0
     assert coverage("Alpha one beta gamma delta epsilon zeta eta theta.",
                     "onealpha beta gamma delta epsilon zeta eta theta.")[0] == 0.0
+    # A weld that rescues is consumed — one welded token is one spoken
+    # numeral, and an unconsumed pool let a single weld excuse two missing
+    # equal values, the second genuinely dropped (gate review).
+    assert coverage("One alpha stands here. Then one beta follows there quickly today.",
+                    "onealpha stands here. Then beta follows there quickly today.")[0] == 0.0
     # The weld itself compares in fold space: the ASR's unaccented "dveze"
     # is the same audio as "dvě z", and the accent must not decide the
     # verdict (gate review).
@@ -503,6 +508,10 @@ def test_grouped_digits_are_one_number() -> None:
     # "one point zero zero zero" (gate review).
     assert coverage("Tisíc.", "1.000", "cs")[0] == 1.0
     assert coverage("Thousand.", "1.000")[0] == 0.0
+    # Czech groups with spaces too, and recognisers write ASCII, no-break
+    # (U+00A0), or thin (U+2009) space interchangeably (gate review).
+    for space in (" ", " ", " "):
+        assert coverage("Tisíc.", f"1{space}000", "cs")[0] == 1.0, repr(space)
     # Fusion never crosses a sentence boundary: "4. 500." is two spoken
     # numbers, and a full-text fuse read it as the 4500 an ASR wrote for
     # different audio (gate review). Adjacent bare numerals across the

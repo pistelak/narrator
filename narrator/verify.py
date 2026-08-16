@@ -311,7 +311,10 @@ def isolated_numerals(
 # refuses: the fail-closed direction for every ambiguous spelling.
 _DIGIT_GROUPS = {
     "en": re.compile(r"\b\d{1,3}(?:,\d{3})+\b"),
-    "cs": re.compile(r"\b\d{1,3}(?:[. ]\d{3})+\b"),
+    # Czech groups with a dot or a space — and recognisers write the space
+    # as ASCII, no-break (U+00A0), or thin (U+2009), so all three count;
+    # matching only ASCII space refused a correct "1 000" (gate review).
+    "cs": re.compile(r"\b\d{1,3}(?:[.\u00A0\u2009 ]\d{3})+\b"),
 }
 
 
@@ -1013,8 +1016,15 @@ def coverage_detail(
                 rest = ft[len(ff):]
                 return any(rest.startswith(nb) or nb.startswith(rest)
                            for nb in followers if nb)
-            if any(_weld_matches(t, ff) for ff in forms for t in welded):
-                missing.remove(v)
+            # A weld that rescues is CONSUMED: one welded token is one
+            # spoken numeral, and leaving it in the pool let a single
+            # "onealpha" excuse two missing "one"s — the second of which
+            # the audio genuinely dropped (gate review).
+            for t in welded:
+                if any(_weld_matches(t, ff) for ff in forms):
+                    welded.remove(t)
+                    missing.remove(v)
+                    break
         if missing or extra:
             return CoverageDetail(
                 0.0, f"[numeral changed: {ref_nums} became {hyp_nums}]", word_diagnostics)
