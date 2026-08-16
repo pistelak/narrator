@@ -451,6 +451,11 @@ def test_weld_rescue_requires_the_numeral_as_prefix() -> None:
                     "You must do it time by oneself today, correctly.")[0] == 0.0
     assert coverage("Alpha one beta gamma delta epsilon zeta eta theta.",
                     "onealpha beta gamma delta epsilon zeta eta theta.")[0] == 0.0
+    # The remainder must swallow the WHOLE follower — a fragment is not a
+    # weld: "oned" excused a deleted "one" because "delta" happens to start
+    # with "d" (gate review).
+    assert coverage("There is one delta in this very long teaching sentence here today.",
+                    "There is oned in this very long teaching sentence here today.")[0] < 0.9
     # A weld that rescues is consumed — one welded token is one spoken
     # numeral, and an unconsumed pool let a single weld excuse two missing
     # equal values, the second genuinely dropped (gate review).

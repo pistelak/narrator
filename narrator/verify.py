@@ -1019,8 +1019,13 @@ def coverage_detail(
                 if not ft.startswith(ff) or ft == ff:
                     return False
                 rest = ft[len(ff):]
-                return any(rest.startswith(nb) or nb.startswith(rest)
-                           for nb in followers if nb)
+                # One direction only: the weld swallowed the WHOLE follower,
+                # possibly plus a stray vowel ("ze" for the script's "z").
+                # The reverse — the remainder as a mere prefix of the
+                # follower — had no motivating weld and let a one-letter
+                # fragment qualify: "oned" rescued a deleted "one" because
+                # "delta" happens to start with "d" (gate review).
+                return any(rest.startswith(nb) for nb in followers if nb)
             # A weld that rescues is CONSUMED: one welded token is one
             # spoken numeral, and leaving it in the pool let a single
             # "onealpha" excuse two missing "one"s — the second of which
