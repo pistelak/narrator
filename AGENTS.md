@@ -38,13 +38,15 @@ file. That refusal is the product — do not weaken it to make something pass.
 
 ## Independent review
 
-Day-to-day reviews run through the **/local-review pipeline** (user-level
-skill; policy in `.claude/review.toml`): a local model reviews every plan
-and diff, and a deterministic gate decides when the frontier review below is
-required — exit 2 means blocked until it happens, and only changes inside
-the narrow local-only allowlist may ever land on a local review alone.
-Every objection from any reviewer is verified against the code before
-acting; a weak model's silence is never evidence of safety.
+Day-to-day reviews run through the **/local-review pipeline** when that
+user-level skill is available (policy in `.claude/review.toml`): a local
+model reviews every plan and diff, and a deterministic gate decides when
+the frontier review below is required — exit 2 means blocked until it
+happens, and only changes inside the narrow local-only allowlist may ever
+land on a local review alone. On a machine without the skill, the config
+file is inert — use the frontier review below directly for anything beyond
+a trivial fix. Every objection from any reviewer is verified against the
+code before acting; a weak model's silence is never evidence of safety.
 
 For the escalated (frontier) review, use a capable reviewer from a different
 model family than the authoring agent (any independent model for
