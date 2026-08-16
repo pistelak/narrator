@@ -304,6 +304,83 @@ def test_valueless_blind_words_cannot_verify_vacuously() -> None:
     assert coverage("Miliarda.", "1000000", "cs")[0] == 0.0
 
 
+def test_added_large_unit_values_are_pinned() -> None:
+    """The exhaustive sweep above proves rejection against silence, not VALUES:
+    a wrong mapping (stě = 10**6) would have stayed green through it. Each
+    added entry is pinned to its integer here (gate review of this change)."""
+    from narrator.verify import _NUMERAL_VALUES
+
+    expected = {
+        "sta": 100, "stě": 100, "set": 100,
+        "tisíce": 1000, "tisících": 1000,
+        "milion": 10**6, "miliony": 10**6, "milionů": 10**6, "milionu": 10**6,
+        "miliarda": 10**9, "miliard": 10**9, "miliardy": 10**9, "miliardě": 10**9,
+    }
+    for word, value in expected.items():
+        assert _NUMERAL_VALUES[word] == value, word
+    # And through the public surface, one per magnitude:
+    assert coverage("Stě.", "100", "cs")[0] == 1.0
+    assert coverage("Tisíce.", "1000", "cs")[0] == 1.0
+    assert coverage("Milionů.", "1000000", "cs")[0] == 1.0
+    assert coverage("Miliardě.", "1000000000", "cs")[0] == 1.0
+
+
+def test_quoted_foreign_numeral_is_coverage_evidence_not_a_changed_number() -> None:
+    """An English script quoting "čtyři" whose ASR writes "4" (gate review).
+
+    The pooled list passed this at 1.0 by blinding both sides; the per-language
+    split turned it into a fabricated hard fail — "[numeral changed: [] became
+    [4]]" — though nothing changed: the transcript's 4 IS the script's čtyři.
+    The deliberate semantics: a foreign numeral word is CONTENT in English and
+    still demands acoustic evidence, but a transcript digit matching its value
+    is excused from the changed-numeral veto, handing the verdict to coverage —
+    a short sentence rejects softly as a missing word, a long one absorbs it
+    like any ASR spelling quirk (main's accept, restored where it was safe).
+    """
+    # Short: still rejects — but as coverage evidence, not a fabricated veto.
+    score, sentence = coverage("The Czech word is čtyři.", "The Czech word is 4.")
+    assert 0.0 < score < 0.9
+    assert "numeral changed" not in sentence
+    # Long: the one missing word-form is absorbed, as the pooled list did.
+    assert coverage(
+        "The Czech word čtyři appears twice in the story we tell today.",
+        "The Czech word 4 appears twice in the story we tell today.",
+    )[0] >= 0.9
+    # Reverse quoting (audio said the Czech word where the script wrote the
+    # English one): the weld rescue absorbs the missing value and precision
+    # rejects the inserted word — honest, and no crash.
+    assert coverage("The answer is four.", "The answer is čtyři.")[0] < 0.9
+    # The excusal is gated on the quoting word being UNCOVERED: a transcript
+    # containing BOTH the word and an extra digit heard a number the script
+    # never asked for — English "set" carries the Czech value 100, and a
+    # hallucinated "100" beside it must keep hard-failing, as on main.
+    score, sentence = coverage("The set collapsed.", "The set collapsed. 100.")
+    assert score == 0.0
+    assert "numeral changed" in sentence
+
+
+def test_by_value_scope_is_deliberate() -> None:
+    """Where the by-value branch's equivalence starts and stops (gate review).
+
+    Cross-language value equality follows the blind VOCABULARY: in cs it
+    deliberately includes English (the union exists for "SHA two fifty six"
+    inside Czech prose), so an English number word is a numeral there and
+    matches by value; in en a Czech numeral is content, lands in hyp_words,
+    and the branch refuses. Digits must be canonical: "04" is how an ASR
+    writes digit-by-digit audio ("oh four"), which one value cannot confirm
+    — int() folded it into a pass. "-4" passes and is recorded as such: the
+    sign is punctuation to normalize, stripped before any comparison, so the
+    branch cannot see it by construction.
+    """
+    assert coverage("Sto.", "hundred", "cs")[0] == 1.0
+    assert coverage("Four.", "čtyři", "cs")[0] == 1.0
+    assert coverage("Four.", "čtyři", "en")[0] == 0.0
+    assert coverage("Four.", "-4")[0] == 1.0
+    score, sentence = coverage("Four.", "04")
+    assert score == 0.0
+    assert "unverifiable" in sentence
+
+
 def test_czech_set_is_english_content() -> None:
     """"set" is the genitive plural of Czech sto AND core English vocabulary.
 

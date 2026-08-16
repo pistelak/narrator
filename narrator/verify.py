@@ -59,7 +59,12 @@ SHORT_SENTENCE_WORDS = 3
 # text therefore blinds only English numerals. Czech keeps the UNION: these
 # scripts narrate English tech content, where trap 3's "SHA two fifty six"
 # appears verbatim inside Czech prose, so English numerals must stay blind
-# there — and no Czech content word collides with the English list.
+# there. The union carries one KNOWN collision the other way, inherited
+# unchanged from the pooled list: English "ten" is blinded inside Czech text,
+# where "ten" is the demonstrative pronoun — "Vyber ten." against the ASR's
+# "Vyber deset." passes today exactly as it did on main. Left in place
+# deliberately: removing "ten" from the Czech blind set changes cs verdicts
+# on real renders and needs its own measured pass, not a drive-by.
 _NUMBER_WORDS_EN = set(
     """
     zero one two three four five six seven eight nine ten eleven twelve thirteen
@@ -536,12 +541,29 @@ def coverage_detail(
                     if is_numberish(t, lang)
                 )
 
+            # Digits compare by VALUE, but only in canonical spelling: "04" is
+            # what an ASR writes for digit-by-digit audio ("oh four"), which a
+            # single value cannot confirm — int("04") folded it into a pass,
+            # so refuse instead (gate review of this change). "-4" is
+            # invisible by construction and therefore PASSES: normalize treats
+            # the sign as punctuation like everywhere else in this verifier,
+            # so it arrives as "4" — recorded, not hidden. Cross-language
+            # equivalence follows the blind vocabulary: `not hyp_words` means
+            # every transcript token is numberish IN LANG, which for cs
+            # deliberately includes English (see _NUMBER_WORDS_CS) — "Sto."
+            # against "hundred" passes there by design, while in en a foreign
+            # numeral word is content and lands in hyp_words, refusing here.
+            def _canonical(tokens: list[str]) -> bool:
+                return all(str(int(t)) == t for t in tokens if t.isdigit())
+
             comparable = (
                 not hyp_words
                 and not has_compound_numeral(ref_tokens, lang)
                 and not has_compound_numeral(hyp_tokens, lang)
                 and _valued(ref_tokens)
                 and _valued(hyp_tokens)
+                and _canonical(ref_tokens)
+                and _canonical(hyp_tokens)
             )
             if comparable:
                 ref_nums = sorted(isolated_numerals(ref_tokens, lang))
@@ -763,6 +785,34 @@ def coverage_detail(
             forms = [w for w, val in _NUMERAL_VALUES.items() if val == v]
             if any(f in t for f in forms for t in welded):
                 missing.remove(v)
+        # Cross-language quoting, the one exception to "extra is never
+        # excused". An English script QUOTES a foreign numeral — "The Czech
+        # word is čtyři." — the ASR writes the digit, and per-language
+        # detection sees a 4 on the hyp side it never saw on the ref side.
+        # That is not a changed number: the transcript's value is the value
+        # the script asked for, in another language's spelling. The pooled
+        # list passed this; the split turned it into a fabricated
+        # "[numeral changed: [] became [4]]" (gate review). Excused ONLY
+        # while the quoting word is UNCOVERED, so the verdict is handed to
+        # coverage, which judges it honestly: the word's absence from the
+        # transcript dents its sentence — a short sentence still rejects, as
+        # missing-word evidence, while a long one absorbs it like any ASR
+        # spelling quirk, which is what main did. The covered case stays a
+        # hard fail on purpose: a transcript containing BOTH the quoted word
+        # and an extra digit heard a number the script never asked for —
+        # English "set" (valued 100 for Czech) plus a hallucinated "100"
+        # must keep failing here. Inert in cs, where the union leaves no
+        # content word carrying a numeral value.
+        quoting = [
+            t for k, t in enumerate(ref_display)
+            if not covered[k] and t in _NUMERAL_VALUES
+        ]
+        for v in list(extra):
+            for t in quoting:
+                if _NUMERAL_VALUES[t] == v:
+                    quoting.remove(t)
+                    extra.remove(v)
+                    break
         if missing or extra:
             return CoverageDetail(
                 0.0, f"[numeral changed: {ref_nums} became {hyp_nums}]", word_diagnostics)
