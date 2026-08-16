@@ -281,7 +281,12 @@ def isolated_numerals(
         elif word in _NUMERAL_CLASSES:
             values.append(_NUMERAL_CLASSES[word])
         else:
-            values.append("?" + fold(word, lang)[:12])
+            # The FULL folded token, never a truncation: sentinels compare by
+            # equality, and truncating to a prefix made two 19-digit numbers
+            # differing past the cut identical (gate review). Pathological
+            # length only ever reaches the refusal message, where it is noise,
+            # not a verdict.
+            values.append("?" + fold(word, lang))
     return values
 
 
@@ -629,21 +634,42 @@ def coverage_detail(
             # spellings are one sound, and it must reach this branch too:
             # ("Four", "fore") verified everywhere except here, where the
             # raw tokens hid the equivalence and correct audio always
-            # refused (gate review). Single-token pairs canonicalize
-            # spoken -> written in normalized space, both sides, before any
-            # numeral typing.
-            spoken_to_written: dict[str, str] = {}
+            # refused (gate review). Grouped into equivalence CLASSES, not
+            # walked one hop — alignment composes pairs, so ("Four","fore")
+            # plus ("fore","for") verifies "for", and a single-hop map
+            # refused the chain the caller declared (gate review, again).
+            # Each class canonicalizes into its numeral member; a class with
+            # two distinct numeral spellings refuses to map at all, since
+            # collapsing them would invent an equivalence between numbers.
+            alike_clusters: list[set[str]] = []
             for written, spoken in sound_alikes:
                 wt = normalize(written, lang).split()
                 st = normalize(spoken, lang).split()
-                if len(wt) == 1 and len(st) == 1 and wt[0] != st[0]:
-                    spoken_to_written[st[0]] = wt[0]
+                if len(wt) != 1 or len(st) != 1 or wt[0] == st[0]:
+                    continue
+                cluster = {wt[0], st[0]}
+                rest = []
+                for group in alike_clusters:
+                    if group & cluster:
+                        cluster |= group
+                    else:
+                        rest.append(group)
+                alike_clusters = [*rest, cluster]
+            to_numeral: dict[str, str] = {}
+            for cluster in alike_clusters:
+                numeral = sorted(
+                    m for m in cluster
+                    if is_numberish(m, lang)
+                    or m in _NUMERAL_VALUES or m in _NUMERAL_CLASSES)
+                if len(numeral) == 1:
+                    to_numeral.update(
+                        {m: numeral[0] for m in cluster if m != numeral[0]})
             hyp_tokens = [
-                spoken_to_written.get(t, t)
+                to_numeral.get(t, t)
                 for t in _fuse_digit_groups(normalize(hypothesis, lang).split())
             ]
             ref_tokens = [
-                spoken_to_written.get(t, t)
+                to_numeral.get(t, t)
                 for t in _fuse_digit_groups(ref_tokens)
             ]
 
@@ -910,10 +936,17 @@ def coverage_detail(
         for v in ref_nums:
             if v in extra:
                 extra.remove(v)
-        welded = [t for t in hyp_tokens if not is_numberish(t, lang)]
+        # Only UNCLAIMED transcript tokens can hide a weld: a token the
+        # alignment already matched to a reference word is that word, spoken
+        # correctly — "onerous" aligned to the script's "onerous" was still
+        # rescuing a deleted "one" through its first three letters (gate
+        # review). The real weld ("dvaze") matches no reference word by
+        # construction, so it is always unclaimed.
+        welded = [t for t, taken in zip(hyp_display, hyp_claimed, strict=True)
+                  if not taken]
         for v in list(missing):
-            # Two restrictions keep the rescue from excusing real deletions,
-            # each pinned to an accept it prevented (gate reviews):
+            # Two more restrictions keep the rescue from excusing real
+            # deletions, each pinned to an accept it prevented (gate reviews):
             #
             # Only the CURRENT language's spellings can hide inside a welded
             # token — the ASR that welded "dva z" into "dvaze" writes Czech,

@@ -434,6 +434,11 @@ def test_weld_rescue_requires_the_numeral_as_prefix() -> None:
         "Ve městě dnes žije přesně obyvatel tohoto domu.", "cs")
     assert score == 0.0
     assert "numeral changed" in sentence
+    # And only UNCLAIMED transcript tokens count as weld candidates: an
+    # aligned "onerous" — the script's own word, spoken correctly — was
+    # still excusing a deleted "one" through its first letters (gate review).
+    assert coverage("The onerous task needs one attempt before dawn arrives.",
+                    "The onerous task needs attempt before dawn arrives.")[0] == 0.0
 
 
 def test_all_numeral_refusal_outranks_the_insertion_score() -> None:
@@ -498,6 +503,11 @@ def test_sound_alikes_reach_the_all_numeral_branch() -> None:
     assert coverage("Four.", "fore", sound_alikes=pair)[0] == 1.0
     assert coverage("Four.", "", sound_alikes=pair)[0] == 0.0
     assert coverage("Four.", "nine", sound_alikes=pair)[0] == 0.0
+    # Pairs compose, as they do in alignment: a declared chain reaches the
+    # numeral through every hop, not just the first (gate review).
+    chain = (("Four", "fore"), ("fore", "for"))
+    assert coverage("Four.", "for", sound_alikes=chain)[0] == 1.0
+    assert coverage("Four.", "", sound_alikes=chain)[0] == 0.0
 
 
 def test_ordinary_english_word_sharing_a_czech_spelling_cannot_excuse() -> None:
@@ -560,6 +570,11 @@ def test_unicode_digits_fail_closed_instead_of_crashing() -> None:
     # And int()'s own 4300-digit conversion limit cannot crash the verdict:
     # a pathological all-digit token types as a sentinel and refuses.
     assert coverage("Four.", "9" * 4301)[0] == 0.0
+    # Sentinels carry the FULL token: a 12-character truncation made two
+    # 19-digit numbers differing in the last digits identical (gate review).
+    ref = "The count is 1234567890123456789 in this line."
+    assert coverage(ref, "The count is 1234567890123456799 in this line.")[0] == 0.0
+    assert coverage(ref, ref)[0] == 1.0
 
 
 def test_by_value_scope_is_deliberate() -> None:
