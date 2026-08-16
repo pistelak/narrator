@@ -1,0 +1,15 @@
+# Policy for the /local-review pipeline (engine lives in the user-level
+# skill; see AGENTS.md "Independent review"). This file is only trusted once
+# it is on the default branch — a candidate branch cannot grant itself
+# permissions, and editing this file always escalates to frontier review.
+
+test = ".venv/bin/python -m pytest tests/ -q"
+lint = ".venv/bin/python -m ruff check narrator/ tests/ bench/"
+
+# The set of changes a local model may clear alone. Deliberately narrow:
+# tests/ is NOT here in v1 — telling an additive test from a weakened one
+# needs analysis the pipeline doesn't do, and a weakened test is exactly the
+# kind of change that must not slip through on a weak reviewer's nod.
+local_only_allowlist = ["docs/**", "README.md"]
+
+model = "qwen3.8:27b-mtp-q8_0"

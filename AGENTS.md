@@ -38,11 +38,20 @@ file. That refusal is the product — do not weaken it to make something pass.
 
 ## Independent review
 
-Use a capable reviewer from a different model family than the authoring
-agent (any independent model for human-authored changes). The Codex CLI
-example below therefore fits changes authored outside the GPT family; for
-Codex-authored changes use a non-GPT equivalent, and if none is available,
-say plainly that the independent-review requirement is unmet:
+Day-to-day reviews run through the **/local-review pipeline** (user-level
+skill; policy in `.claude/review.toml`): a local model reviews every plan
+and diff, and a deterministic gate decides when the frontier review below is
+required — exit 2 means blocked until it happens, and only changes inside
+the narrow local-only allowlist may ever land on a local review alone.
+Every objection from any reviewer is verified against the code before
+acting; a weak model's silence is never evidence of safety.
+
+For the escalated (frontier) review, use a capable reviewer from a different
+model family than the authoring agent (any independent model for
+human-authored changes). The Codex CLI example below therefore fits changes
+authored outside the GPT family; for Codex-authored changes use a non-GPT
+equivalent, and if none is available, say plainly that the
+independent-review requirement is unmet:
 
 ```bash
 P=$(mktemp); O=$(mktemp); cat >"$P" <<'EOF'
