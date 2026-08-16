@@ -84,6 +84,7 @@ _NUMBER_WORDS_CS = _NUMBER_WORDS_EN | set(
     jedenáct dvanáct třináct čtrnáct patnáct šestnáct sedmnáct osmnáct devatenáct
     dvacet třicet čtyřicet padesát šedesát sedmdesát osmdesát devadesát
     sto stě sta set tisíc tisíce milion miliony milionů miliarda miliard miliardy
+    milión milióny miliónů miliónu
     jedné jednoho jednomu jedním jednou dvou dvěma tří třech třem třemi
     čtyř čtyřech čtyřem čtyřmi pěti šesti sedmi osmi devíti deseti
     jedenácti dvanácti třinácti čtrnácti patnácti šestnácti sedmnácti osmnácti
@@ -183,8 +184,8 @@ _NUMERAL_VALUES: dict[str, int] = {
     # obliques mean exactly 10**6; a bare PLURAL does not — "Byly jich
     # miliony." means "there were millions (of them)", and mapping
     # miliony=10**6 certified a transcript's literal "1000000" against it at
-    # 1.0 (gate review of this change). Indeterminate forms live in
-    # _NUMERAL_CLASSES below instead. "stě" and "sta" ARE determinate: both
+    # 1.0 (gate review of this change). Indeterminate forms deliberately
+    # appear NOWHERE — see the note below the table. "stě" and "sta" ARE determinate: both
     # are singular case forms of sto — "ve stě případech" (locative, beside
     # "stu"), "jeden ze sta" / "bez sta korun" (genitive; IJP, heslo sto) —
     # and unvaluing "sta" hard-failed that genitive against a transcript's
@@ -192,26 +193,27 @@ _NUMERAL_VALUES: dict[str, int] = {
     # "tři sta") only occur inside compounds, which are suppressed before
     # any value lookup.
     "stě": 100, "sta": 100,
-    "milion": 10**6, "milionu": 10**6,
+    # Both Czech spellings of the singular are current ("milion" post-reform,
+    # "milión" traditional) and an ASR may write either; the accented plural
+    # obliques fold onto their unaccented sentinels, which is how "milióny"
+    # matches "miliony" while "milionů" still refuses both.
+    "milion": 10**6, "milionu": 10**6, "milión": 10**6, "miliónu": 10**6,
     "miliarda": 10**9, "miliardě": 10**9,
 }
 
-# Indeterminate large-unit forms: a bare plural names a MAGNITUDE, not a
-# number. They cannot equate to any digit ("Byly jich miliony." is not
-# 1000000), but they cannot simply go unvalued either — an unvalued blinded
-# token vanished from the value comparison entirely, so DELETING "miliony"
-# from correct audio compared [] == [] and passed at 1.0 (gate review, the
-# round after unvaluing them). Each form maps to a class sentinel instead:
-# sentinels match their own class — the ASR writing any same-magnitude
-# inflection back is correct audio — and mismatch every exact value and
-# every other class, so deletion, substitution, and digit-equating all
-# refuse while identity passes.
-_NUMERAL_CLASSES: dict[str, str] = {
-    "set": "~100",
-    "tisíce": "~1000", "tisících": "~1000",
-    "miliony": "~1000000", "milionů": "~1000000",
-    "miliard": "~1000000000", "miliardy": "~1000000000",
-}
+# Indeterminate large-unit forms (set, tisíce/tisících, miliony/milionů,
+# miliard/miliardy) deliberately have NO entry anywhere: a bare plural names
+# a magnitude, not a number, so it cannot equate to any digit ("Byly jich
+# miliony." is not 1000000 — gate review) — but it cannot simply go unvalued
+# either, because an unvalued blinded token once vanished from the value
+# comparison entirely and DELETING "miliony" compared [] == [] at 1.0 (the
+# next gate review). They fall through to isolated_numerals' per-form "?"
+# sentinels instead: identity and fold-level spelling variance match,
+# everything else — digits, deletion, and OTHER INFLECTIONS — refuses. A
+# shared per-magnitude class was tried between those two reviews and matched
+# "miliony" to "milionů", which are audibly different endings in teaching
+# audio (third gate review); fold() already absorbs the variance an ASR
+# actually produces, so the sentinel is per spoken form.
 
 
 def has_compound_numeral(words: list[str], lang: str = "en") -> bool:
@@ -231,8 +233,7 @@ def isolated_numeral_positions(
     def numberish(w: str) -> bool:
         if is_numberish(w, lang):
             return True
-        return quote_foreign and not w.isascii() and (
-            w in _NUMERAL_VALUES or w in _NUMERAL_CLASSES)
+        return quote_foreign and not w.isascii() and w in _NUMERAL_VALUES
 
     values: list[tuple[int, int | str]] = []
     for i, word in enumerate(words):
@@ -246,8 +247,6 @@ def isolated_numeral_positions(
             values.append((i, int(word)))
         elif word in _NUMERAL_VALUES:
             values.append((i, _NUMERAL_VALUES[word]))
-        elif word in _NUMERAL_CLASSES:
-            values.append((i, _NUMERAL_CLASSES[word]))
         else:
             # The FULL folded token, never a truncation: sentinels compare by
             # equality, and truncating to a prefix made two 19-digit numbers
@@ -281,12 +280,13 @@ def isolated_numerals(
       "oh four", which one value cannot confirm — int() once folded it into
       a pass. Capped at 18 digits because int() itself raises past 4300 and
       a verifier crash mid-render is worse than any refusal.
-    - "~N" class sentinels for indeterminate plurals (_NUMERAL_CLASSES):
-      same-magnitude inflections match, digits and other classes refuse.
-    - "?<folded token>" for everything else numberish-but-unvalued, so an
-      unknown form still matches its own identity transcript and refuses
-      everything else. Folded, because fold() is this library's measured
-      answer to same-sound spelling variance.
+    - "?<folded token>" for everything numberish-but-unvalued — unknown
+      forms and the indeterminate plurals — so a token still matches its
+      own identity transcript and refuses everything else, including its
+      OTHER inflections: "miliony" and "milionů" are audibly different
+      endings, and a shared per-magnitude class matched them (gate
+      review). Folded, because fold() is this library's measured answer
+      to the spelling variance an ASR actually produces.
 
     `quote_foreign` additionally treats non-ASCII tokens with table entries
     as numerals — the reference side of the changed-numeral check uses it so
@@ -299,47 +299,38 @@ def isolated_numerals(
     return [v for _, v in isolated_numeral_positions(words, lang, quote_foreign)]
 
 
-def _fuse_digit_groups(tokens: list[str]) -> list[str]:
-    """Rejoin "1,000,000" after normalize spaced its separators away.
-
-    Punctuation stripping turns a grouped number into "1 000 000" — three
-    adjacent digit tokens, which compound suppression then refuses, so
-    "Million." against an ASR's grouped "1,000,000" hard-failed while the
-    ungrouped "1000000" passed (gate review). Fused only in the exact
-    grouped shape — a 1-3 digit head with no leading zero followed by
-    all-3-digit groups — so genuine digit compounds ("4 5") keep their
-    ambiguity and stay suppressed.
-    """
-    fused: list[str] = []
-    i = 0
-    while i < len(tokens):
-        t = tokens[i]
-        if _plain_digits(t) and 1 <= len(t) <= 3 and str(int(t)) == t:
-            j = i + 1
-            while j < len(tokens) and _plain_digits(tokens[j]) and len(tokens[j]) == 3:
-                j += 1
-            if j > i + 1:
-                fused.append("".join(tokens[i:j]))
-                i = j
-                continue
-        fused.append(t)
-        i += 1
-    return fused
+# Digit grouping in the RAW text, before normalize erases which separator
+# was used — that erasure is the point of doing it here. A token-level fuse
+# after normalize saw only "1 000" and could not tell an English decimal
+# from a Czech grouped thousand: "1.000" is one thousand in Czech
+# orthography but 1.0 in English, and fusing it in English certified audio
+# that said "one point zero zero zero" (gate review). Each language fuses
+# only ITS grouping separator — en: comma; cs: dot or thin space — in the
+# exact grouped shape (1-3 digit head, all-3-digit groups). Everything else
+# falls apart into adjacent digit tokens, which compound suppression
+# refuses: the fail-closed direction for every ambiguous spelling.
+_DIGIT_GROUPS = {
+    "en": re.compile(r"\b\d{1,3}(?:,\d{3})+\b"),
+    "cs": re.compile(r"\b\d{1,3}(?:[. ]\d{3})+\b"),
+}
 
 
 def _numeral_tokens(text: str, lang: str) -> list[str]:
-    """Normalized tokens for the numeral checks: fused per SENTENCE.
+    """Normalized tokens for the numeral checks: grouping fused per SENTENCE.
 
     Fusing across the whole text let punctuation masquerade as grouping —
-    "4. 500." is two spoken numbers, but normalize erases the boundary and
-    a full-text fuse read it as the single 4500 an ASR wrote for different
-    audio (gate review). A grouped number never spans a sentence; two bare
-    numerals in adjacent sentences land adjacent after concatenation and
-    compound suppression refuses them, the fail-closed direction.
+    "4. 500." is two spoken numbers, but a full-text view read it as the
+    single 4500 an ASR wrote for different audio (gate review). A grouped
+    number never spans a sentence; two bare numerals in adjacent sentences
+    land adjacent after concatenation and compound suppression refuses
+    them, the fail-closed direction.
     """
+    pattern = _DIGIT_GROUPS["cs" if lang.startswith("cs") else "en"]
     tokens: list[str] = []
     for sentence in split_sentences(text):
-        tokens.extend(_fuse_digit_groups(normalize(sentence, lang).split()))
+        fused = pattern.sub(
+            lambda m: re.sub(r"\D", "", m.group()), sentence)
+        tokens.extend(normalize(fused, lang).split())
     return tokens
 
 
@@ -685,7 +676,7 @@ def coverage_detail(
                 numeral = sorted(
                     m for m in cluster
                     if is_numberish(m, lang)
-                    or m in _NUMERAL_VALUES or m in _NUMERAL_CLASSES)
+                    or m in _NUMERAL_VALUES)
                 if len(numeral) == 1:
                     to_numeral.update(
                         {m: numeral[0] for m in cluster if m != numeral[0]})
@@ -986,34 +977,43 @@ def coverage_detail(
             # singular form of sto) excuse a deleted "sto" through the
             # unrelated "městě", and "one" hide inside "stone".
             #
-            # And the REMAINDER must be the numeral's own neighbor from the
-            # reference — a weld is physically the numeral merged with the
-            # word beside it, which is why "dvaze" decomposes as "dva" +
-            # the "z" that follows in the script. Prefix alone let any
-            # unclaimed word starting with a numeral spelling qualify:
-            # "oneself" excused a deleted "one" whose neighbors were
-            # elsewhere entirely. Compared in fold space, one direction
-            # prefix-loose ("ze" against the script's "z" is the same
-            # preposition with its vowel variant).
+            # And the REMAINDER must be the word that FOLLOWS the numeral in
+            # the reference — a weld preserves temporal order, so a
+            # numeral-first welded token can only continue with the word the
+            # audio spoke next: "dvaze" is "dva" + the "z" that follows in
+            # the script. Prefix alone let any unclaimed word starting with
+            # a numeral spelling qualify ("oneself" excused a deleted "one"
+            # whose neighbors were elsewhere entirely), and matching EITHER
+            # neighbor accepted the temporally impossible "onealpha" for
+            # "alpha one" (gate reviews, consecutive). The comparison is
+            # ACCENT-blind but not fold-blind: the ASR's unaccented "dveze"
+            # is the same audio as "dvě z", so the _FOLD table applies —
+            # but the full fold() is context-dependent (a bare Czech "z"
+            # devoices to "s"; the same z inside the weld does not), so
+            # folding the pieces separately can never reassemble the token.
+            # The remainder side is prefix-loose one direction ("ze"
+            # against the script's "z" is that preposition's vowel variant).
+            def _accents(w: str) -> str:
+                return w.translate(_FOLD) if lang.startswith("cs") else w
             forms = [
-                w for w in (*_NUMERAL_VALUES, *_NUMERAL_CLASSES)
-                if (_NUMERAL_VALUES.get(w, _NUMERAL_CLASSES.get(w)) == v
-                    and is_numberish(w, lang))
+                _accents(w) for w, val in _NUMERAL_VALUES.items()
+                if val == v and is_numberish(w, lang)
             ]
-            neighbors = {
-                fold(ref_tokens[j], lang)
-                for i, val in ref_positions if val == v
-                for j in (i - 1, i + 1) if 0 <= j < len(ref_tokens)
+            followers = {
+                _accents(ref_tokens[i + 1])
+                for i, val in ref_positions
+                if val == v and i + 1 < len(ref_tokens)
             }
             def _weld_matches(
-                t: str, f: str, neighbors: set[str] = neighbors,
+                t: str, ff: str, followers: set[str] = followers,
             ) -> bool:
-                if not t.startswith(f) or t == f:
+                ft = _accents(t)
+                if not ft.startswith(ff) or ft == ff:
                     return False
-                rest = fold(t[len(f):], lang)
+                rest = ft[len(ff):]
                 return any(rest.startswith(nb) or nb.startswith(rest)
-                           for nb in neighbors if nb)
-            if any(_weld_matches(t, f) for f in forms for t in welded):
+                           for nb in followers if nb)
+            if any(_weld_matches(t, ff) for ff in forms for t in welded):
                 missing.remove(v)
         if missing or extra:
             return CoverageDetail(

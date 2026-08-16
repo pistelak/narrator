@@ -321,7 +321,7 @@ def test_added_large_unit_values_are_pinned() -> None:
     correct transcript's "100" — it is a singular case form (IJP: "bez sta
     korun"), so it carries the exact value; the plural reading only occurs
     in compounds, which are suppressed before any lookup."""
-    from narrator.verify import _NUMERAL_CLASSES, _NUMERAL_VALUES
+    from narrator.verify import _NUMERAL_VALUES
 
     expected = {
         "stě": 100, "sta": 100,
@@ -330,14 +330,9 @@ def test_added_large_unit_values_are_pinned() -> None:
     }
     for word, value in expected.items():
         assert _NUMERAL_VALUES[word] == value, word
-    classes = {
-        "set": "~100", "tisíce": "~1000", "tisících": "~1000",
-        "miliony": "~1000000", "milionů": "~1000000",
-        "miliard": "~1000000000", "miliardy": "~1000000000",
-    }
-    for word, sentinel in classes.items():
+    for word in ("set", "tisíce", "tisících",
+                 "miliony", "milionů", "miliard", "miliardy"):
         assert word not in _NUMERAL_VALUES, word
-        assert _NUMERAL_CLASSES[word] == sentinel, word
     # And through the public surface, one per magnitude:
     assert coverage("Stě.", "100", "cs")[0] == 1.0
     assert coverage("Milionu.", "1000000", "cs")[0] == 1.0
@@ -439,12 +434,20 @@ def test_weld_rescue_requires_the_numeral_as_prefix() -> None:
     # still excusing a deleted "one" through its first letters (gate review).
     assert coverage("The onerous task needs one attempt before dawn arrives.",
                     "The onerous task needs attempt before dawn arrives.")[0] == 0.0
-    # And the remainder must be the numeral's own reference neighbor — a
-    # weld is the numeral merged with the word beside it. An unclaimed
-    # "oneself" elsewhere in the transcript excused a deleted "one" whose
-    # neighbors were entirely different words (gate review).
+    # And the remainder must be the word FOLLOWING the numeral in the
+    # reference — a weld preserves temporal order. An unclaimed "oneself"
+    # elsewhere in the transcript excused a deleted "one" whose neighbors
+    # were entirely different words, and matching either neighbor accepted
+    # the temporally impossible "onealpha" for "alpha one" (gate reviews).
     assert coverage("You must do it one time by yourself today, correctly.",
                     "You must do it time by oneself today, correctly.")[0] == 0.0
+    assert coverage("Alpha one beta gamma delta epsilon zeta eta theta.",
+                    "onealpha beta gamma delta epsilon zeta eta theta.")[0] == 0.0
+    # The weld itself compares in fold space: the ASR's unaccented "dveze"
+    # is the same audio as "dvě z", and the accent must not decide the
+    # verdict (gate review).
+    assert coverage("Libovolné dvě z: dvě věci k ochraně místo jedné.",
+                    "Libovolné dveze: dvě věci k ochraně místo jedné.", "cs")[0] > 0.0
 
 
 def test_all_numeral_refusal_outranks_the_insertion_score() -> None:
@@ -494,6 +497,12 @@ def test_grouped_digits_are_one_number() -> None:
     assert coverage("Thousand.", "1,000")[0] == 1.0
     # Not the grouped shape: a 1-digit tail is a compound, not a grouping.
     assert coverage("Million.", "1 0 000")[0] == 0.0
+    # Grouping is per-LANGUAGE, decided before normalize erases the
+    # separator: "1.000" is a grouped thousand in Czech orthography but a
+    # decimal in English — fusing it in English certified audio that said
+    # "one point zero zero zero" (gate review).
+    assert coverage("Tisíc.", "1.000", "cs")[0] == 1.0
+    assert coverage("Thousand.", "1.000")[0] == 0.0
     # Fusion never crosses a sentence boundary: "4. 500." is two spoken
     # numbers, and a full-text fuse read it as the 4500 an ASR wrote for
     # different audio (gate review). Adjacent bare numerals across the
@@ -541,10 +550,12 @@ def test_indeterminate_plural_units_do_not_equate_to_a_value() -> None:
     transcript's literal "1000000" at 1.0 (gate review). A bare plural is not
     any one number — but simply UNVALUING it made the token vanish from the
     comparison, so deleting "miliony" outright compared [] == [] and passed
-    (next gate review). The class sentinel gives it presence without a value:
-    digits and deletion hard-fail, while identity and a same-magnitude
-    inflection (the spelling variance fold() exists for, here at the
-    morphology level) still pass — that is what correct audio produces."""
+    (next gate review). The per-form sentinel gives it presence without a
+    value: digits, deletion, and OTHER INFLECTIONS all hard-fail — a shared
+    per-magnitude class was tried and matched "miliony" to "milionů", which
+    are audibly different endings (third gate review) — while identity and
+    fold-level spelling variance still pass, which is what correct audio
+    produces."""
     score, sentence = coverage("Byly jich miliony.", "Byly jich 1000000.", "cs")
     assert score == 0.0
     assert "numeral changed" in sentence
@@ -552,8 +563,11 @@ def test_indeterminate_plural_units_do_not_equate_to_a_value() -> None:
     assert score == 0.0
     assert "numeral changed" in sentence
     assert coverage("Byly jich miliony.", "Byly jich miliony.", "cs")[0] == 1.0
-    assert coverage("Byly jich miliony.", "Byly jich milionů.", "cs")[0] == 1.0
-    # Classes are per-magnitude, not one pooled bucket:
+    # Sentinels are per spoken form: a different inflection is different
+    # audio, not spelling variance — fold() covers what an ASR actually
+    # varies (milióny/miliony), and nothing beyond it.
+    assert coverage("Byly jich miliony.", "Byly jich milióny.", "cs")[0] == 1.0
+    assert coverage("Byly jich miliony.", "Byly jich milionů.", "cs")[0] == 0.0
     assert coverage("Byly jich miliony.", "Byly jich tisíce.", "cs")[0] == 0.0
 
 
