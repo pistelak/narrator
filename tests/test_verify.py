@@ -295,11 +295,15 @@ def test_valueless_blind_words_cannot_verify_vacuously() -> None:
         assert coverage(f"{word}.", "")[0] == 0.0, word
     for word in sorted(_NUMBER_WORDS_CS):
         assert coverage(f"{word}.", "", "cs")[0] == 0.0, word
-    # The legitimate direction the new values buy: an isolated large-unit form
-    # against the digits every ASR writes back is a match, not a refusal.
-    assert coverage("Tisíce.", "1000", "cs")[0] == 1.0
+    # The legitimate direction the new values buy: an isolated DETERMINATE
+    # form against the digits every ASR writes back is a match, not a refusal.
+    assert coverage("Milionu.", "1000000", "cs")[0] == 1.0
     assert coverage("Miliarda.", "miliarda", "cs")[0] == 1.0
-    assert coverage("Set.", "100", "cs")[0] == 1.0
+    # Indeterminate forms refuse rather than equate: bare "tisíce" means
+    # "thousands" and bare "set" is the counted form — neither IS any one
+    # value, so certifying a digit against them would be a guess.
+    assert coverage("Tisíce.", "1000", "cs")[0] == 0.0
+    assert coverage("Set.", "100", "cs")[0] == 0.0
     # And a changed value still fails by value, not vacuously anything.
     assert coverage("Miliarda.", "1000000", "cs")[0] == 0.0
 
@@ -307,21 +311,26 @@ def test_valueless_blind_words_cannot_verify_vacuously() -> None:
 def test_added_large_unit_values_are_pinned() -> None:
     """The exhaustive sweep above proves rejection against silence, not VALUES:
     a wrong mapping (stě = 10**6) would have stayed green through it. Each
-    added entry is pinned to its integer here (gate review of this change)."""
+    added entry is pinned to its integer here, and the INDETERMINATE forms are
+    pinned to their absence: mapping miliony=10**6 certified a transcript's
+    literal "1000000" against "Byly jich miliony." — "there were millions",
+    not exactly one (gate review). Value-less forms stay blinded and refuse
+    via the _valued guard, which the sweep enforces."""
     from narrator.verify import _NUMERAL_VALUES
 
     expected = {
-        "sta": 100, "stě": 100, "set": 100,
-        "tisíce": 1000, "tisících": 1000,
-        "milion": 10**6, "miliony": 10**6, "milionů": 10**6, "milionu": 10**6,
-        "miliarda": 10**9, "miliard": 10**9, "miliardy": 10**9, "miliardě": 10**9,
+        "stě": 100,
+        "milion": 10**6, "milionu": 10**6,
+        "miliarda": 10**9, "miliardě": 10**9,
     }
     for word, value in expected.items():
         assert _NUMERAL_VALUES[word] == value, word
+    for word in ("sta", "set", "tisíce", "tisících",
+                 "miliony", "milionů", "miliard", "miliardy"):
+        assert word not in _NUMERAL_VALUES, word
     # And through the public surface, one per magnitude:
     assert coverage("Stě.", "100", "cs")[0] == 1.0
-    assert coverage("Tisíce.", "1000", "cs")[0] == 1.0
-    assert coverage("Milionů.", "1000000", "cs")[0] == 1.0
+    assert coverage("Milionu.", "1000000", "cs")[0] == 1.0
     assert coverage("Miliardě.", "1000000000", "cs")[0] == 1.0
 
 
@@ -352,11 +361,75 @@ def test_quoted_foreign_numeral_is_coverage_evidence_not_a_changed_number() -> N
     assert coverage("The answer is four.", "The answer is čtyři.")[0] < 0.9
     # The excusal is gated on the quoting word being UNCOVERED: a transcript
     # containing BOTH the word and an extra digit heard a number the script
-    # never asked for — English "set" carries the Czech value 100, and a
-    # hallucinated "100" beside it must keep hard-failing, as on main.
+    # never asked for and must keep hard-failing.
+    score, sentence = coverage(
+        "The word čtyři matters.", "The word čtyři matters. 4.")
+    assert score == 0.0
+    assert "numeral changed" in sentence
+    # And on the word being NON-ASCII: "set" carries no value and could not
+    # excuse even if it did — a hallucinated "100" beside it fails, as on main.
     score, sentence = coverage("The set collapsed.", "The set collapsed. 100.")
     assert score == 0.0
     assert "numeral changed" in sentence
+
+
+def test_weld_rescue_searches_only_the_render_languages_spellings() -> None:
+    """A dropped English "hundred" was rescued by "set" ⊂ "settings".
+
+    The weld forms were looked up across every language's spellings, so the
+    Czech counted form "set" (briefly valued 100) hid inside an ordinary
+    English word and a transcript missing its number passed at 1.0 (gate
+    review). The ASR that welds writes the render's language — "dvaze" is
+    Czech output — so only the render language's own spellings may rescue;
+    the real weld case stays pinned two tests down.
+    """
+    score, sentence = coverage(
+        "The value is a hundred percent in these settings today.",
+        "The value is a percent in these settings today.")
+    assert score == 0.0
+    assert "numeral changed" in sentence
+
+
+def test_ordinary_english_word_sharing_a_czech_spelling_cannot_excuse() -> None:
+    """Audio that said "100" where the script says "set" scored 0.90 — the
+    accept boundary (gate review). The quoting excusal treated native English
+    "set" as a quoted Czech numeral; it is gated to non-ASCII tokens now,
+    because the motivating case is quoted Czech, whose diacritics no native
+    English word carries. The refusal is a hard numeral fail: the transcript
+    shows a value the (English-view) script never asked for."""
+    score, sentence = coverage(
+        "Remember the set you bought in the market last spring.",
+        "Remember the 100 you bought in the market last spring.")
+    assert score == 0.0
+    assert "numeral changed" in sentence
+
+
+def test_indeterminate_plural_units_do_not_equate_to_a_value() -> None:
+    """"Byly jich miliony." — "there were millions (of them)" — certified the
+    transcript's literal "1000000" at 1.0 (gate review). A bare plural is not
+    any one number, so its value mapping is removed: the digit transcript now
+    hard-fails as an extra numeral, while identity (the ASR writing the same
+    word back, which is what correct audio produces) still passes."""
+    score, sentence = coverage("Byly jich miliony.", "Byly jich 1000000.", "cs")
+    assert score == 0.0
+    assert "numeral changed" in sentence
+    assert coverage("Byly jich miliony.", "Byly jich miliony.", "cs")[0] == 1.0
+
+
+def test_unicode_digits_fail_closed_instead_of_crashing() -> None:
+    """coverage("Four.", "²") raised ValueError: "²".isdigit() is True and
+    int("²") is not — and a verifier CRASH mid-render is worse than any
+    refusal, because it takes the whole render down instead of failing one
+    chunk closed (gate review; the isdigit/int mismatch predates this branch
+    in isolated_numerals and was repeated in the by-value branch). Unicode
+    digits carry no value this round-trip can compare, so both sites now
+    refuse them as unverifiable."""
+    score, sentence = coverage("Four.", "²")
+    assert score == 0.0
+    assert "unverifiable" in sentence
+    score, sentence = coverage("².", "²")
+    assert score == 0.0
+    assert "unverifiable" in sentence
 
 
 def test_by_value_scope_is_deliberate() -> None:

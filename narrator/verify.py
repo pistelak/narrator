@@ -179,18 +179,22 @@ _NUMERAL_VALUES: dict[str, int] = {
     "dvaceti": 20, "třiceti": 30, "čtyřiceti": 40, "padesáti": 50,
     "šedesáti": 60, "sedmdesáti": 70, "osmdesáti": 80, "devadesáti": 90,
     "stu": 100, "tisíci": 1000,
-    # Plural and oblique forms of the large units. Every word the blind lists
-    # can delete MUST carry a value here: isolated_numerals() silently omits
-    # value-less tokens, so "Set." against the EMPTY transcript compared
-    # [] == [] in the by-value branch and certified silence at 1.0 — the exact
-    # laundering that branch was built to close, reopened through a vocabulary
-    # gap (counter-review of this change). The guard at the branch keeps any
-    # future gap fail-closed; these entries make the legitimate comparisons
-    # pass instead of refuse.
-    "sta": 100, "stě": 100, "set": 100,
-    "tisíce": 1000, "tisících": 1000,
-    "milion": 10**6, "miliony": 10**6, "milionů": 10**6, "milionu": 10**6,
-    "miliarda": 10**9, "miliard": 10**9, "miliardy": 10**9, "miliardě": 10**9,
+    # DETERMINATE forms of the large units only. "milion" and its singular
+    # obliques mean exactly 10**6; a bare PLURAL does not — "Byly jich
+    # miliony." means "there were millions (of them)", and mapping
+    # miliony=10**6 certified a transcript's literal "1000000" against it at
+    # 1.0 (gate review of this change). The indeterminate forms — sta/set
+    # (bare "hundreds" / the counted form after five and up), tisíce/tisících,
+    # miliony/milionů/miliard/miliardy — therefore carry NO value on purpose:
+    # they stay blinded, and the _valued guard in the by-value branch refuses
+    # them as non-comparable, which the silence sweep in the tests enforces
+    # word by word. In compounds ("pět set", "dva tisíce") they are
+    # suppressed with the rest of the compound and never reach a value
+    # lookup. "stě" IS determinate — it occurs as the singular locative
+    # ("ve stě případech"), parallel to "stu" above.
+    "stě": 100,
+    "milion": 10**6, "milionu": 10**6,
+    "miliarda": 10**9, "miliardě": 10**9,
 }
 
 
@@ -219,7 +223,7 @@ def isolated_numerals(words: list[str], lang: str = "en") -> list[int]:
         next_num = i + 1 < len(words) and is_numberish(words[i + 1], lang)
         if prev_num or next_num:
             continue          # part of a compound; ambiguous, so skip
-        if word.isdigit():
+        if _plain_digits(word):
             values.append(int(word))
         elif word in _NUMERAL_VALUES:
             values.append(_NUMERAL_VALUES[word])
@@ -381,6 +385,18 @@ def normalize(text: str, lang: str = "en") -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", text)).strip()
 
 
+def _plain_digits(token: str) -> bool:
+    """ASCII digits only, so a value lookup can never raise.
+
+    str.isdigit() accepts superscripts and other unicode digits that int()
+    rejects — coverage("Four.", "²") CRASHED with ValueError mid-verdict
+    (gate review), and a verifier crash is worse than any refusal: it takes
+    the whole render down instead of failing one chunk closed. Such tokens
+    carry no spoken value this round-trip can compare; every value path must
+    gate on this, never on bare isdigit()."""
+    return token.isascii() and token.isdigit()
+
+
 def is_numberish(word: str, lang: str = "en") -> bool:
     """A token that carries only numeric value, so it can be ignored.
 
@@ -536,7 +552,7 @@ def coverage_detail(
             # any future gap into a refusal instead of a vacuous pass.
             def _valued(tokens: list[str]) -> bool:
                 return all(
-                    t.isdigit() or t in _NUMERAL_VALUES
+                    _plain_digits(t) or t in _NUMERAL_VALUES
                     for t in tokens
                     if is_numberish(t, lang)
                 )
@@ -554,7 +570,7 @@ def coverage_detail(
             # against "hundred" passes there by design, while in en a foreign
             # numeral word is content and lands in hyp_words, refusing here.
             def _canonical(tokens: list[str]) -> bool:
-                return all(str(int(t)) == t for t in tokens if t.isdigit())
+                return all(str(int(t)) == t for t in tokens if _plain_digits(t))
 
             comparable = (
                 not hyp_words
@@ -782,7 +798,14 @@ def coverage_detail(
                 extra.remove(v)
         welded = [t for t in hyp_tokens if not is_numberish(t, lang)]
         for v in list(missing):
-            forms = [w for w, val in _NUMERAL_VALUES.items() if val == v]
+            # Only the CURRENT language's spellings can hide inside a welded
+            # token: the ASR that welded "dva z" into "dvaze" writes Czech, so
+            # a Czech render searches Czech forms. Searching every language's
+            # forms let the Czech "set" (= 100, briefly valued) rescue a
+            # dropped English "hundred" through "set" ⊂ "settings" — correct-
+            # looking audio missing its number, accepted at 1.0 (gate review).
+            forms = [w for w, val in _NUMERAL_VALUES.items()
+                     if val == v and is_numberish(w, lang)]
             if any(f in t for f in forms for t in welded):
                 missing.remove(v)
         # Cross-language quoting, the one exception to "extra is never
@@ -792,20 +815,38 @@ def coverage_detail(
         # That is not a changed number: the transcript's value is the value
         # the script asked for, in another language's spelling. The pooled
         # list passed this; the split turned it into a fabricated
-        # "[numeral changed: [] became [4]]" (gate review). Excused ONLY
-        # while the quoting word is UNCOVERED, so the verdict is handed to
-        # coverage, which judges it honestly: the word's absence from the
-        # transcript dents its sentence — a short sentence still rejects, as
-        # missing-word evidence, while a long one absorbs it like any ASR
-        # spelling quirk, which is what main did. The covered case stays a
-        # hard fail on purpose: a transcript containing BOTH the quoted word
-        # and an extra digit heard a number the script never asked for —
-        # English "set" (valued 100 for Czech) plus a hallucinated "100"
-        # must keep failing here. Inert in cs, where the union leaves no
+        # "[numeral changed: [] became [4]]" (gate review). Two gates keep
+        # the excusal from becoming a hole:
+        #
+        # NON-ASCII only. The value table is keyed by spelling, not language,
+        # so an ordinary English word can shadow a Czech form: through "set"
+        # (briefly valued 100) the excusal accepted a transcript's "100"
+        # where the audio should have said the word "set" — at exactly 0.90
+        # (second gate review). No English dictionary exists here to tell
+        # quoted-Czech from native-English, but the motivating case is
+        # quoted Czech, whose diacritics no English text carries natively:
+        # čtyři, pět, tisíc qualify; ASCII spellings two languages could
+        # share ("sto", "dva") never excuse and soft-fail as missing words —
+        # the fail-closed direction.
+        #
+        # UNCOVERED only, so the verdict is handed to coverage, which judges
+        # honestly: the quoted word's absence dents its sentence — a short
+        # sentence still rejects, as missing-word evidence, while a long one
+        # absorbs it like any ASR spelling quirk, which is what main did.
+        # The covered case stays a hard fail on purpose: a transcript
+        # containing BOTH "čtyři" and an extra "4" heard a number the
+        # script never asked for. Inert in cs, where the union leaves no
         # content word carrying a numeral value.
+        #
+        # Known limit, deferred deliberately: a quoted foreign COMPOUND —
+        # "dvacet jedna" against the ASR's "21" — still hard-fails, where
+        # the pooled list passed it. Composing a value across foreign word
+        # sequences is exactly the [2,50,6]-vs-[256] ambiguity that compound
+        # suppression exists to avoid, so it stays a refusal until real
+        # renders motivate better.
         quoting = [
             t for k, t in enumerate(ref_display)
-            if not covered[k] and t in _NUMERAL_VALUES
+            if not covered[k] and not t.isascii() and t in _NUMERAL_VALUES
         ]
         for v in list(extra):
             for t in quoting:
