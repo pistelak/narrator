@@ -747,6 +747,34 @@ with `--ranked` (`wants_rise=yes_no_question`, threshold 1.5 st, unchanged
   selection threshold — all tunable via config against this probe, none
   blocking adoption of the feature as shipped.
 
+### 11.6 Where the question cue actually lives (operator listening finding)
+
+Listening to the Tom samples, the operator noticed the intonation differing
+mostly at the *beginning* of questions, not the end. Measured on the
+existing minimal pairs (same wording as question and declarative, onset =
+median F0 of the first 500 ms of voicing, register = utterance median,
+question minus declarative, averaged over takes per voice):
+
+- **English carries the cue at the onset**: "Are you coming to the meeting
+  tomorrow?" starts +0.8 to +3.7 st above its declarative twin and sits
+  +1.3 to +4.6 st higher in register on EVERY voice — while its terminal
+  contour stays flat. Tom shows the largest gap (+3.2 st onset, +4.1 st
+  register), which is what the operator heard.
+- **Czech carries it terminally**: onset deltas hover near zero or
+  negative; the question signal is the terminal rise the §11 metric
+  measures.
+
+Consequences: the terminal-delta metric understates perceived question
+quality for English (the en_yesno "misses" already sound like questions —
+confirmed by the operator's ladder listening pass, where even +1.4 st takes
+read as acceptable); and the ranked ladder's exhausted searches on English
+yes/no sentences were hunting a cue this model does not use for that
+language. Nothing is broken — the fallback ships the first verified take —
+but if the extra generations ever matter, the measured refinement is to
+also accept takes whose register sits clearly above the voice's own
+baseline (the reference clip provides that baseline for free). Parked,
+with this data as its justification.
+
 ## Appendix A — Reproducing
 
 ```sh
