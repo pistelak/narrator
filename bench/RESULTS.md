@@ -713,6 +713,39 @@ Findings:
   a `narrator/` change (prosody-aware attempt ranking) and needs its own
   design + review round; parked as the measured next step.
 
+### 11.5 Rise selection in the ladder, measured (same day)
+
+The parked step was designed (adversarial review reversed two v1 decisions:
+intent must be caller-supplied because wh-questions end in `?` and correctly
+fall, and the feature is opt-in), implemented as
+`SynthConfig.wants_rise` + `narrator/prosody.py`, and validated by the probe
+with `--ranked` (`wants_rise=yes_no_question`, threshold 1.5 st, unchanged
+`max_attempts=3`):
+
+| voice, yes/no takes | raw rise | ranked rise | extra generations | verify |
+|---|---|---|---|---|
+| Mira (+question ref) | 16/27 (59%) | 20/27 (74%) | +24 over 63 takes | 63/63 |
+| explainer-07 | 16/27 (59%) | 22/26 (85%) | +17 over 63 takes | 60/63* |
+
+\* the recurring "jsi"→"si" orthographic rejections, unrelated to prosody.
+
+- **The naive 1−0.4³ ≈ 94% projection is RETRACTED**; the review was right
+  that it assumed i.i.d. takes. Measured uplift is +15/+26 points to
+  74–85%, because rise probability is per-text, not per-take: the misses
+  cluster in the same few sentences (e.g. "Běží ti ten deployment na
+  Kubernetes?" and "Are you coming to the meeting tomorrow?" for Mira),
+  which flat-line through all three attempts.
+- Falls and verification are untouched — wh/declarative categories match
+  their raw runs, and no ranked take failed verification that its raw
+  counterpart passed. Prosody-as-preference held: nothing gates.
+- Cost landed as designed: +27-38% generations, question chunks only,
+  ~206 s vs ~150-175 s per 63-take run.
+- Remaining measured knobs for the stubborn texts, in order of promise:
+  per-text rewording (the flat-liners are also the clumsier sentences),
+  raising `max_attempts` for intent-flagged chunks, and softening the
+  selection threshold — all tunable via config against this probe, none
+  blocking adoption of the feature as shipped.
+
 ## Appendix A — Reproducing
 
 ```sh
