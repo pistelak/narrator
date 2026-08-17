@@ -595,6 +595,124 @@ English — almost certainly worth it for an assistant that mixes CZ/EN.
 Piper remains the right pick where the ~0.015 RTF / 60 MB footprint is
 paramount and pure-Czech utterances dominate.
 
+## 11. Question intonation, Higgs v3 (added 2026-08-17)
+
+Motivation: rendered narration sounded flat on questions. The pipeline was
+ruled out first (chunking preserves `?`; chunk text reaches the backend
+verbatim), leaving conditioning and sampling as levers. Before touching
+either, this round measured what the shipped engine actually does with a
+question — `intonation_probe.py`, 21 cases (Czech/English/code-switched
+yes/no, wh-, and matched declarative controls), 3 takes each at the
+production temperature 0.4, every take verified by the default cascade, then
+classified by terminal F0 contour: median of the last 300 ms of voicing vs
+the preceding ~500 ms, in semitones, ±1.5 st threshold (pyin, 60–450 Hz,
+10 ms hop, octave guard, ≥600 ms voicing else "undef").
+
+Reference clip: the operator's ad hoc 6.8 s Czech clip — **purely
+declarative**, which is the hypothesis under test (a cloning model that has
+never heard its speaker ask a question has no example of the interrogative
+contour).
+
+### 11.1 The numbers (tag `baseline`, 63 takes, 59 verified)
+
+| category | expected | rise | flat | fall | undef | verified/total |
+|---|---|---|---|---|---|---|
+| cs_yesno  | rise | **10** | 2 | 2 | 1* | 15/15 |
+| cs_wh     | fall | 0 | 1 | **10** | 0 | 11/12 |
+| cs_decl   | fall | 0 | 0 | **6** | 0 | 6/9 |
+| en_yesno  | rise | **2** | 4 | 0 | 0 | 6/6 |
+| en_wh     | fall | 0 | 0 | **6** | 0 | 6/6 |
+| en_decl   | fall | 0 | 0 | **3** | 0 | 3/3 |
+| mix_yesno | rise | **4** | 2 | 0 | 0 | 6/6 |
+| mix_wh    | fall | 0 | 0 | **3** | 0 | 3/3 |
+| mix_decl  | fall | 0 | 0 | **3** | 0 | 3/3 |
+
+\* one cs_yesno take ("Máš teď chvilku?") had <600 ms of voicing → undef —
+too short for the metric, excluded from the 59% rise rate below.
+
+### 11.2 Findings
+
+- **Falls are essentially solved: 31/32 verified wh/declarative takes fall**
+  (the one exception is a flat "Proč to trvá tak dlouho?"). The engine
+  clearly reads terminal punctuation and sentence type.
+- **The deficit is specific to the terminal rise, and it is stochastic, not
+  absent: 16/26 verified yes/no takes with a defined contour rise (62%).** Some sentences rise on
+  every take with textbook 4–7 st contours ("Máte to už nasazené v
+  produkci?", "Poslal jsi mu ten dokument včera večer?", "Nasadil jsi ten
+  pull request do produkce?"); others are flat on every take ("Are you
+  coming to the meeting tomorrow?": +0.4/+0.05/+0.2 st). Worst,
+  the *same text* flips between takes — "Přijdeš zítra na tu schůzku?"
+  produced +5.35, −1.8, −1.7 st across three takes.
+- Yes/no questions that fail to rise still mostly refuse to *fall* (flat,
+  not declarative-shaped) — the model knows something is different, it just
+  doesn't commit to the rise.
+- The four unverified takes are all one phenomenon: the recogniser wrote
+  "jsi" as colloquial "si" (identical pronunciation in connected Czech) —
+  correct audio, orthographic sound-alike, the class `sound_alikes` exists
+  for. Not an intonation problem.
+- Borderline deltas cluster at the ±1.5 st threshold ("Funguje ti to i bez
+  připojení k internetu?": +1.8/+1.15/+1.55; "Běží ti ten deployment na
+  Kubernetes?": +1.5/+1.2/−0.45) — these WAVs are the listening-pass
+  targets for tuning the threshold.
+
+### 11.3 Decision this supports
+
+The cheap lever is exactly the one hypothesised: **re-record the reference
+with at least one genuine question in it** (spec in README, "Reference
+clips") and re-run as `--tag newref`. If a question-bearing reference lifts
+the yes/no rise rate materially above 62% — and above ~90% it makes questions
+a solved case — the multi-reference / rolling-context work sketched (and
+declined) in `docs/long-form.md` stays parked. Sampling changes
+(temperature/top-p) remain unmeasured and out of scope until the reference
+A/B lands.
+
+Reproduce: `.venv-higgs/bin/python bench/intonation_probe.py --voice
+bench/.voices/ref/adhoc.wav --tag baseline` (per-take data in
+`bench/intonation_probe/baseline/`, gitignored working data;
+`--selftest` checks the F0 classifier on synthetic glides).
+
+### 11.4 Reference A/B and voice casting (same day)
+
+The probe then screened the tutor project's eight zero-shot casting rolls
+(same declarative text, temperature 0.7, no reference) and A/B-tested
+question-bearing composite references (original clip + a spliced, verified,
+F0-selected rising take of "Dává ti to smysl?" — a question deliberately
+outside the test set):
+
+| reference | yes/no rise (verified, defined) | failed verification | run time |
+|---|---|---|---|
+| adhoc 6.8 s (baseline) | 62% | 4/63 | 170 s |
+| explainer-01 "Tom" (129 Hz) | 67% | 12/63 | 2155 s |
+| explainer-03 (137 Hz) | 71%* | 14/63 | 208 s |
+| explainer-07 (99 Hz) | 59% | 3/63 | 177 s |
+| explainer-04 "Mira" (177 Hz) | 48% | 0/63 | 150 s |
+| Mira + question splice | **59% (cs: 40%→67%)** | 2/63 | 161 s |
+| explainer-07 + question splice | 59% (no change) | 3/63 | 175 s |
+
+\* small denominator — the voice fails verification too often to trust it.
+
+Findings:
+
+- **Verification stability varies dramatically per zero-shot voice** and is
+  invisible until measured: two of four screened voices (01, 03) fail the
+  cascade on ~20% of takes and burn up to 13× the compute in retries. For
+  casting, run the probe before falling in love with a voice. Cast picked:
+  explainer-04 ("Mira") + explainer-07 (male), both effectively fully
+  stable (their only rejections are the "jsi"→"si" orthographic
+  sound-alike).
+- **A question-bearing reference helps when the voice has headroom and does
+  nothing when it doesn't**: Mira's Czech rise rate jumped 40%→67% from one
+  spliced exemplar (itself only +2.45 st — the strongest of six takes);
+  explainer-07 stayed exactly at his 67%-cs / 59%-overall ceiling.
+- **Reference engineering alone plateaus around ~60-67%.** No configuration
+  measured reaches reliable question intonation. The data now points at the
+  synth ladder, not the reference: verified attempts at temperature 0.4
+  rise on roughly 3 takes in 5, so best-of-N selection that *prefers a
+  rising verified take for `?`-final chunks* would reach ~95% at N=3 —
+  the same mechanism that already drove hard failures 0.269→0.038. That is
+  a `narrator/` change (prosody-aware attempt ranking) and needs its own
+  design + review round; parked as the measured next step.
+
 ## Appendix A — Reproducing
 
 ```sh

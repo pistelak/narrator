@@ -22,3 +22,9 @@ models/
 
 # Bench working data (transcripts of rendered audio — keep out of the repo)
 bench/outputs/
+bench/intonation_probe/*/
+
+# Operator voice recordings and their transcript sidecars — *.wav above
+# already catches the audio, but the .txt transcripts would be tracked, and
+# a person's voice reference must never land in the repo.
+bench/.voices/
