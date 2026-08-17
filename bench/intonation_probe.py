@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import sys
 import time
 from dataclasses import dataclass
@@ -47,35 +46,18 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent
 OUT_BASE = ROOT / "intonation_probe"
 
-# --- F0 analysis parameters (pinned into every run header) -----------------
-#
-# 60-450 Hz spans male and female speaking range without leaving octave
-# errors much room. frame_length 2048 at 24 kHz is an 85 ms window — at
-# least two periods of 60 Hz, pyin's practical floor. hop 240 = exactly
-# 10 ms, so frame counts read as centiseconds.
-FMIN_HZ = 60.0
-FMAX_HZ = 450.0
-FRAME_LENGTH = 2048
-HOP_LENGTH = 240
-# Windows count VOICED frames, not wall clock, which sidesteps unvoiced
-# gaps. Tail 30 frames = 300 ms of voicing; head = up to 50 frames before
-# it (>= 30 by construction at the 60-frame minimum, so the metric is
-# defined for every take that clears the floor). Below 60 accepted frames
-# the contour is "undef" — the honest answer for creaky or devoiced
-# Czech endings, not a forced class.
-MIN_VOICED_FRAMES = 60
-TAIL_FRAMES = 30
-HEAD_FRAMES = 50
+# The F0 core lives in narrator.prosody (one home — the synth ladder's rise
+# selection uses the same measurement this probe validates). The parameters
+# and their measured rationale moved there with the code.
+from narrator.prosody import (  # noqa: E402
+    RISE_THRESHOLD_ST,
+    delta_from_f0,
+    voiced_f0,
+    yes_no_question,
+)
+
+HOP_S = 0.010
 SLOPE_FRAMES = 70
-# Frames more than 8 st from the utterance median are halving/doubling
-# errors or creak; genuine question rises stay within ~6 st of median.
-OCTAVE_GUARD_ST = 8.0
-# Intonational contrasts become reliably perceptible around 1.5-2 st;
-# genuine terminal rises span 3-6 st; declination drift over 300 ms is
-# well under 1 st (100 Hz at 2 Hz/s for 400 ms is ~0.14 st). A starting
-# point — raw deltas land in the report, so retuning is a threshold
-# change, not a re-render.
-RISE_THRESHOLD_ST = 1.5
 
 
 @dataclass(frozen=True)
@@ -131,23 +113,6 @@ CATEGORY_ORDER = [
 
 # ------------------------------------------------------------- F0 analysis
 
-def voiced_f0(audio: np.ndarray, sample_rate: int) -> np.ndarray:
-    """Hz values of accepted voiced frames, time-ordered, one per 10 ms hop."""
-    import librosa
-
-    f0, voiced, _prob = librosa.pyin(
-        audio.astype(np.float64),
-        fmin=FMIN_HZ, fmax=FMAX_HZ, sr=sample_rate,
-        frame_length=FRAME_LENGTH, hop_length=HOP_LENGTH,
-    )
-    keep = np.asarray(voiced, dtype=bool) & np.isfinite(f0)
-    values = f0[keep]
-    if values.size == 0:
-        return values
-    deviation = np.abs(12.0 * np.log2(values / np.median(values)))
-    return values[deviation <= OCTAVE_GUARD_ST]
-
-
 def theil_sen_slope_st_per_s(f0: np.ndarray, sample_rate: int) -> float:
     """Median of pairwise slopes, in semitones per second of VOICED time.
 
@@ -155,7 +120,7 @@ def theil_sen_slope_st_per_s(f0: np.ndarray, sample_rate: int) -> float:
     the residual outliers a least-squares fit would chase.
     """
     st = 12.0 * np.log2(f0 / f0[0])
-    t = np.arange(f0.size) * (HOP_LENGTH / sample_rate)
+    t = np.arange(f0.size) * HOP_S
     slopes = [
         (st[j] - st[i]) / (t[j] - t[i])
         for i in range(f0.size)
@@ -188,14 +153,9 @@ def analyze(audio: np.ndarray, sample_rate: int) -> dict:
     try:
         f0 = voiced_f0(trim_silence(audio, sample_rate), sample_rate)
         n = int(f0.size)
-        if n < MIN_VOICED_FRAMES:
+        delta = delta_from_f0(f0)
+        if delta is None:
             return {**undef, "voiced_frames": n}
-        tail = f0[-TAIL_FRAMES:]
-        # Negative index clamps at the array start, so head is "up to
-        # HEAD_FRAMES, at least MIN_VOICED - TAIL" — defined for every n
-        # that passed the floor.
-        head = f0[-(TAIL_FRAMES + HEAD_FRAMES):-TAIL_FRAMES]
-        delta = 12.0 * math.log2(float(np.median(tail)) / float(np.median(head)))
         slope = theil_sen_slope_st_per_s(f0[-min(SLOPE_FRAMES, n):], sample_rate)
         return {
             "delta_st": round(delta, 3),
@@ -258,27 +218,42 @@ def selftest() -> int:
 
 # -------------------------------------------------------------------- run
 
-def _params() -> dict:
-    """Everything that must not vary between A/B tags, resolved, not echoed."""
+def _params(ranked: bool) -> dict:
+    """Everything that must not vary between A/B tags, resolved, not echoed.
+
+    Callables in SynthConfig are recorded by presence (bool), not identity —
+    JSON cannot hold them and header comparison only needs "same policy".
+    """
     from dataclasses import asdict
 
+    from narrator import prosody
     from narrator.backends.higgs import MODEL, SAMPLE_RATE
-    from narrator.synth import SynthConfig
 
+    synth = {k: (bool(v) if callable(v) else v)
+             for k, v in asdict(_synth_config(ranked)).items()}
     return {
         "model": MODEL,
         "sample_rate": SAMPLE_RATE,
-        "synth": asdict(SynthConfig()),
+        "ranked": ranked,
+        "synth": synth,
         "f0": {
-            "fmin_hz": FMIN_HZ, "fmax_hz": FMAX_HZ,
-            "frame_length": FRAME_LENGTH, "hop_length": HOP_LENGTH,
-            "min_voiced_frames": MIN_VOICED_FRAMES,
-            "tail_frames": TAIL_FRAMES, "head_frames": HEAD_FRAMES,
+            "fmin_hz": prosody.FMIN_HZ, "fmax_hz": prosody.FMAX_HZ,
+            "frame_s": prosody.FRAME_S, "hop_s": prosody.HOP_S,
+            "min_voiced_frames": prosody.MIN_VOICED_FRAMES,
+            "tail_frames": prosody.TAIL_FRAMES, "head_frames": prosody.HEAD_FRAMES,
             "slope_frames": SLOPE_FRAMES,
-            "octave_guard_st": OCTAVE_GUARD_ST,
+            "octave_guard_st": prosody.OCTAVE_GUARD_ST,
             "rise_threshold_st": RISE_THRESHOLD_ST,
         },
     }
+
+
+def _synth_config(ranked: bool):
+    """Raw distribution by default; --ranked turns on the ladder's own rise
+    selection so the probe measures what the pipeline would actually ship."""
+    from narrator.synth import SynthConfig
+
+    return SynthConfig(wants_rise=yes_no_question) if ranked else SynthConfig()
 
 
 def _load_existing(results_path: Path, header: dict) -> list[dict]:
@@ -407,7 +382,7 @@ def run(args: argparse.Namespace) -> int:
         import soundfile as sf
 
         from narrator.backends.higgs import HiggsBackend
-        from narrator.synth import SynthConfig, _best_attempt
+        from narrator.synth import _best_attempt
         from narrator.types import Voice
         from narrator.verify import default_verifier
     except ImportError as exc:
@@ -446,7 +421,7 @@ def run(args: argparse.Namespace) -> int:
         "voice_transcript": transcript,
         "takes": args.takes,
         "date": time.strftime("%Y-%m-%d"),
-        "params": _params(),
+        "params": _params(args.ranked),
     }
     records = _load_existing(results_path, header)
     # Idempotent resume: skip (case, take) pairs already recorded, but only
@@ -460,7 +435,7 @@ def run(args: argparse.Namespace) -> int:
 
     backend = HiggsBackend()
     verifier = default_verifier(backend.sample_rate)
-    cfg = SynthConfig()
+    cfg = _synth_config(args.ranked)
 
     started = time.time()
     total = sum(1 for c in cases for t in range(1, args.takes + 1)
@@ -496,7 +471,7 @@ def run(args: argparse.Namespace) -> int:
                     wav=str(wav_path.relative_to(ROOT)),
                     verified=bool(attempt.ok),
                     coverage=round(attempt.verdict.coverage, 3),
-                    attempts=attempt.number,
+                    attempts=attempt.calls_spent,
                     transcript=attempt.verdict.transcript,
                     **analyze(attempt.audio, backend.sample_rate),
                 )
@@ -525,6 +500,10 @@ def main() -> int:
                              "from 'rises sometimes' at temperature 0.4")
     parser.add_argument("--only", default=None,
                         help="comma-separated case ids (smoke runs, resume)")
+    parser.add_argument("--ranked", action="store_true",
+                        help="enable the synth ladder's rise selection "
+                             "(wants_rise=yes_no_question) — measures what "
+                             "ships, not the raw take distribution")
     parser.add_argument("--selftest", action="store_true",
                         help="check the F0 classifier on synthetic glides; "
                              "no model load")

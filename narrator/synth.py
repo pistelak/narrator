@@ -19,10 +19,12 @@ thing, indistinguishable from success".
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 import numpy as np
 
+from narrator import prosody
 from narrator.chunking import split_sentences
 from narrator.types import Audio, Backend, ChunkResult, Verdict, Verifier, Voice
 
@@ -59,6 +61,32 @@ class SynthConfig:
     """Read all-caps tokens as letter names for the render language. Off by
     default: it changes how the narration sounds, which is the caller's call."""
 
+    wants_rise: Callable[[str, str], bool] | None = None
+    """(text, lang) -> should this chunk end in a rising contour?
+
+    None — the default — disables prosody selection entirely; behavior is
+    identical to a build without this feature. Off by default for the same
+    reason spell_acronyms is: it changes how the narration sounds. Intent
+    must come from the caller because punctuation cannot supply it —
+    wh-questions end in `?` and canonically FALL (measured 97% correct,
+    bench/RESULTS.md §11), so a `?` trigger would degrade the one category
+    that is already right. `narrator.prosody.yes_no_question` is the offered
+    default policy."""
+
+    rise_threshold_st: float = prosody.RISE_THRESHOLD_ST
+    """Semitone delta a verified take must reach to stop the ladder early.
+    Below it the ladder keeps generating; if nothing clears it, the FIRST
+    verified take ships — prosody is a preference, never a gate."""
+
+    rise_check: Callable[[Audio, int], float | None] | None = None
+    """(audio, sample_rate) -> terminal delta in st, or None (unmeasurable).
+
+    Resolved from narrator.prosody when unset; injectable because tests use
+    the fake backend, whose audio is a stamped tone that no real F0 tracker
+    should be asked to interpret. An unmeasurable take (None) ships
+    immediately: a text too short to measure is too short on every take, so
+    spending the remaining attempts buys nothing."""
+
     pronunciation: tuple[tuple[str, str], ...] = ()
     """Written form -> spoken form, applied ONLY at synthesis.
 
@@ -94,6 +122,16 @@ class _Attempt:
     verdict: Verdict
     number: int
     hit_cap: bool = False
+    delta_st: float | None = None
+    """Terminal contour of a VERIFIED take, when rise selection measured it."""
+    prior_failures: int = 0
+    """Failed or raised attempts before this one. `recovered_by="retry"` keys
+    off this, not `number`: with rise selection, a later ordinal can mean
+    "verified earlier, kept looking for a rise" — which is not a recovery."""
+    calls_spent: int = 0
+    """Generations actually spent by the ladder that returned this attempt.
+    Equal to `number` only when success returns immediately; rise selection
+    breaks that identity, and ChunkResult.attempts must report real cost."""
 
     @property
     def ok(self) -> bool:
@@ -169,7 +207,10 @@ def synthesize_chunk(
     attempt = _best_attempt(text, backend, verifier, voice, cfg)
 
     if attempt is not None and attempt.ok:
-        return _result(index, text, attempt, recovered_by="retry" if attempt.number > 1 else "")
+        # "retry" means a failure was recovered. Keyed off prior_failures, not
+        # number: rise selection can select ordinal 2 after a *verified* first
+        # take, and calling that a recovery would misreport a healthy chunk.
+        return _result(index, text, attempt, recovered_by="retry" if attempt.prior_failures else "")
 
     if cfg.allow_sentence_split:
         split = _sentence_split(text, backend, verifier, voice, cfg)
@@ -211,6 +252,22 @@ def synthesize_chunk(
     return _result(index, text, attempt)
 
 
+def _rise_wanted(text: str, voice: Voice, cfg: SynthConfig) -> Callable | None:
+    """The resolved contour checker when this chunk should rise, else None.
+
+    Total: a caller-supplied intent policy that raises reads as "no intent" —
+    prosody must never be able to fail (or even destabilise) a render.
+    """
+    if cfg.wants_rise is None:
+        return None
+    try:
+        if not cfg.wants_rise(text, voice.lang):
+            return None
+    except Exception:
+        return None
+    return cfg.rise_check if cfg.rise_check is not None else prosody.rise_delta_checker()
+
+
 def _best_attempt(
     text: str, backend: Backend, verifier: Verifier, voice: Voice, cfg: SynthConfig
 ) -> _Attempt | None:
@@ -218,6 +275,9 @@ def _best_attempt(
     cap = frame_cap(words, backend.frames_per_second(), cfg)
     floor, ceiling = duration_bounds(words, cfg)
     best: _Attempt | None = None
+    first_ok: _Attempt | None = None
+    failures = 0
+    rise_check = _rise_wanted(text, voice, cfg)
 
     spoken = apply_pronunciation(text, cfg.pronunciation) if cfg.pronunciation else text
     if cfg.spell_acronyms:
@@ -230,6 +290,7 @@ def _best_attempt(
             # One bad attempt must not lose the whole render. The predecessor had
             # no guard here, so a transient error at chunk 80 discarded fifteen
             # minutes of completed work.
+            failures += 1
             continue
 
         duration = len(audio) / backend.sample_rate
@@ -256,14 +317,41 @@ def _best_attempt(
             if duration_ok and not hit_cap
             else Verdict(False, 0.0)
         )
-        attempt = _Attempt(audio, duration, duration_ok, verdict, number, hit_cap)
+        attempt = _Attempt(audio, duration, duration_ok, verdict, number, hit_cap,
+                           prior_failures=failures)
 
         if attempt.ok:
-            return attempt
-        if best is None or attempt.rank > best.rank:
-            best = attempt
+            if rise_check is None:
+                return _finish(attempt, number)
+            # F0 runs ONLY here: on a verified take of a rise-wanting chunk.
+            # Failed takes and statements never pay for it.
+            try:
+                attempt.delta_st = rise_check(audio, backend.sample_rate)
+            except Exception:
+                attempt.delta_st = None
+            if attempt.delta_st is None or attempt.delta_st >= cfg.rise_threshold_st:
+                # Confident rise, or unmeasurable (a text too short to measure
+                # is too short on every take — keep the budget).
+                return _finish(attempt, number)
+            if first_ok is None:
+                first_ok = attempt
+        else:
+            failures += 1
+            if best is None or attempt.rank > best.rank:
+                best = attempt
 
-    return best
+    # No verified take cleared the rise threshold: ship the FIRST verified
+    # take. Preferring the largest sub-threshold delta is plausible but
+    # unmeasured (bench/RESULTS.md §11) — the conservative choice cannot be
+    # worse than the pre-selection pipeline.
+    if first_ok is not None:
+        return _finish(first_ok, cfg.max_attempts)
+    return _finish(best, cfg.max_attempts) if best is not None else None
+
+
+def _finish(attempt: _Attempt, calls: int) -> _Attempt:
+    attempt.calls_spent = calls
+    return attempt
 
 
 def _sentence_split(
@@ -300,7 +388,7 @@ def _sentence_split(
             # before the loop used the stale 44100 and 0.12 s of join played
             # as 0.22 s at the settled rate.
             gap = np.zeros(int(cfg.sentence_gap_s * backend.sample_rate), dtype=np.float32)
-        attempts += attempt.number
+        attempts += attempt.calls_spent
         pieces.extend([attempt.audio, gap])
         worst = min(worst, attempt.verdict.coverage)
 
@@ -310,7 +398,7 @@ def _sentence_split(
 def _result(index: int, text: str, attempt: _Attempt, recovered_by: str = "") -> ChunkResult:
     return ChunkResult(
         index=index, text=text, audio=attempt.audio, duration_s=attempt.duration,
-        attempts=attempt.number, ok=attempt.ok, coverage=attempt.verdict.coverage,
+        attempts=attempt.calls_spent, ok=attempt.ok, coverage=attempt.verdict.coverage,
         dropped_sentence=attempt.verdict.dropped_sentence,
         transcript=attempt.verdict.transcript, recovered_by=recovered_by,
         word_diagnostics=attempt.verdict.word_diagnostics,
