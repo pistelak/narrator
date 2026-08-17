@@ -8,11 +8,11 @@ a missing rise can never fail a verified chunk, statements pay nothing, and
 attempt accounting stays truthful when selection breaks the "first success
 returns immediately" identity.
 
-Selection tests run on the fake backend with an injected checker keyed off
-the fake's audio stamp — fake audio is a tone, and asking a real F0 tracker
-to hear intonation in it would test nothing. The DSP itself is tested on
-synthetic glides behind importorskip(librosa), so the fast suite stays
-model-free and dependency-light.
+Selection tests run on the fake backend with a stub checker keyed off the
+fake's audio stamp, injected by monkeypatching prosody.rise_delta_checker —
+fake audio is a tone, and asking a real F0 tracker to hear intonation in it
+would test nothing. The DSP itself is tested on synthetic glides behind
+importorskip(librosa), so the fast suite stays model-free.
 """
 
 from __future__ import annotations
@@ -48,18 +48,23 @@ def _checker(deltas: dict[int, float], calls: list[int] | None = None):
     return check
 
 
-def run(text: str, deltas: dict[int, float], script=None, calls=None,
-        wants_rise=lambda text, lang: text.rstrip().endswith("?")):
+def run(monkeypatch, text: str, deltas: dict[int, float], script=None, calls=None,
+        wants_rise=lambda text, lang: text.rstrip().endswith("?"), threshold=None):
+    import narrator.prosody
+
+    checker = _checker(deltas, calls)
+    monkeypatch.setattr(narrator.prosody, "rise_delta_checker", lambda: checker)
     backend = FakeBackend(script=script or {})
     verifier = CoverageVerifier(FakeASR(backend))
-    cfg = SynthConfig(wants_rise=wants_rise, rise_check=_checker(deltas, calls))
+    cfg = (SynthConfig(wants_rise=wants_rise) if threshold is None
+           else SynthConfig(wants_rise=wants_rise, rise_threshold_st=threshold))
     return synthesize_chunk(text, 0, backend, verifier, VOICE, cfg), backend
 
 
 # ----------------------------------------------------------- selection
 
-def test_later_rising_take_beats_earlier_flat_one() -> None:
-    result, _ = run(QUESTION, deltas={0: 0.5, 1: 3.0})
+def test_later_rising_take_beats_earlier_flat_one(monkeypatch) -> None:
+    result, _ = run(monkeypatch, QUESTION, deltas={0: 0.5, 1: 3.0})
     assert result.ok
     assert _stamp_index(result.audio) == 1
     assert result.attempts == 2
@@ -68,34 +73,59 @@ def test_later_rising_take_beats_earlier_flat_one() -> None:
     assert result.recovered_by == ""
 
 
-def test_all_flat_ships_first_verified_take() -> None:
+def test_search_failures_after_verification_are_not_recoveries(monkeypatch) -> None:
+    """verified-flat -> failed -> verified-rise must NOT report "retry".
+
+    Success was secured on attempt 1; the failure happened during the
+    optional rise search. The frontier merge review reproduced the misreport
+    before this pin existed: provenance must come from the first verified
+    take, not from whatever the shipped take saw."""
+    result, backend = run(monkeypatch, QUESTION, deltas={0: 0.5, 2: 3.0},
+                          script={1: Failure.TRUNCATE})
+    assert result.ok
+    assert _stamp_index(result.audio) == 2, "the rising take ships"
+    assert result.attempts == 3
+    assert backend.calls == 3
+    assert result.recovered_by == "", "search failures are not recoveries"
+
+
+def test_threshold_is_config_not_constant(monkeypatch) -> None:
+    """§11.5 names threshold softening as the next config-driven experiment;
+    the knob must actually be live."""
+    result, _ = run(monkeypatch, QUESTION, deltas={0: 2.0, 1: 2.6}, threshold=2.5)
+    assert result.ok
+    assert _stamp_index(result.audio) == 1, "2.0 st is below a 2.5 st threshold"
+    assert result.attempts == 2
+
+
+def test_all_flat_ships_first_verified_take(monkeypatch) -> None:
     """Prosody is a preference, never a gate.
 
     Selecting the largest sub-threshold delta is unmeasured, so the
     conservative fallback is the FIRST verified take (here index 0, even
     though take 2 has the bigger delta)."""
-    result, _ = run(QUESTION, deltas={0: 0.5, 1: 1.2, 2: 0.9})
+    result, _ = run(monkeypatch, QUESTION, deltas={0: 0.5, 1: 1.2, 2: 0.9})
     assert result.ok
     assert _stamp_index(result.audio) == 0
     assert result.attempts == 3, "cost of the search must be reported truthfully"
     assert result.recovered_by == ""
 
 
-def test_statements_pay_nothing() -> None:
+def test_statements_pay_nothing(monkeypatch) -> None:
     calls: list[int] = []
-    result, backend = run(STATEMENT, deltas={0: 5.0}, calls=calls)
+    result, backend = run(monkeypatch, STATEMENT, deltas={0: 5.0}, calls=calls)
     assert result.ok
     assert result.attempts == 1
     assert backend.calls == 1, "no extra generations for a non-rising chunk"
     assert calls == [], "the checker must never run on a statement"
 
 
-def test_checker_never_runs_on_failed_attempts() -> None:
+def test_checker_never_runs_on_failed_attempts(monkeypatch) -> None:
     """F0 runs only on verified takes — and a rise can never rescue a failed
     one. The first attempt truncates (fails the duration floor before
     verification is even consulted); a high delta for it must be unreachable."""
     calls: list[int] = []
-    result, _ = run(QUESTION, deltas={0: 9.0, 1: 3.0},
+    result, _ = run(monkeypatch, QUESTION, deltas={0: 9.0, 1: 3.0},
                     script={0: Failure.TRUNCATE}, calls=calls)
     assert result.ok
     assert _stamp_index(result.audio) == 1
@@ -104,37 +134,45 @@ def test_checker_never_runs_on_failed_attempts() -> None:
     assert result.attempts == 2
 
 
-def test_unmeasurable_contour_ships_immediately() -> None:
-    """None from the checker means unmeasurable, not flat: a text too short
-    to measure is too short on every take, so burning the remaining budget
-    buys nothing. This distinction cost the probe a real verified take
-    ("Máš teď chvilku?") before it was made explicit."""
-    result, backend = run(QUESTION, deltas={})  # checker returns None
+def test_unmeasurable_contour_ships_immediately(monkeypatch) -> None:
+    """None from the checker means unmeasurable, not flat — and shipping
+    immediately is a COST policy, not a claim about the text: measurability
+    is per-take stochastic (a real "Máš teď chvilku?" measured on two of
+    three takes), but chasing a measurable contour has unknown payoff and
+    None also covers a broken analysis, where retrying buys nothing."""
+    result, backend = run(monkeypatch, QUESTION, deltas={})  # checker returns None
     assert result.ok
     assert result.attempts == 1
     assert backend.calls == 1
 
 
-def test_raising_checker_reads_as_no_preference() -> None:
+def test_raising_checker_reads_as_no_preference(monkeypatch) -> None:
+    import narrator.prosody
+
     def exploding(audio, sample_rate):
         raise RuntimeError("pyin fell over")
 
+    monkeypatch.setattr(narrator.prosody, "rise_delta_checker", lambda: exploding)
     backend = FakeBackend()
     verifier = CoverageVerifier(FakeASR(backend))
-    cfg = SynthConfig(wants_rise=lambda t, lang: True, rise_check=exploding)
+    cfg = SynthConfig(wants_rise=lambda t, lang: True)
     result = synthesize_chunk(QUESTION, 0, backend, verifier, VOICE, cfg)
     assert result.ok, "prosody must never be able to fail a verified chunk"
     assert result.attempts == 1
 
 
-def test_raising_intent_policy_reads_as_no_intent() -> None:
+def test_raising_intent_policy_reads_as_no_intent(monkeypatch) -> None:
+    import narrator.prosody
+
     def exploding_intent(text, lang):
         raise ValueError("caller bug")
 
     calls: list[int] = []
+    monkeypatch.setattr(narrator.prosody, "rise_delta_checker",
+                        lambda: _checker({}, calls))
     backend = FakeBackend()
     verifier = CoverageVerifier(FakeASR(backend))
-    cfg = SynthConfig(wants_rise=exploding_intent, rise_check=_checker({}, calls))
+    cfg = SynthConfig(wants_rise=exploding_intent)
     result = synthesize_chunk(QUESTION, 0, backend, verifier, VOICE, cfg)
     assert result.ok
     assert result.attempts == 1
@@ -154,7 +192,7 @@ def test_broken_checker_resolution_reads_as_no_preference(monkeypatch) -> None:
     monkeypatch.setattr(narrator.prosody, "rise_delta_checker", exploding_resolver)
     backend = FakeBackend()
     verifier = CoverageVerifier(FakeASR(backend))
-    cfg = SynthConfig(wants_rise=lambda t, lang: True)  # rise_check unset
+    cfg = SynthConfig(wants_rise=lambda t, lang: True)
     result = synthesize_chunk(QUESTION, 0, backend, verifier, VOICE, cfg)
     assert result.ok
     assert result.attempts == 1
@@ -180,12 +218,13 @@ def test_default_config_is_byte_for_byte_todays_behavior() -> None:
     assert backend.calls == 1
 
 
-def test_wh_question_with_default_policy_is_not_reranked() -> None:
+def test_wh_question_with_default_policy_is_not_reranked(monkeypatch) -> None:
     """The finding that reversed the v1 design: wh-questions end in `?` and
-    canonically FALL (97% correct, bench §11). The default policy must leave
+    measurably go DOWN (31/32 verified takes, bench §11/§11.7). The default
+    policy must leave
     them alone."""
     calls: list[int] = []
-    result, backend = run("Where did you leave the documentation?",
+    result, backend = run(monkeypatch, "Where did you leave the documentation?",
                           deltas={0: 0.0}, calls=calls,
                           wants_rise=yes_no_question)
     assert result.ok

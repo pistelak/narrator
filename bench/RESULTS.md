@@ -629,7 +629,7 @@ contour).
 | mix_decl  | fall | 0 | 0 | **3** | 0 | 3/3 |
 
 \* one cs_yesno take ("Máš teď chvilku?") had <600 ms of voicing → undef —
-too short for the metric, excluded from the 59% rise rate below.
+too short for the metric, excluded from the 62% rise rate below.
 
 ### 11.2 Findings
 

@@ -56,9 +56,6 @@ from narrator.prosody import (  # noqa: E402
     yes_no_question,
 )
 
-HOP_S = 0.010
-SLOPE_FRAMES = 70
-
 
 @dataclass(frozen=True)
 class Case:
@@ -113,22 +110,6 @@ CATEGORY_ORDER = [
 
 # ------------------------------------------------------------- F0 analysis
 
-def theil_sen_slope_st_per_s(f0: np.ndarray, sample_rate: int) -> float:
-    """Median of pairwise slopes, in semitones per second of VOICED time.
-
-    O(n^2) on <= 70 frames is ~2400 pairs — trivial, and it buys immunity to
-    the residual outliers a least-squares fit would chase.
-    """
-    st = 12.0 * np.log2(f0 / f0[0])
-    t = np.arange(f0.size) * HOP_S
-    slopes = [
-        (st[j] - st[i]) / (t[j] - t[i])
-        for i in range(f0.size)
-        for j in range(i + 1, f0.size)
-    ]
-    return float(np.median(slopes))
-
-
 def classify(delta_st: float) -> str:
     if delta_st >= RISE_THRESHOLD_ST:
         return "rise"
@@ -141,7 +122,7 @@ def analyze(audio: np.ndarray, sample_rate: int) -> dict:
     """Terminal-contour record for one take. Never raises.
 
     Any failure in the F0 path (pyin exception, degenerate audio) yields the
-    same schema-conforming sentinel — contour "undef", null delta/slope —
+    same schema-conforming sentinel — contour "undef", null delta —
     never a missing field, so aggregation and resume always work.
     trim_silence never returns empty (all-silent input comes back unchanged),
     and pure silence simply yields zero voiced frames, landing in the normal
@@ -149,17 +130,15 @@ def analyze(audio: np.ndarray, sample_rate: int) -> dict:
     """
     from narrator.audio import trim_silence
 
-    undef = {"delta_st": None, "slope_st_s": None, "voiced_frames": 0, "contour": "undef"}
+    undef = {"delta_st": None, "voiced_frames": 0, "contour": "undef"}
     try:
         f0 = voiced_f0(trim_silence(audio, sample_rate), sample_rate)
         n = int(f0.size)
         delta = delta_from_f0(f0)
         if delta is None:
             return {**undef, "voiced_frames": n}
-        slope = theil_sen_slope_st_per_s(f0[-min(SLOPE_FRAMES, n):], sample_rate)
         return {
             "delta_st": round(delta, 3),
-            "slope_st_s": round(slope, 3),
             "voiced_frames": n,
             "contour": classify(delta),
         }
@@ -241,7 +220,6 @@ def _params(ranked: bool) -> dict:
             "frame_s": prosody.FRAME_S, "hop_s": prosody.HOP_S,
             "min_voiced_frames": prosody.MIN_VOICED_FRAMES,
             "tail_frames": prosody.TAIL_FRAMES, "head_frames": prosody.HEAD_FRAMES,
-            "slope_frames": SLOPE_FRAMES,
             "octave_guard_st": prosody.OCTAVE_GUARD_ST,
             "rise_threshold_st": RISE_THRESHOLD_ST,
         },
@@ -335,16 +313,15 @@ def _write_report(out_dir: Path, header: dict, records: list[dict]) -> Path:
         "",
         "## Per-take detail",
         "",
-        "| case | cat | expected | contour | Δ st | slope st/s | voiced | verified (cov) | wav |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "| case | cat | expected | contour | Δ st | voiced | verified (cov) | wav |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for r in records:
         delta = "—" if r["delta_st"] is None else f"{r['delta_st']:+.2f}"
-        slope = "—" if r["slope_st_s"] is None else f"{r['slope_st_s']:+.2f}"
         wav = Path(r["wav"]).name if r["wav"] else "—"
         lines.append(
             f"| {r['case']} t{r['take']} | {r['category']} | {r['expected']} "
-            f"| {r['contour']} | {delta} | {slope} | {r['voiced_frames']} "
+            f"| {r['contour']} | {delta} | {r['voiced_frames']} "
             f"| {'yes' if r['verified'] else 'NO'} ({r['coverage']:.2f}) | {wav} |"
         )
     unverified = [r for r in records if not r["verified"]]
@@ -461,8 +438,7 @@ def run(args: argparse.Namespace) -> int:
                 "expected": case.expected, "text": case.text, "take": take,
                 "wav": None, "verified": False, "coverage": 0.0, "attempts": 0,
                 "transcript": "",
-                "delta_st": None, "slope_st_s": None, "voiced_frames": 0,
-                "contour": "undef", "match": False,
+                "delta_st": None, "voiced_frames": 0, "contour": "undef",
             }
             try:
                 attempt = _best_attempt(case.text, backend, verifier, voice, cfg)
@@ -480,7 +456,6 @@ def run(args: argparse.Namespace) -> int:
                     transcript=attempt.verdict.transcript,
                     **analyze(attempt.audio, backend.sample_rate),
                 )
-                row["match"] = row["verified"] and row["contour"] == case.expected
                 print(f"    contour={row['contour']} delta={row['delta_st']} st "
                       f"verified={row['verified']} cov={row['coverage']}", flush=True)
             records.append(row)

@@ -1,9 +1,11 @@
 """Terminal F0 contour measurement and question-intent helpers.
 
-The measured story (bench/RESULTS.md §11): Higgs v3 renders terminal falls at
-~97% (31/32 verified wh/declarative takes), but yes/no question rises are
-stochastic — ~60% of verified takes rise, the same text flips contour between
-takes, and reference-clip engineering plateaus around 67%. The retry ladder in
+The measured story (bench/RESULTS.md §11): Higgs v3 ends 31/32 verified
+wh/declarative takes going downward (§11.7 showed that is declination, not a
+conclusive terminal event — but downward either way, so they must never be
+rise-targeted), while yes/no question rises are stochastic — ~60% of verified
+takes rise, the same text flips contour between takes, and reference-clip
+engineering plateaus around 67%. The retry ladder in
 synth.py already carries a budget of three attempts per chunk (returning at
 the first verified take); this module supplies the contour signal that lets
 it keep spending that budget in search of a rising verified take when the
@@ -162,7 +164,7 @@ def yes_no_question(text: str, lang: str) -> bool:
     like "Víš, kdy přijde?" is a deliberately accepted false negative),
     while a wh-question misread as yes/no — "A kdy přijdeš?", "V čem je
     problém?", "And just why did it fail?" — would demand a rise where the
-    measured-correct contour is a fall (97% correct, bench/RESULTS.md §11).
+    measured contour goes downward (31/32 takes, bench/RESULTS.md §11/§11.7).
     Callers with real script knowledge should pass their own policy.
     """
     if not _FINAL_QUESTION.search(text.strip()):

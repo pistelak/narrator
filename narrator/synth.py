@@ -68,24 +68,15 @@ class SynthConfig:
     identical to a build without this feature. Off by default for the same
     reason spell_acronyms is: it changes how the narration sounds. Intent
     must come from the caller because punctuation cannot supply it —
-    wh-questions end in `?` and canonically FALL (measured 97% correct,
-    bench/RESULTS.md §11), so a `?` trigger would degrade the one category
-    that is already right. `narrator.prosody.yes_no_question` is the offered
+    wh-questions end in `?` and measurably go DOWN (31/32 verified takes,
+    bench/RESULTS.md §11/§11.7), so a `?` trigger would push rises onto the
+    one category that must not have them. `narrator.prosody.yes_no_question` is the offered
     default policy."""
 
     rise_threshold_st: float = prosody.RISE_THRESHOLD_ST
     """Semitone delta a verified take must reach to stop the ladder early.
     Below it the ladder keeps generating; if nothing clears it, the FIRST
     verified take ships — prosody is a preference, never a gate."""
-
-    rise_check: Callable[[Audio, int], float | None] | None = None
-    """(audio, sample_rate) -> terminal delta in st, or None (unmeasurable).
-
-    Resolved from narrator.prosody when unset; injectable because tests use
-    the fake backend, whose audio is a stamped tone that no real F0 tracker
-    should be asked to interpret. An unmeasurable take (None) ships
-    immediately: a text too short to measure is too short on every take, so
-    spending the remaining attempts buys nothing."""
 
     pronunciation: tuple[tuple[str, str], ...] = ()
     """Written form -> spoken form, applied ONLY at synthesis.
@@ -120,18 +111,17 @@ class _Attempt:
     duration: float
     duration_ok: bool
     verdict: Verdict
-    number: int
     hit_cap: bool = False
-    delta_st: float | None = None
-    """Terminal contour of a VERIFIED take, when rise selection measured it."""
     prior_failures: int = 0
-    """Failed or raised attempts before this one. `recovered_by="retry"` keys
-    off this, not `number`: with rise selection, a later ordinal can mean
-    "verified earlier, kept looking for a rise" — which is not a recovery."""
+    """Failed or raised attempts before success was first secured.
+    `recovered_by="retry"` keys off this: with rise selection a later take
+    can ship after a clean first verification, and failures burned during
+    that optional search are not recoveries — the provenance is pinned to
+    the FIRST verified take (frontier review caught the misreport)."""
     calls_spent: int = 0
     """Generations actually spent by the ladder that returned this attempt.
-    Equal to `number` only when success returns immediately; rise selection
-    breaks that identity, and ChunkResult.attempts must report real cost."""
+    Rise selection can spend more calls than the shipped take's ordinal,
+    and ChunkResult.attempts must report real cost."""
 
     @property
     def ok(self) -> bool:
@@ -267,12 +257,12 @@ def _rise_wanted(text: str, voice: Voice, cfg: SynthConfig) -> Callable | None:
             return None
     except Exception:
         return None
-    if cfg.rise_check is not None:
-        return cfg.rise_check
     try:
         # Resolution can fail beyond ImportError — a broken librosa install
         # raises whatever it raises at import time. That must degrade to "no
         # preference", not abort a render that synthesized fine yesterday.
+        # (Tests inject a stub by monkeypatching this resolver — fake-backend
+        # audio is a stamped tone no real F0 tracker should interpret.)
         return prosody.rise_delta_checker()
     except Exception:
         return None
@@ -327,22 +317,31 @@ def _best_attempt(
             if duration_ok and not hit_cap
             else Verdict(False, 0.0)
         )
-        attempt = _Attempt(audio, duration, duration_ok, verdict, number, hit_cap,
-                           prior_failures=failures)
+        attempt = _Attempt(audio, duration, duration_ok, verdict, hit_cap,
+                           prior_failures=failures, calls_spent=number)
 
         if attempt.ok:
             if rise_check is None:
-                return _finish(attempt, number)
+                return attempt
             # F0 runs ONLY here: on a verified take of a rise-wanting chunk.
             # Failed takes and statements never pay for it.
             try:
-                attempt.delta_st = rise_check(audio, backend.sample_rate)
+                delta = rise_check(audio, backend.sample_rate)
             except Exception:
-                attempt.delta_st = None
-            if attempt.delta_st is None or attempt.delta_st >= cfg.rise_threshold_st:
-                # Confident rise, or unmeasurable (a text too short to measure
-                # is too short on every take — keep the budget).
-                return _finish(attempt, number)
+                delta = None
+            if first_ok is not None:
+                # Success was secured before this take: failures burned
+                # during the optional rise search are not recoveries, and
+                # reporting them as "retry" misread a healthy chunk.
+                attempt.prior_failures = first_ok.prior_failures
+            if delta is None or delta >= cfg.rise_threshold_st:
+                # Confident rise — or unmeasurable, which ships as a COST
+                # policy, not a claim about the text: measurability is
+                # per-take stochastic (a real "Máš teď chvilku?" measured on
+                # two takes of three), but chasing a measurable contour with
+                # the remaining budget has unknown payoff, and None also
+                # covers a broken analysis, where retrying buys nothing.
+                return attempt
             if first_ok is None:
                 first_ok = attempt
         else:
@@ -354,14 +353,10 @@ def _best_attempt(
     # take. Preferring the largest sub-threshold delta is plausible but
     # unmeasured (bench/RESULTS.md §11) — the conservative choice cannot be
     # worse than the pre-selection pipeline.
-    if first_ok is not None:
-        return _finish(first_ok, cfg.max_attempts)
-    return _finish(best, cfg.max_attempts) if best is not None else None
-
-
-def _finish(attempt: _Attempt, calls: int) -> _Attempt:
-    attempt.calls_spent = calls
-    return attempt
+    chosen = first_ok if first_ok is not None else best
+    if chosen is not None:
+        chosen.calls_spent = cfg.max_attempts
+    return chosen
 
 
 def _sentence_split(

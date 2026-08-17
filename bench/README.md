@@ -166,8 +166,9 @@ python bench_xtts.py --speaker "Andrew Chipper"
 
 ## Reference clips
 
-Cloning-backend probes (`intonation_probe.py`, and the family-B scripts'
-`--voice` flag) take an operator-supplied reference clip with its exact
+Cloning-backend probes (`intonation_probe.py`, `verifier_acceptance.py`,
+`asr_crosscheck.py`, `asr_headtohead.py` — every script with a `--voice`
+flag) take an operator-supplied reference clip with its exact
 transcript in a `.txt` sidecar of the same basename. Keep clips under
 `bench/.voices/ref/` — the directory is gitignored because a person's voice
 recording must never land in the repo.
