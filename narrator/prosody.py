@@ -54,10 +54,12 @@ HEAD_FRAMES = 50
 # creak; genuine question rises stay within ~6 st of the median.
 OCTAVE_GUARD_ST = 8.0
 # Intonational contrasts become reliably perceptible around 1.5-2 st; the
-# measured rises span 3-6 st and declination over 300 ms is ~0.1 st. A
-# starting point pinned by the bench — selection ships the FIRST verified
-# take when nothing clears it, so a too-strict threshold costs attempts,
-# never correctness.
+# measured rises span 3-6 st and declination over 300 ms is ~0.1 st.
+# Confirmed by an operator listening pass (2026-08-17): a delta-sorted
+# ladder of takes from +1.4 to +5.2 st all read as acceptable questions,
+# so the boundary stays where the literature put it. (Selection ships the
+# FIRST verified take when nothing clears it, so a stricter threshold
+# would cost attempts, never correctness.)
 RISE_THRESHOLD_ST = 1.5
 
 
