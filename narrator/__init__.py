@@ -19,6 +19,7 @@ right audio" are different answers.
 """
 
 from narrator.audio import MasterConfig
+from narrator.prosody import yes_no_question
 from narrator.render import RenderConfig, RenderFailed, render
 from narrator.synth import SynthConfig
 from narrator.types import (
@@ -60,4 +61,5 @@ __all__ = [
     "__version__",
     "default_verifier",
     "render",
+    "yes_no_question",
 ]
