@@ -17,7 +17,14 @@ from pathlib import Path
 
 import numpy as np
 
-from narrator.audio import MasterConfig, concatenate, declick, master, trim_silence
+from narrator.audio import (
+    MasterConfig,
+    apply_gain,
+    concatenate,
+    declick,
+    master,
+    trim_silence,
+)
 from narrator.chunking import MAX_CHARS, chunk
 from narrator.synth import SynthConfig, synthesize_chunk
 from narrator.types import (
@@ -119,13 +126,20 @@ def render(
             pieces.append(segment)
             continue
 
-        result = synthesize_chunk(segment.text, index, backend, verifier, voice, cfg.synth)
+        chunk_voice = segment.voice or voice
+        result = synthesize_chunk(segment.text, index, backend, verifier,
+                                  chunk_voice, cfg.synth)
         results.append(result)
         index += 1
         if cfg.on_progress is not None:
             cfg.on_progress(result, total)
         if result.audio.size:
-            pieces.append(declick(trim_silence(result.audio, backend.sample_rate), backend.sample_rate))
+            # The voice's declared gain lands here, before stitching: a level
+            # offset between reference clips belongs to the speaker, not to a
+            # chunk, so every chunk of that voice moves by the same amount and
+            # the performance inside each one is left as synthesised.
+            trimmed = declick(trim_silence(result.audio, backend.sample_rate), backend.sample_rate)
+            pieces.append(apply_gain(trimmed, chunk_voice.gain_db))
 
     raw = concatenate([
         np.zeros(int(p.seconds * backend.sample_rate), dtype=np.float32)
@@ -181,7 +195,8 @@ def _plan(segments: list[Segment], max_chars: int) -> list[Segment]:
         if isinstance(segment, Gap):
             plan.append(segment)
         elif isinstance(segment, Text):
-            plan.extend(Text(piece) for piece in chunk(segment.text, max_chars))
+            plan.extend(Text(piece, voice=segment.voice)
+                        for piece in chunk(segment.text, max_chars))
         else:  # pragma: no cover - guarded by the type union
             raise TypeError(f"Not a segment: {segment!r}")
     return plan

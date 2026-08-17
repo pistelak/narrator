@@ -103,6 +103,27 @@ def test_style_is_resolved_once_and_cached(backend: SupertonicBackend) -> None:
     assert backend._tts.styles_by_name == ["M1"]
 
 
+def test_a_clip_path_cannot_collide_with_a_preset_name(
+    backend: SupertonicBackend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A clip whose path reads like a preset must not be served the preset.
+
+    The cache key used to be the bare string, so `Voice(audio_path=Path("M1"))`
+    and `Voice(preset="M1")` landed on one entry: whichever arrived first
+    supplied the style for both, and a dialogue that mixes cloned and bank
+    voices would have synthesized one speaker in the other's voice — while
+    verifying clean, because ASR checks the words, not who says them.
+    """
+    # The path is spelled exactly "M1" — the literal case in the docstring, and
+    # the only one that collides, since an absolute path never equals a preset.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "M1").write_bytes(b"RIFF")
+    backend.synthesize(TEXT, Voice(Path("M1"), "t", "en"), max_frames=999, temperature=0.4)
+    backend.synthesize(TEXT, Voice(preset="M1", lang="en"), max_frames=999, temperature=0.4)
+    assert backend._tts.styles_by_path == ["M1"]
+    assert backend._tts.styles_by_name == ["M1"]   # resolved separately, not reused
+
+
 def test_unknown_preset_names_the_voice_bank(backend: SupertonicBackend) -> None:
     with pytest.raises(ValueError, match=r"M1\.\.M5"):
         backend.synthesize(TEXT, Voice(preset="nope", lang="en"), max_frames=999, temperature=0.4)

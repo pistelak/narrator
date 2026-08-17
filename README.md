@@ -43,6 +43,48 @@ print(report.summary())
 Verification is on by default and needs no setup: narrator picks its own
 recogniser stack, matched to the engine's sample rate.
 
+### Dialogue
+
+A `Text` may pin its own `voice`, overriding the render's default for that
+segment. Narrator still learns no markup: a caller resolves its own speaker
+convention into per-segment voices.
+
+```python
+narrator = Voice(Path("voice.wav"), "transcript of the clip")
+questioner = Voice(Path("questioner.wav"), "transcript of the other clip")
+
+render(
+    [Text("Why would anyone burn money on purpose?", voice=questioner),
+     Text("Nobody burns it on purpose. The typo does.")],
+    voice=narrator, backend=HiggsBackend(), out=Path("episode.wav"),
+)
+```
+
+Chunking never crosses a segment, so a voice cannot bleed into another
+speaker's turn.
+
+Two reference clips recorded at different levels ship as a lopsided dialogue,
+and mastering cannot repair it — loudness normalisation moves both speakers by
+the same amount. `Voice.gain_db` is where you state the correction:
+
+```python
+questioner = Voice(Path("questioner.wav"), "transcript of the clip", gain_db=-4.0)
+```
+
+It is one constant gain applied to every chunk that voice speaks, so a whisper
+stays a whisper — only the speaker moves, never the performance.
+
+Narrator will not work the number out for you, and that is deliberate. Three
+designs that inferred it from the rendered audio were built and measured, and
+each confused a quiet *delivery* with a quiet *reference* — boosting a
+deliberate whisper, or turning a whole narrator down because another speaker's
+one aside was hushed. Measuring the reference clips instead fails one level
+deeper: telling a voice from the room it was recorded in needs voice-activity
+detection, and a threshold that is not one reads two seconds of room tone as
+3 dB of level difference. Use a level meter or a calibration render, or
+normalise the clips before you pass them in; narrator applies exactly what you
+declare and never invents a level.
+
 ### Casting: match the reference's register to the script's
 
 A reference clip is **behavioural conditioning, not merely a timbre sample**.

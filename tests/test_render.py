@@ -293,3 +293,260 @@ def test_progress_line_names_the_missing_words(capsys: pytest.CaptureFixture[str
     )
     _progress(result, 3)
     assert "missing: lantern, posts" in capsys.readouterr().out
+
+
+# ------------------------------------------------------------ per-segment voices
+
+Q_VOICE = Voice(Path("questioner.wav"), "q reference", "en")
+
+
+def test_segment_voice_overrides_the_default(tmp_path: Path) -> None:
+    """A dialogue turn pinned to a voice is synthesized with that voice."""
+    backend, verifier = build()
+    segments = [
+        Text("Why would anyone burn money on purpose?", voice=Q_VOICE),
+        Gap(3.0),
+        Text("Nobody burns it on purpose. The typo does."),
+    ]
+    report = render(segments, VOICE, backend, tmp_path / "d.wav", verifier)
+    assert report.clean
+    by_request = dict(zip(backend.requests, backend.voices_seen, strict=True))
+    assert by_request["Why would anyone burn money on purpose?"] is Q_VOICE
+    assert by_request["Nobody burns it on purpose. The typo does."] is VOICE
+
+
+def test_voice_never_bleeds_across_chunks_of_a_long_turn(tmp_path: Path) -> None:
+    """A turn long enough to chunk keeps its speaker on every chunk.
+
+    This is the dialogue failure that must stay inexpressible: chunking happens
+    inside a segment, so no chunk can inherit the other speaker's voice."""
+    backend, verifier = build()
+    long_turn = Text(" ".join(["The explainer keeps talking at length here."] * 30))
+    q_turn = Text(" ".join(["And the questioner asks a very long question now?"] * 30),
+                  voice=Q_VOICE)
+    report = render([long_turn, q_turn], VOICE, backend, tmp_path / "e.wav", verifier)
+    assert report.clean
+    assert len(report.chunks) > 4  # both turns actually chunked
+    for request, voice in zip(backend.requests, backend.voices_seen, strict=True):
+        expected = Q_VOICE if "questioner" in request else VOICE
+        assert voice is expected, f"voice bleed on chunk: {request[:50]!r}"
+
+
+def test_sentence_split_fallback_keeps_the_segment_voice(tmp_path: Path) -> None:
+    """The rescue path must not fall back to the default narrator."""
+    backend = FakeBackend(default=Failure.DROP_SENTENCE)
+    # Every whole-chunk attempt drops a sentence; per-sentence calls say one
+    # sentence each, which DROP_SENTENCE leaves intact, so the fallback passes.
+    verifier = CoverageVerifier(FakeASR(backend))
+    segments = [Text("First thought here. Second thought follows.", voice=Q_VOICE)]
+    report = render(segments, VOICE, backend, tmp_path / "f.wav", verifier)
+    assert report.clean
+    assert report.chunks[0].recovered_by == "sentence-split"
+    assert all(v is Q_VOICE for v in backend.voices_seen)
+
+
+# ------------------------------------------------------------- per-voice level
+#
+# The correction is *declared* on the Voice, never inferred from the rendered
+# audio. Three inference designs were built and measured before this one, and
+# each mistook a quiet delivery for a quiet reference — see Voice.gain_db. So
+# these tests ask two things: is a declared offset applied exactly, and does a
+# performance survive it untouched.
+
+RATE = 24000
+
+
+def tone(amplitude: float, seconds: float = 1.0, rate: int = RATE) -> np.ndarray:
+    t = np.arange(int(rate * seconds), dtype=np.float32) / rate
+    return (amplitude * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+
+
+def rms(piece: np.ndarray) -> float:
+    return float(np.sqrt((piece.astype(np.float64) ** 2).mean()))
+
+
+def db(ratio: float) -> float:
+    return 20 * np.log10(ratio)
+
+
+def speech_levels(path: Path) -> list[float]:
+    """RMS of each speech region in a written file, split on the Gap's silence.
+
+    Frame envelope, not per-sample: a tone crosses zero 440 times a second, so a
+    sample-wise threshold finds hundreds of "regions" per turn instead of one.
+    """
+    audio, _ = sf.read(str(path), dtype="float32")
+    mono = audio[:, 0] if audio.ndim == 2 else audio
+    frame = RATE // 50
+    count = mono.size // frame
+    frames = mono[: count * frame].reshape(count, frame).astype(np.float64)
+    loud = np.sqrt((frames ** 2).mean(axis=1)) > 1e-3
+
+    regions: list[tuple[int, int]] = []
+    start: int | None = None
+    for position, is_loud in enumerate(loud):
+        if is_loud and start is None:
+            start = position
+        elif not is_loud and start is not None:
+            regions.append((start, position))
+            start = None
+    if start is not None:
+        regions.append((start, count))
+    return [float(np.sqrt((frames[s:e] ** 2).mean())) for s, e in regions if e - s >= 5]
+
+
+def frame_levels(path: Path, region: int) -> np.ndarray:
+    """Per-frame RMS inside one speech region, edges dropped.
+
+    The declick fades at each end are real signal shaping, not a level change,
+    so the first and last few frames are excluded before comparing.
+    """
+    audio, _ = sf.read(str(path), dtype="float32")
+    mono = audio[:, 0] if audio.ndim == 2 else audio
+    frame = RATE // 50
+    count = mono.size // frame
+    frames = mono[: count * frame].reshape(count, frame).astype(np.float64)
+    power = (frames ** 2).mean(axis=1)
+    loud = power > 1e-6
+
+    spans, start = [], None
+    for position, is_loud in enumerate(loud):
+        if is_loud and start is None:
+            start = position
+        elif not is_loud and start is not None:
+            spans.append((start, position))
+            start = None
+    if start is not None:
+        spans.append((start, count))
+    spans = [s for s in spans if s[1] - s[0] >= 5]
+    begin, end = spans[region]
+    return np.sqrt(power[begin + 3:end - 3])
+
+
+def test_apply_gain_is_identity_at_zero() -> None:
+    """The default must not touch a single sample — every existing render is 0 dB."""
+    from narrator.audio import apply_gain
+    audio = tone(0.2)
+    assert apply_gain(audio, 0.0) is audio
+
+
+def test_apply_gain_applies_exactly_what_was_asked() -> None:
+    from narrator.audio import apply_gain
+    audio = tone(0.2)
+    assert db(rms(apply_gain(audio, -6.0)) / rms(audio)) == pytest.approx(-6.0, abs=0.01)
+    assert db(rms(apply_gain(audio, 3.0)) / rms(audio)) == pytest.approx(3.0, abs=0.01)
+
+
+def test_declared_gain_evens_out_a_lopsided_dialogue(tmp_path: Path) -> None:
+    """End to end: two speakers 12 dB apart ship level when the caller says so."""
+    quiet = Voice(Path("nonexistent.wav"), "reference", "en")
+    loud = Voice(Path("questioner.wav"), "q reference", "en", gain_db=-12.0)
+    backend = FakeBackend(voice_amplitude={quiet: 0.05, loud: 0.20})
+    verifier = CoverageVerifier(FakeASR(backend))
+    segments = [
+        Text("Nobody burns it on purpose. The typo does."),
+        Gap(1.0),
+        Text("Why would anyone burn money on purpose?", voice=loud),
+    ]
+    out = tmp_path / "declared.wav"
+    render(segments, quiet, backend, out, verifier)
+    first, second = speech_levels(out)
+    assert db(second / first) == pytest.approx(0.0, abs=0.3)
+
+
+def test_without_a_declared_gain_the_imbalance_ships(tmp_path: Path) -> None:
+    """The control: narrator never invents the correction, so it stays 12 dB apart."""
+    loud = Voice(Path("questioner.wav"), "q reference", "en")
+    backend = FakeBackend(voice_amplitude={VOICE: 0.05, loud: 0.20})
+    verifier = CoverageVerifier(FakeASR(backend))
+    segments = [
+        Text("Nobody burns it on purpose. The typo does."),
+        Gap(1.0),
+        Text("Why would anyone burn money on purpose?", voice=loud),
+    ]
+    out = tmp_path / "untouched.wav"
+    render(segments, VOICE, backend, out, verifier)
+    first, second = speech_levels(out)
+    assert db(second / first) == pytest.approx(12.0, abs=0.3)
+
+
+def test_a_declared_gain_never_touches_a_performance(tmp_path: Path) -> None:
+    """A whisper stays exactly as far below its speaker's ordinary turns.
+
+    This is what every inference design got wrong, in three different ways: a
+    quiet turn is content, and only the *speaker's* offset is the renderer's to
+    correct. A constant per-voice gain cannot flatten a delivery — the ratio
+    between two of one voice's turns is identical with and without it.
+    """
+    ordinary = Text("Nobody burns it on purpose. The typo does.")
+    whispered = Text("Almost nobody, anyway.")
+    other = Voice(Path("questioner.wav"), "q reference", "en")
+
+    def levels(gain_db: float, name: str) -> list[float]:
+        voice = Voice(Path("nonexistent.wav"), "reference", "en", gain_db=gain_db)
+        # One voice, two deliveries: the second turn is spoken 12 dB down. A
+        # second speaker keeps the file's overall loudness — and so master's
+        # makeup gain — fixed, leaving this voice's own level free to move.
+        backend = FakeBackend(voice_amplitude={voice: 0.10, other: 0.10},
+                              amplitude_script={1: 0.025})
+        verifier = CoverageVerifier(FakeASR(backend))
+        out = tmp_path / name
+        render([ordinary, Gap(1.0), whispered, Gap(1.0),
+                Text("A third voice holds the level steady.", voice=other)],
+               voice, backend, out, verifier)
+        return speech_levels(out)
+
+    plain, shifted = levels(0.0, "plain.wav"), levels(-6.0, "shifted.wav")
+    contrast = db(plain[1] / plain[0])
+    assert contrast == pytest.approx(-12.0, abs=0.3)                 # the whisper is real
+    assert db(shifted[1] / shifted[0]) == pytest.approx(contrast, abs=0.05)
+    # ...and the gain genuinely moved this voice against the other speaker, so
+    # an implementation that dropped it would fail here. Measured as a ratio:
+    # master renormalises the finished file, which hides absolute levels.
+    assert db(shifted[0] / shifted[2]) - db(plain[0] / plain[2]) == pytest.approx(-6.0, abs=0.2)
+
+
+def test_chunking_a_long_turn_keeps_the_voices_gain(tmp_path: Path) -> None:
+    """Every chunk of a turn moves together — the gain rides on the Voice.
+
+    A turn long enough to chunk stitches into one continuous region, so a chunk
+    left ungained shows up as a step in level partway through it rather than as
+    a separate region. Both checks are ratios: `master` renormalises the file,
+    so absolute levels say nothing.
+    """
+    other = Voice(Path("nonexistent.wav"), "reference", "en")
+
+    def render_at(gain_db: float, name: str) -> tuple[np.ndarray, float]:
+        speaker = Voice(Path("questioner.wav"), "q reference", "en", gain_db=gain_db)
+        backend = FakeBackend(voice_amplitude={speaker: 0.10, other: 0.10})
+        verifier = CoverageVerifier(FakeASR(backend))
+        long_turn = Text(" ".join(["The questioner keeps asking at length here."] * 30),
+                         voice=speaker)
+        out = tmp_path / name
+        report = render([long_turn, Gap(1.0),
+                         Text("A steady closing line that anchors the loudness.",
+                              voice=other)],
+                        other, backend, out, verifier)
+        assert len(report.chunks) > 4
+        turn, anchor = speech_levels(out)
+        return frame_levels(out, region=0), db(turn / anchor)
+
+    (plain_frames, plain_ratio) = render_at(0.0, "plain-long.wav")
+    (cut_frames, cut_ratio) = render_at(-6.0, "cut-long.wav")
+    # No step anywhere inside the turn: every chunk of it carries the same gain.
+    # Percentiles, because the 8 ms declick fade at each join dips one frame.
+    # The window is safe in both directions: the dips are well under 5% of the
+    # frames, and gain is applied per chunk, so the smallest omission possible
+    # here is one chunk of six — 16.7% of them.
+    for frames in (plain_frames, cut_frames):
+        low, high = np.percentile(frames, [5, 95])
+        assert high / low < 1.05
+    assert cut_ratio - plain_ratio == pytest.approx(-6.0, abs=0.2)
+
+
+def test_gain_db_must_be_finite_and_sane() -> None:
+    """A wild gain multiplies the audio after verification and still reports clean."""
+    for bad in (float("nan"), float("inf"), float("-inf"), -1e308, 1e308, 61.0):
+        with pytest.raises(ValueError, match="finite"):
+            Voice(Path("a.wav"), "t", "en", gain_db=bad)
+    Voice(Path("a.wav"), "t", "en", gain_db=-60.0)   # the bound itself is allowed

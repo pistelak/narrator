@@ -88,8 +88,14 @@ class SupertonicBackend:
         self._tts = TTS(model=self.model_id, auto_download=True)
 
     def _style_for(self, voice: Voice) -> Any:
-        """Resolve a Voice to a Supertonic style, clip or preset, cached."""
-        key = str(voice.audio_path) if voice.audio_path else (voice.preset or self.default_preset)
+        """Resolve a Voice to a Supertonic style, clip or preset, cached.
+
+        The cache key is namespaced: a clip at a path spelled like a preset name
+        (`Voice(audio_path=Path("M1"))`) must not collide with preset "M1" — a
+        multi-voice render mixes both kinds in one cache, and a collision would
+        silently synthesize the wrong narrator while still verifying clean."""
+        preset = voice.preset or self.default_preset
+        key = f"path:{voice.audio_path}" if voice.audio_path else f"preset:{preset}"
         if key in self._styles:
             return self._styles[key]
 
@@ -99,10 +105,10 @@ class SupertonicBackend:
             style = self._tts.get_voice_style_from_path(str(voice.audio_path))
         else:
             try:
-                style = self._tts.get_voice_style(key)
+                style = self._tts.get_voice_style(preset)
             except Exception as exc:
                 raise ValueError(
-                    f"Unknown Supertonic preset {key!r}. The voice bank is M1..M5 and F1..F5."
+                    f"Unknown Supertonic preset {preset!r}. The voice bank is M1..M5 and F1..F5."
                 ) from exc
 
         self._styles[key] = style
