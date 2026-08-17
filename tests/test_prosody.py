@@ -89,6 +89,19 @@ def test_search_failures_after_verification_are_not_recoveries(monkeypatch) -> N
     assert result.recovered_by == "", "search failures are not recoveries"
 
 
+def test_exhausted_search_ships_first_verified_without_recovery(monkeypatch) -> None:
+    """verified-flat -> failed -> failed -> budget exhausted: the first
+    verified take ships via the end-of-loop path with its own clean
+    provenance — search failures after it are not recoveries there either."""
+    result, backend = run(monkeypatch, QUESTION, deltas={0: 0.5},
+                          script={1: Failure.TRUNCATE, 2: Failure.TRUNCATE})
+    assert result.ok
+    assert _stamp_index(result.audio) == 0
+    assert result.attempts == 3
+    assert backend.calls == 3
+    assert result.recovered_by == ""
+
+
 def test_threshold_is_config_not_constant(monkeypatch) -> None:
     """§11.5 names threshold softening as the next config-driven experiment;
     the knob must actually be live."""
