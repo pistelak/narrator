@@ -804,6 +804,51 @@ declaratives (expensive — statements dominate chunks, so extra generations
 would apply broadly). Parked pending a decision that the naturalness gain
 is worth the cost.
 
+### 11.8 The conclusive-fall levers, measured and closed (same day)
+
+The §11.7 levers went through an independent design review before running:
+the metric was pinned as terminal Theil–Sen slope (last 300 ms of voicing)
+minus the take's own PRETERMINAL baseline (preceding 600 ms) — a whole-
+utterance baseline can score a decelerating rise as a "fall" — with a fall
+event requiring both a negative terminal slope and a negative event, sign-
+stable across 200/300/400 ms windows. The reviewer also demanded a control
+arm: base reference vs base + UNSELECTED declarative vs base + metric-
+selected crisp-fall declarative, to separate contour transfer from "adding
+a third sentence changed things".
+
+**male07: the gate failed at generation.** Twelve verified takes of an
+out-of-set declarative produced zero fall events (+2.0 to +12.6 st/s —
+terminal always FLATTENS relative to his steep −14..−19 st/s declination).
+A selector cannot select what the model never samples: both the splice and
+any ladder-based fall selection are dead for this voice. Recorded, closed.
+
+**Mira: the splice failed the three-arm test.** Her raw takes do sample
+mild fall events (8/13 declarative takes event-negative at base), and a
+genuine −5.8 st/s exemplar existed to splice. It did not transfer
+(median event over verified takes):
+
+| arm | decl | wh |
+|---|---|---|
+| A base reference | **−3.09 st/s** | −2.55 |
+| B + unselected declarative | +0.51 | −0.73 |
+| C + crisp-fall declarative | −1.86 | −1.43 |
+
+Appending ANY third declarative degraded event strength; the selected
+exemplar only mitigated that degradation. Arm C is worse than doing
+nothing — without arm B this would have misread as a weak positive.
+Question rises were unharmed in all arms (+30..+35 st/s terminal).
+
+Conclusion: **reference engineering is exhausted for conclusive falls**,
+and for male07 so is take selection. What remains, all unmeasured and
+parked: casting for fall propensity (Mira samples mild events, male07
+none — the trait is real and screenable), terminal-nucleus F0 resynthesis
+(artifact risk, needs re-verification), and the possibility that the
+deficit matters less in context — every §11.7-11.8 number is from
+isolated sentences, and the in-context question check showed isolated
+measurements understate contextual prosody. The production references
+remain `mira_q.wav` and `male07.wav`; the `_dctrl`/`_dfall` composites
+are measurement artifacts, not candidates.
+
 ## Appendix A — Reproducing
 
 ```sh
