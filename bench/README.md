@@ -164,6 +164,30 @@ python bench_xtts.py --speaker "Daisy Studious"
 python bench_xtts.py --speaker "Andrew Chipper"
 ```
 
+## Reference clips
+
+Cloning-backend probes (`intonation_probe.py`, `verifier_acceptance.py`,
+`asr_crosscheck.py`, `asr_headtohead.py` — every script with a `--voice`
+flag) take an operator-supplied reference clip with its exact
+transcript in a `.txt` sidecar of the same basename. Keep clips under
+`bench/.voices/ref/` — the directory is gitignored because a person's voice
+recording must never land in the repo.
+
+What to record (the reference is an in-context prosody example, not just a
+timbre sample — the model imitates what it hears):
+
+- 15–30 s, mono, ≥ 24 kHz, quiet room, no reverb or music, consistent mic
+  distance, no clipping, natural narration pace.
+- Include at least **one genuine yes/no question spoken with a real rise** —
+  a purely declarative reference gives the model no example of this
+  speaker's interrogative contour.
+- Include one code-switched sentence (Czech frame, English technical term) —
+  the pipeline's hardest input should be demonstrated, not just hoped for.
+- The sidecar `.txt` is the exact spoken text, **punctuation included** —
+  the engine conditions on the reference transcript, so its `?` matters.
+
+Suggested naming: `bench/.voices/ref/radek_v1.wav` + `radek_v1.txt`.
+
 ## How language is chosen
 
 XTTS-v2 and Supertonic 3 require an explicit language code per call. Piper

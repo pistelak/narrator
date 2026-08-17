@@ -595,6 +595,262 @@ English — almost certainly worth it for an assistant that mixes CZ/EN.
 Piper remains the right pick where the ~0.015 RTF / 60 MB footprint is
 paramount and pure-Czech utterances dominate.
 
+## 11. Question intonation, Higgs v3 (added 2026-08-17)
+
+Motivation: rendered narration sounded flat on questions. The pipeline was
+ruled out first (chunking preserves `?`; chunk text reaches the backend
+verbatim), leaving conditioning and sampling as levers. Before touching
+either, this round measured what the shipped engine actually does with a
+question — `intonation_probe.py`, 21 cases (Czech/English/code-switched
+yes/no, wh-, and matched declarative controls), 3 takes each at the
+production temperature 0.4, every take checked by the default cascade
+(rejected takes are recorded and excluded from contour aggregates), then
+classified by terminal F0 contour: median of the last 300 ms of voicing vs
+the preceding ~500 ms, in semitones, ±1.5 st threshold (pyin, 60–450 Hz,
+10 ms hop, octave guard, ≥600 ms voicing else "undef").
+
+Reference clip: the operator's ad hoc 6.8 s Czech clip — **purely
+declarative**, which is the hypothesis under test (a cloning model that has
+never heard its speaker ask a question has no example of the interrogative
+contour).
+
+### 11.1 The numbers (tag `baseline`, 63 takes, 59 verified)
+
+| category | expected | rise | flat | fall | undef | verified/total |
+|---|---|---|---|---|---|---|
+| cs_yesno  | rise | **10** | 2 | 2 | 1* | 15/15 |
+| cs_wh     | fall | 0 | 1 | **10** | 0 | 11/12 |
+| cs_decl   | fall | 0 | 0 | **6** | 0 | 6/9 |
+| en_yesno  | rise | **2** | 4 | 0 | 0 | 6/6 |
+| en_wh     | fall | 0 | 0 | **6** | 0 | 6/6 |
+| en_decl   | fall | 0 | 0 | **3** | 0 | 3/3 |
+| mix_yesno | rise | **4** | 2 | 0 | 0 | 6/6 |
+| mix_wh    | fall | 0 | 0 | **3** | 0 | 3/3 |
+| mix_decl  | fall | 0 | 0 | **3** | 0 | 3/3 |
+
+\* one cs_yesno take ("Máš teď chvilku?") had <600 ms of voicing → undef —
+too short for the metric, excluded from the 62% rise rate below.
+
+### 11.2 Findings
+
+- **Falls are essentially solved: 31/32 verified wh/declarative takes fall**
+  (the one exception is a flat "Proč to trvá tak dlouho?"). The engine
+  clearly reads terminal punctuation and sentence type.
+- **The deficit is specific to the terminal rise, and it is stochastic, not
+  absent: 16/26 verified yes/no takes with a defined contour rise (62%).** Some sentences rise on
+  every take with textbook 4–7 st contours ("Máte to už nasazené v
+  produkci?", "Poslal jsi mu ten dokument včera večer?", "Nasadil jsi ten
+  pull request do produkce?"); others are flat on every take ("Are you
+  coming to the meeting tomorrow?": +0.4/+0.05/+0.2 st). Worst,
+  the *same text* flips between takes — "Přijdeš zítra na tu schůzku?"
+  produced +5.35, −1.8, −1.7 st across three takes.
+- Yes/no questions that fail to rise still mostly refuse to *fall* (flat,
+  not declarative-shaped) — the model knows something is different, it just
+  doesn't commit to the rise.
+- The four unverified takes are all one phenomenon: the recogniser wrote
+  "jsi" as colloquial "si" (identical pronunciation in connected Czech) —
+  correct audio, orthographic sound-alike, the class `sound_alikes` exists
+  for. Not an intonation problem.
+- Borderline deltas cluster at the ±1.5 st threshold ("Funguje ti to i bez
+  připojení k internetu?": +1.8/+1.15/+1.55; "Běží ti ten deployment na
+  Kubernetes?": +1.5/+1.2/−0.45) — these WAVs are the listening-pass
+  targets for tuning the threshold.
+
+### 11.3 Decision this supports
+
+The cheap lever is exactly the one hypothesised: **re-record the reference
+with at least one genuine question in it** (spec in README, "Reference
+clips") and re-run as `--tag newref`. If a question-bearing reference lifts
+the yes/no rise rate materially above 62% — and above ~90% it makes questions
+a solved case — the multi-reference / rolling-context work sketched (and
+declined) in `docs/long-form.md` stays parked. Sampling changes
+(temperature/top-p) remain unmeasured and out of scope until the reference
+A/B lands.
+
+Reproduce: `.venv-higgs/bin/python bench/intonation_probe.py --voice
+bench/.voices/ref/adhoc.wav --tag baseline` (per-take data in
+`bench/intonation_probe/baseline/`, gitignored working data;
+`--selftest` checks the F0 classifier on synthetic glides).
+
+### 11.4 Reference A/B and voice casting (same day)
+
+The probe then screened eight operator-supplied zero-shot casting rolls
+(same declarative text, temperature 0.7, no reference) and A/B-tested
+question-bearing composite references (original clip + a spliced, verified,
+F0-selected rising take of "Dává ti to smysl?" — a question deliberately
+outside the test set):
+
+| reference | yes/no rise (verified, defined) | failed verification | run time |
+|---|---|---|---|
+| adhoc 6.8 s (baseline) | 62% | 4/63 | 170 s |
+| explainer-01 (129 Hz) | 67% | 12/63 | 2155 s |
+| explainer-03 (137 Hz) | 71%* | 14/63 | 208 s |
+| explainer-07 (99 Hz) | 59% | 3/63 | 177 s |
+| explainer-04 (177 Hz) | 48% | 0/63 | 150 s |
+| explainer-04 + question splice | **59% (cs: 40%→67%)** | 2/63 | 161 s |
+| explainer-07 + question splice | 59% (no change) | 3/63 | 175 s |
+
+\* small denominator — the voice fails verification too often to trust it.
+
+Findings:
+
+- **Verification stability varies dramatically per zero-shot voice** and is
+  invisible until measured: two of four screened voices (01, 03) fail the
+  cascade on ~20% of takes and burn up to 13× the compute in retries. For
+  casting, run the probe before falling in love with a voice. Cast picked:
+  explainer-04 + explainer-07 (male), both effectively fully
+  stable (their only rejections are the "jsi"→"si" orthographic
+  sound-alike).
+- **A question-bearing reference helps when the voice has headroom and does
+  nothing when it doesn't**: explainer-04's Czech rise rate jumped 40%→67% from one
+  spliced exemplar (itself only +2.45 st — the strongest of six takes);
+  explainer-07 stayed exactly at his 67%-cs / 59%-overall ceiling.
+- **Reference engineering alone plateaus around ~60-67%.** No configuration
+  measured reaches reliable question intonation. The data now points at the
+  synth ladder, not the reference: verified attempts at temperature 0.4
+  rise on roughly 3 takes in 5, so best-of-N selection that *prefers a
+  rising verified take for `?`-final chunks* would reach ~95% at N=3 —
+  the same mechanism that already drove hard failures 0.269→0.038. That is
+  a `narrator/` change (prosody-aware attempt ranking) and needs its own
+  design + review round; parked as the measured next step.
+
+### 11.5 Rise selection in the ladder, measured (same day)
+
+The parked step was designed (adversarial review reversed two v1 decisions:
+intent must be caller-supplied because wh-questions end in `?` and correctly
+fall, and the feature is opt-in), implemented as
+`SynthConfig.wants_rise` + `narrator/prosody.py`, and validated by the probe
+with `--ranked` (`wants_rise=yes_no_question`, threshold 1.5 st, unchanged
+`max_attempts=3`):
+
+| voice, yes/no takes | raw rise | ranked rise | extra generations | verify |
+|---|---|---|---|---|
+| explainer-04 (+question ref) | 16/27 (59%) | 20/27 (74%) | +24 over 63 takes | 63/63 |
+| explainer-07 | 16/27 (59%) | 22/26 (85%) | +17 over 63 takes | 60/63* |
+
+\* the recurring "jsi"→"si" orthographic rejections, unrelated to prosody.
+
+- **The naive 1−0.4³ ≈ 94% projection is RETRACTED**; the review was right
+  that it assumed i.i.d. takes. Measured uplift is +15/+26 points to
+  74–85%, because rise probability is per-text, not per-take: the misses
+  cluster in the same few sentences (e.g. "Běží ti ten deployment na
+  Kubernetes?" and "Are you coming to the meeting tomorrow?" for explainer-04),
+  which flat-line through all three attempts.
+- Falls and verification are untouched — wh/declarative categories match
+  their raw runs, and no ranked take failed verification that its raw
+  counterpart passed. Prosody-as-preference held: nothing gates.
+- Cost landed as designed: +27-38% generations, question chunks only,
+  ~206 s vs ~150-175 s per 63-take run.
+- Remaining measured knobs for the stubborn texts, in order of promise:
+  per-text rewording (the flat-liners are also the clumsier sentences),
+  raising `max_attempts` for intent-flagged chunks, and softening the
+  selection threshold — all tunable via config against this probe, none
+  blocking adoption of the feature as shipped.
+
+### 11.6 Where the question cue actually lives (operator listening finding)
+
+Listening to the explainer-01 samples, the operator noticed the intonation differing
+mostly at the *beginning* of questions, not the end. Measured on the
+existing minimal pairs (same wording as question and declarative, onset =
+median F0 of the first 500 ms of voicing, register = utterance median,
+question minus declarative, averaged over takes per voice):
+
+- **English carries the cue at the onset**: "Are you coming to the meeting
+  tomorrow?" starts +0.8 to +3.7 st above its declarative twin and sits
+  +1.3 to +4.6 st higher in register on EVERY voice — while its terminal
+  contour stays flat. explainer-01 shows the largest gap (+3.2 st onset, +4.1 st
+  register), which is what the operator heard.
+- **Czech carries it terminally**: onset deltas hover near zero or
+  negative; the question signal is the terminal rise the §11 metric
+  measures.
+
+Consequences: the terminal-delta metric understates perceived question
+quality for English (the en_yesno "misses" already sound like questions —
+confirmed by the operator's ladder listening pass, where even +1.4 st takes
+read as acceptable); and the ranked ladder's exhausted searches on English
+yes/no sentences were hunting a cue this model does not use for that
+language. Nothing is broken — the fallback ships the first verified take —
+but if the extra generations ever matter, the measured refinement is to
+also accept takes whose register sits clearly above the voice's own
+baseline (the reference clip provides that baseline for free). Parked,
+with this data as its justification.
+
+### 11.7 The "falls" are declination, not terminal events (second listening finding)
+
+The operator's second pass heard it precisely: yes/no questions sound right,
+but declaratives and wh-questions "don't have the change of intonation at
+the end." Measured (Theil–Sen slope over all voiced frames vs over the last
+300 ms, verified takes of the two ranked runs):
+
+| category | global st/s | terminal st/s |
+|---|---|---|
+| yes/no | −1.7 / −2.1 | **+18.4 / +31.3** |
+| declarative | −8.7 / −7.3 | −12.9 / −9.3 |
+| wh | −9.0 / −7.1 | −11.3 / −9.4 |
+
+Yes/no questions end in a genuine terminal event (terminal slope 10–15× the
+global trend). Declaratives and wh-questions merely declinate — a constant
+slide with a barely-steepened tail, no conclusive final drop — so §11's
+"97% correct falls" must be read as "97% declinate downward", which the
+tail-vs-head delta cannot distinguish from a real conclusive fall. The
+operator's ear can.
+
+Terminal-event strength (terminal minus global slope) separates the classes
+cleanly (+20..+33 vs −2..−4 st/s) and is the right metric if conclusive
+falls are ever selected for. Levers, unmeasured, in cost order: a reference
+exemplar with a crisp conclusive fall (the bootstrap that lifted explainer-04's
+question rises 40%→67%); terminal-event selection for chunk-final
+declaratives (expensive — statements dominate chunks, so extra generations
+would apply broadly). Parked pending a decision that the naturalness gain
+is worth the cost.
+
+### 11.8 The conclusive-fall levers, measured and closed (same day)
+
+The §11.7 levers went through an independent design review before running:
+the metric was pinned as terminal Theil–Sen slope (last 300 ms of voicing)
+minus the take's own PRETERMINAL baseline (preceding 600 ms) — a whole-
+utterance baseline can score a decelerating rise as a "fall" — with a fall
+event requiring both a negative terminal slope and a negative event, sign-
+stable across 200/300/400 ms windows. The reviewer also demanded a control
+arm: base reference vs base + UNSELECTED declarative vs base + metric-
+selected crisp-fall declarative, to separate contour transfer from "adding
+a third sentence changed things".
+
+**explainer-07: the gate failed at generation.** Twelve verified takes of an
+out-of-set declarative produced zero fall events (+2.0 to +12.6 st/s —
+terminal always FLATTENS relative to his steep −14..−19 st/s declination).
+A selector cannot select what the model never samples: both the splice and
+any ladder-based fall selection are dead for this voice. Recorded, closed.
+
+**explainer-04: the splice failed the three-arm test.** Its raw takes do sample
+mild fall events (8/13 declarative takes event-negative at base), and a
+genuine −5.8 st/s exemplar existed to splice. It did not transfer
+(median event over verified takes):
+
+| arm | decl | wh |
+|---|---|---|
+| A base reference | **−3.09 st/s** | −2.55 |
+| B + unselected declarative | +0.51 | −0.73 |
+| C + crisp-fall declarative | −1.86 | −1.43 |
+
+Appending ANY third declarative degraded event strength; the selected
+exemplar only mitigated that degradation. Arm C is worse than doing
+nothing — without arm B this would have misread as a weak positive.
+Question rises were unharmed in all arms (+30..+35 st/s terminal).
+
+Conclusion: **reference engineering is exhausted for conclusive falls**,
+and for explainer-07 so is take selection. What remains, all unmeasured and
+parked: casting for fall propensity (explainer-04 samples mild events, explainer-07
+none — the trait is real and screenable), terminal-nucleus F0 resynthesis
+(artifact risk, needs re-verification), and the possibility that the
+deficit matters less in context — every §11.7-11.8 number is from
+isolated sentences, and the in-context question check showed isolated
+measurements understate contextual prosody. The production references
+remain the question-spliced explainer-04 composite and the plain
+explainer-07 clip (operator-local files, gitignored); the control and
+fall-splice composites
+are measurement artifacts, not candidates.
+
 ## Appendix A — Reproducing
 
 ```sh

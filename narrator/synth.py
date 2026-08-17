@@ -19,10 +19,12 @@ thing, indistinguishable from success".
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 import numpy as np
 
+from narrator import prosody
 from narrator.chunking import split_sentences
 from narrator.types import Audio, Backend, ChunkResult, Verdict, Verifier, Voice
 
@@ -59,6 +61,23 @@ class SynthConfig:
     """Read all-caps tokens as letter names for the render language. Off by
     default: it changes how the narration sounds, which is the caller's call."""
 
+    wants_rise: Callable[[str, str], bool] | None = None
+    """(text, lang) -> should this chunk end in a rising contour?
+
+    None — the default — disables prosody selection entirely; behavior is
+    identical to a build without this feature. Off by default for the same
+    reason spell_acronyms is: it changes how the narration sounds. Intent
+    must come from the caller because punctuation cannot supply it —
+    wh-questions end in `?` and measurably go DOWN (31/32 verified takes,
+    bench/RESULTS.md §11/§11.7), so a `?` trigger would push rises onto the
+    one category that must not have them. `narrator.prosody.yes_no_question` is the offered
+    default policy."""
+
+    rise_threshold_st: float = prosody.RISE_THRESHOLD_ST
+    """Semitone delta a verified take must reach to stop the ladder early.
+    Below it the ladder keeps generating; if nothing clears it, the FIRST
+    verified take ships — prosody is a preference, never a gate."""
+
     pronunciation: tuple[tuple[str, str], ...] = ()
     """Written form -> spoken form, applied ONLY at synthesis.
 
@@ -92,8 +111,17 @@ class _Attempt:
     duration: float
     duration_ok: bool
     verdict: Verdict
-    number: int
     hit_cap: bool = False
+    prior_failures: int = 0
+    """Failed or raised attempts before success was first secured.
+    `recovered_by="retry"` keys off this: with rise selection a later take
+    can ship after a clean first verification, and failures burned during
+    that optional search are not recoveries — the provenance is pinned to
+    the FIRST verified take (frontier review caught the misreport)."""
+    calls_spent: int = 0
+    """Generations actually spent by the ladder that returned this attempt.
+    Rise selection can spend more calls than the shipped take's ordinal,
+    and ChunkResult.attempts must report real cost."""
 
     @property
     def ok(self) -> bool:
@@ -169,18 +197,23 @@ def synthesize_chunk(
     attempt = _best_attempt(text, backend, verifier, voice, cfg)
 
     if attempt is not None and attempt.ok:
-        return _result(index, text, attempt, recovered_by="retry" if attempt.number > 1 else "")
+        # "retry" means a failure was recovered. Keyed off prior_failures, not
+        # number: rise selection can select ordinal 2 after a *verified* first
+        # take, and calling that a recovery would misreport a healthy chunk.
+        return _result(index, text, attempt, recovered_by="retry" if attempt.prior_failures else "")
 
+    split_spent = 0
     if cfg.allow_sentence_split:
-        split = _sentence_split(text, backend, verifier, voice, cfg)
-        if split is not None:
-            audio, coverage_, split_attempts = split
+        audio_, coverage_, split_spent = _sentence_split(text, backend, verifier, voice, cfg)
+        if audio_ is not None:
             return ChunkResult(
-                index=index, text=text, audio=audio,
-                duration_s=len(audio) / backend.sample_rate,
-                attempts=cfg.max_attempts + split_attempts,
+                index=index, text=text, audio=audio_,
+                duration_s=len(audio_) / backend.sample_rate,
+                attempts=cfg.max_attempts + split_spent,
                 ok=True, coverage=coverage_, recovered_by="sentence-split",
             )
+        # The failed split's generations were still paid for; the failed
+        # result must report them, or six real calls read as three.
 
     if attempt is not None and not attempt.verdict.transcript and attempt.audio.size:
         # Diagnostics for the chunk we are about to report as failed. Verification
@@ -205,10 +238,34 @@ def synthesize_chunk(
         # silence here would put a hole in the episode that reads as a pause.
         return ChunkResult(
             index=index, text=text, audio=np.zeros(0, dtype=np.float32),
-            duration_s=0.0, attempts=cfg.max_attempts, ok=False,
+            duration_s=0.0, attempts=cfg.max_attempts + split_spent, ok=False,
             coverage=0.0, dropped_sentence=text,
         )
-    return _result(index, text, attempt)
+    return _result(index, text, attempt, extra_calls=split_spent)
+
+
+def _rise_wanted(text: str, voice: Voice, cfg: SynthConfig) -> Callable | None:
+    """The resolved contour checker when this chunk should rise, else None.
+
+    Total: a caller-supplied intent policy that raises reads as "no intent" —
+    prosody must never be able to fail (or even destabilise) a render.
+    """
+    if cfg.wants_rise is None:
+        return None
+    try:
+        if not cfg.wants_rise(text, voice.lang):
+            return None
+    except Exception:
+        return None
+    try:
+        # Resolution can fail beyond ImportError — a broken librosa install
+        # raises whatever it raises at import time. That must degrade to "no
+        # preference", not abort a render that synthesized fine yesterday.
+        # (Tests inject a stub by monkeypatching this resolver — fake-backend
+        # audio is a stamped tone no real F0 tracker should interpret.)
+        return prosody.rise_delta_checker()
+    except Exception:
+        return None
 
 
 def _best_attempt(
@@ -218,6 +275,9 @@ def _best_attempt(
     cap = frame_cap(words, backend.frames_per_second(), cfg)
     floor, ceiling = duration_bounds(words, cfg)
     best: _Attempt | None = None
+    first_ok: _Attempt | None = None
+    failures = 0
+    rise_check = _rise_wanted(text, voice, cfg)
 
     spoken = apply_pronunciation(text, cfg.pronunciation) if cfg.pronunciation else text
     if cfg.spell_acronyms:
@@ -230,6 +290,7 @@ def _best_attempt(
             # One bad attempt must not lose the whole render. The predecessor had
             # no guard here, so a transient error at chunk 80 discarded fifteen
             # minutes of completed work.
+            failures += 1
             continue
 
         duration = len(audio) / backend.sample_rate
@@ -256,24 +317,58 @@ def _best_attempt(
             if duration_ok and not hit_cap
             else Verdict(False, 0.0)
         )
-        attempt = _Attempt(audio, duration, duration_ok, verdict, number, hit_cap)
+        attempt = _Attempt(audio, duration, duration_ok, verdict, hit_cap,
+                           prior_failures=failures, calls_spent=number)
 
         if attempt.ok:
-            return attempt
-        if best is None or attempt.rank > best.rank:
-            best = attempt
+            if rise_check is None:
+                return attempt
+            # F0 runs ONLY here: on a verified take of a rise-wanting chunk.
+            # Failed takes and statements never pay for it.
+            try:
+                delta = rise_check(audio, backend.sample_rate)
+            except Exception:
+                delta = None
+            if first_ok is not None:
+                # Success was secured before this take: failures burned
+                # during the optional rise search are not recoveries, and
+                # reporting them as "retry" misread a healthy chunk.
+                attempt.prior_failures = first_ok.prior_failures
+            if delta is None or delta >= cfg.rise_threshold_st:
+                # Confident rise — or unmeasurable, which ships as a COST
+                # policy, not a claim about the text: measurability is
+                # per-take stochastic (a real "Máš teď chvilku?" measured on
+                # two takes of three), but chasing a measurable contour with
+                # the remaining budget has unknown payoff, and None also
+                # covers a broken analysis, where retrying buys nothing.
+                return attempt
+            if first_ok is None:
+                first_ok = attempt
+        else:
+            failures += 1
+            if best is None or attempt.rank > best.rank:
+                best = attempt
 
-    return best
+    # No verified take cleared the rise threshold: ship the FIRST verified
+    # take. Preferring the largest sub-threshold delta is plausible but
+    # unmeasured (bench/RESULTS.md §11) — the conservative choice cannot be
+    # worse than the pre-selection pipeline.
+    chosen = first_ok if first_ok is not None else best
+    if chosen is not None:
+        chosen.calls_spent = cfg.max_attempts
+    return chosen
 
 
 def _sentence_split(
     text: str, backend: Backend, verifier: Verifier, voice: Voice, cfg: SynthConfig
-) -> tuple[Audio, float, int] | None:
-    """Render sentence by sentence. Returns None unless every sentence passes.
+) -> tuple[Audio | None, float, int]:
+    """Render sentence by sentence. Audio is None unless every sentence passes.
 
     The third element is the synthesis attempts actually spent across the
-    sentences, so ChunkResult.attempts can report the real cost — the old
-    `+ len(sentences)` undercounted by up to max_attempts per sentence.
+    sentences — reported on FAILURE too, because the failed split's
+    generations were still paid for. The old `+ len(sentences)` undercounted
+    success by up to max_attempts per sentence, and the old None-on-failure
+    made six real calls read as three in the failed chunk's report.
 
     At this granularity "the model dropped a sentence" stops being expressible:
     a sentence rendered alone either succeeds or fails visibly. It is the same
@@ -282,7 +377,7 @@ def _sentence_split(
     """
     sentences = split_sentences(text)
     if len(sentences) < 2:
-        return None
+        return None, 0.0, 0
 
     pieces: list[Audio] = []
     gap: Audio | None = None
@@ -291,7 +386,8 @@ def _sentence_split(
     for sentence in sentences:
         attempt = _best_attempt(sentence, backend, verifier, voice, cfg)
         if attempt is None or not attempt.ok:
-            return None
+            attempts += attempt.calls_spent if attempt is not None else cfg.max_attempts
+            return None, 0.0, attempts
         if gap is None:
             # Allocated only after a sentence has actually been synthesized.
             # When every whole-chunk attempt raised, this fallback makes the
@@ -300,17 +396,19 @@ def _sentence_split(
             # before the loop used the stale 44100 and 0.12 s of join played
             # as 0.22 s at the settled rate.
             gap = np.zeros(int(cfg.sentence_gap_s * backend.sample_rate), dtype=np.float32)
-        attempts += attempt.number
+        attempts += attempt.calls_spent
         pieces.extend([attempt.audio, gap])
         worst = min(worst, attempt.verdict.coverage)
 
     return np.concatenate(pieces[:-1]), worst, attempts
 
 
-def _result(index: int, text: str, attempt: _Attempt, recovered_by: str = "") -> ChunkResult:
+def _result(index: int, text: str, attempt: _Attempt, recovered_by: str = "",
+            extra_calls: int = 0) -> ChunkResult:
     return ChunkResult(
         index=index, text=text, audio=attempt.audio, duration_s=attempt.duration,
-        attempts=attempt.number, ok=attempt.ok, coverage=attempt.verdict.coverage,
+        attempts=attempt.calls_spent + extra_calls, ok=attempt.ok,
+        coverage=attempt.verdict.coverage,
         dropped_sentence=attempt.verdict.dropped_sentence,
         transcript=attempt.verdict.transcript, recovered_by=recovered_by,
         word_diagnostics=attempt.verdict.word_diagnostics,
