@@ -100,6 +100,31 @@ alone.
 Verification is on by default; opting out is always explicit (`--no-verify`,
 or `NullVerifier()`), never a silent fallback.
 
+## Question intonation (opt-in)
+
+The measured engines render yes/no question rises stochastically — roughly 3
+verified takes in 5 rise; the rest come out flat (`bench/RESULTS.md` §11).
+When the caller marks a chunk as rise-wanting, the retry ladder keeps
+generating past a verified-but-flat take until one also rises, within the
+same attempt budget; if none does, the first verified take ships. Prosody is
+a preference, never a gate: it cannot rescue an unverified take and cannot
+fail a verified chunk.
+
+```python
+from narrator import SynthConfig, yes_no_question
+
+cfg = RenderConfig(synth=SynthConfig(wants_rise=yes_no_question))
+```
+
+Intent must come from the caller because punctuation cannot supply it:
+wh-questions end in `?` too and correctly go **down**. `yes_no_question` is
+the offered policy (`?`-final, no wh-word, English/Czech); callers with real
+script knowledge pass their own `(text, lang) -> bool`. Off by default —
+like `spell_acronyms`, it changes how the narration sounds. Requires librosa
+(the `[higgs]` extra); without it the preference is silently inert. Measured
+effect on the reference cast: 59% → 74–85% of yes/no questions rising, extra
+generations only on question chunks that verify flat.
+
 ## Design
 
 - **The caller owns markup.** Narrator's input is `Text` and `Gap` segments and
