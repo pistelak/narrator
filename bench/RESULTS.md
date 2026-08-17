@@ -775,6 +775,35 @@ also accept takes whose register sits clearly above the voice's own
 baseline (the reference clip provides that baseline for free). Parked,
 with this data as its justification.
 
+### 11.7 The "falls" are declination, not terminal events (second listening finding)
+
+The operator's second pass heard it precisely: yes/no questions sound right,
+but declaratives and wh-questions "don't have the change of intonation at
+the end." Measured (Theil–Sen slope over all voiced frames vs over the last
+300 ms, verified takes of the two ranked runs):
+
+| category | global st/s | terminal st/s |
+|---|---|---|
+| yes/no | −1.7 / −2.1 | **+18.4 / +31.3** |
+| declarative | −8.7 / −7.3 | −12.9 / −9.3 |
+| wh | −9.0 / −7.1 | −11.3 / −9.4 |
+
+Yes/no questions end in a genuine terminal event (terminal slope 10–15× the
+global trend). Declaratives and wh-questions merely declinate — a constant
+slide with a barely-steepened tail, no conclusive final drop — so §11's
+"97% correct falls" must be read as "97% declinate downward", which the
+tail-vs-head delta cannot distinguish from a real conclusive fall. The
+operator's ear can.
+
+Terminal-event strength (terminal minus global slope) separates the classes
+cleanly (+20..+33 vs −2..−4 st/s) and is the right metric if conclusive
+falls are ever selected for. Levers, unmeasured, in cost order: a reference
+exemplar with a crisp conclusive fall (the bootstrap that lifted Mira's
+question rises 40%→67%); terminal-event selection for chunk-final
+declaratives (expensive — statements dominate chunks, so extra generations
+would apply broadly). Parked pending a decision that the naturalness gain
+is worth the cost.
+
 ## Appendix A — Reproducing
 
 ```sh
