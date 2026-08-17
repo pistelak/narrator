@@ -603,7 +603,8 @@ verbatim), leaving conditioning and sampling as levers. Before touching
 either, this round measured what the shipped engine actually does with a
 question — `intonation_probe.py`, 21 cases (Czech/English/code-switched
 yes/no, wh-, and matched declarative controls), 3 takes each at the
-production temperature 0.4, every take verified by the default cascade, then
+production temperature 0.4, every take checked by the default cascade
+(rejected takes are recorded and excluded from contour aggregates), then
 classified by terminal F0 contour: median of the last 300 ms of voicing vs
 the preceding ~500 ms, in semitones, ±1.5 st threshold (pyin, 60–450 Hz,
 10 ms hop, octave guard, ≥600 ms voicing else "undef").

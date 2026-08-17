@@ -265,7 +265,7 @@ def _load_existing(results_path: Path, header: dict) -> list[dict]:
     if not results_path.is_file():
         return []
     stored = json.loads(results_path.read_text(encoding="utf-8"))
-    for key in ("params", "voice_path", "voice_transcript"):
+    for key in ("params", "voice_path", "voice_transcript", "takes"):
         if stored["header"].get(key) != header.get(key):
             sys.exit(
                 f"{results_path} was produced with a different {key}; "
@@ -425,11 +425,16 @@ def run(args: argparse.Namespace) -> int:
     }
     records = _load_existing(results_path, header)
     # Idempotent resume: skip (case, take) pairs already recorded, but only
-    # while the recorded text matches — an edited case under the same id
+    # while the FULL recorded case matches the current table — an edited
+    # case under the same id (text, language, category, or expectation)
     # invalidates its rows, or a tag's numbers stop matching its report.
     records = [
         r for r in records
-        if any(c.id == r["case"] and c.text == r["text"] for c in CASES)
+        if any(
+            c.id == r["case"] and c.text == r["text"] and c.lang == r["lang"]
+            and c.category == r["category"] and c.expected == r["expected"]
+            for c in CASES
+        )
     ]
     done = {(r["case"], r["take"]) for r in records}
 

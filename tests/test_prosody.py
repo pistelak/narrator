@@ -141,6 +141,36 @@ def test_raising_intent_policy_reads_as_no_intent() -> None:
     assert calls == []
 
 
+def test_broken_checker_resolution_reads_as_no_preference(monkeypatch) -> None:
+    """A broken librosa install raises whatever it raises at import time —
+    not ImportError — and resolution happens before the backend is called.
+    Left unguarded, enabling the feature aborted renders that synthesized
+    fine without it (Codex review finding, 2026-08-17)."""
+    import narrator.prosody
+
+    def exploding_resolver():
+        raise AttributeError("broken librosa install")
+
+    monkeypatch.setattr(narrator.prosody, "rise_delta_checker", exploding_resolver)
+    backend = FakeBackend()
+    verifier = CoverageVerifier(FakeASR(backend))
+    cfg = SynthConfig(wants_rise=lambda t, lang: True)  # rise_check unset
+    result = synthesize_chunk(QUESTION, 0, backend, verifier, VOICE, cfg)
+    assert result.ok
+    assert result.attempts == 1
+
+
+def test_failed_split_reports_every_generation_paid_for() -> None:
+    """Six real calls must not read as three: the failed sentence-split's
+    generations were spent, and ChunkResult.attempts is the cost record."""
+    two_sentences = "Not the keeper of anything. Not a stranger to anyone here."
+    backend = FakeBackend(default=Failure.TRUNCATE)
+    verifier = CoverageVerifier(FakeASR(backend))
+    result = synthesize_chunk(two_sentences, 0, backend, verifier, VOICE, SynthConfig())
+    assert not result.ok
+    assert result.attempts == backend.calls
+
+
 def test_default_config_is_byte_for_byte_todays_behavior() -> None:
     backend = FakeBackend()
     verifier = CoverageVerifier(FakeASR(backend))
@@ -171,8 +201,15 @@ def test_wh_question_with_default_policy_is_not_reranked() -> None:
     ("Přijdeš zítra na tu schůzku?", "cs", True),
     ("Kdy přijdeš zítra na tu schůzku?", "cs", False),
     ("Kolik lidí přišlo na tu přednášku?", "cs", False),
-    # Conjunction-fronted wh — the reason the window is two tokens.
+    # Non-fronted wh — the reason the scan covers every token, not a
+    # prefix window: True here would demand a rise on a canonical fall.
     ("A kdy přijdeš?", "cs", False),
+    ("V čem je problém?", "cs", False),
+    ("Kterému člověku jsi to dal?", "cs", False),
+    ("And just why did it fail?", "en", False),
+    # Embedded-wh yes/no question — a deliberately accepted false negative
+    # (safe direction: it merely keeps today's behavior).
+    ("Víš, kdy přijde?", "cs", False),
     # Trailing closer after the question mark (chunking's closer class).
     ("„Máš teď chvilku?“", "cs", True),
     ("You are coming to the meeting tomorrow.", "en", False),

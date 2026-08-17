@@ -212,16 +212,18 @@ def synthesize_chunk(
         # take, and calling that a recovery would misreport a healthy chunk.
         return _result(index, text, attempt, recovered_by="retry" if attempt.prior_failures else "")
 
+    split_spent = 0
     if cfg.allow_sentence_split:
-        split = _sentence_split(text, backend, verifier, voice, cfg)
-        if split is not None:
-            audio, coverage_, split_attempts = split
+        audio_, coverage_, split_spent = _sentence_split(text, backend, verifier, voice, cfg)
+        if audio_ is not None:
             return ChunkResult(
-                index=index, text=text, audio=audio,
-                duration_s=len(audio) / backend.sample_rate,
-                attempts=cfg.max_attempts + split_attempts,
+                index=index, text=text, audio=audio_,
+                duration_s=len(audio_) / backend.sample_rate,
+                attempts=cfg.max_attempts + split_spent,
                 ok=True, coverage=coverage_, recovered_by="sentence-split",
             )
+        # The failed split's generations were still paid for; the failed
+        # result must report them, or six real calls read as three.
 
     if attempt is not None and not attempt.verdict.transcript and attempt.audio.size:
         # Diagnostics for the chunk we are about to report as failed. Verification
@@ -246,10 +248,10 @@ def synthesize_chunk(
         # silence here would put a hole in the episode that reads as a pause.
         return ChunkResult(
             index=index, text=text, audio=np.zeros(0, dtype=np.float32),
-            duration_s=0.0, attempts=cfg.max_attempts, ok=False,
+            duration_s=0.0, attempts=cfg.max_attempts + split_spent, ok=False,
             coverage=0.0, dropped_sentence=text,
         )
-    return _result(index, text, attempt)
+    return _result(index, text, attempt, extra_calls=split_spent)
 
 
 def _rise_wanted(text: str, voice: Voice, cfg: SynthConfig) -> Callable | None:
@@ -265,7 +267,15 @@ def _rise_wanted(text: str, voice: Voice, cfg: SynthConfig) -> Callable | None:
             return None
     except Exception:
         return None
-    return cfg.rise_check if cfg.rise_check is not None else prosody.rise_delta_checker()
+    if cfg.rise_check is not None:
+        return cfg.rise_check
+    try:
+        # Resolution can fail beyond ImportError — a broken librosa install
+        # raises whatever it raises at import time. That must degrade to "no
+        # preference", not abort a render that synthesized fine yesterday.
+        return prosody.rise_delta_checker()
+    except Exception:
+        return None
 
 
 def _best_attempt(
@@ -356,12 +366,14 @@ def _finish(attempt: _Attempt, calls: int) -> _Attempt:
 
 def _sentence_split(
     text: str, backend: Backend, verifier: Verifier, voice: Voice, cfg: SynthConfig
-) -> tuple[Audio, float, int] | None:
-    """Render sentence by sentence. Returns None unless every sentence passes.
+) -> tuple[Audio | None, float, int]:
+    """Render sentence by sentence. Audio is None unless every sentence passes.
 
     The third element is the synthesis attempts actually spent across the
-    sentences, so ChunkResult.attempts can report the real cost — the old
-    `+ len(sentences)` undercounted by up to max_attempts per sentence.
+    sentences — reported on FAILURE too, because the failed split's
+    generations were still paid for. The old `+ len(sentences)` undercounted
+    success by up to max_attempts per sentence, and the old None-on-failure
+    made six real calls read as three in the failed chunk's report.
 
     At this granularity "the model dropped a sentence" stops being expressible:
     a sentence rendered alone either succeeds or fails visibly. It is the same
@@ -370,7 +382,7 @@ def _sentence_split(
     """
     sentences = split_sentences(text)
     if len(sentences) < 2:
-        return None
+        return None, 0.0, 0
 
     pieces: list[Audio] = []
     gap: Audio | None = None
@@ -379,7 +391,8 @@ def _sentence_split(
     for sentence in sentences:
         attempt = _best_attempt(sentence, backend, verifier, voice, cfg)
         if attempt is None or not attempt.ok:
-            return None
+            attempts += attempt.calls_spent if attempt is not None else cfg.max_attempts
+            return None, 0.0, attempts
         if gap is None:
             # Allocated only after a sentence has actually been synthesized.
             # When every whole-chunk attempt raised, this fallback makes the
@@ -395,10 +408,12 @@ def _sentence_split(
     return np.concatenate(pieces[:-1]), worst, attempts
 
 
-def _result(index: int, text: str, attempt: _Attempt, recovered_by: str = "") -> ChunkResult:
+def _result(index: int, text: str, attempt: _Attempt, recovered_by: str = "",
+            extra_calls: int = 0) -> ChunkResult:
     return ChunkResult(
         index=index, text=text, audio=attempt.audio, duration_s=attempt.duration,
-        attempts=attempt.calls_spent, ok=attempt.ok, coverage=attempt.verdict.coverage,
+        attempts=attempt.calls_spent + extra_calls, ok=attempt.ok,
+        coverage=attempt.verdict.coverage,
         dropped_sentence=attempt.verdict.dropped_sentence,
         transcript=attempt.verdict.transcript, recovered_by=recovered_by,
         word_diagnostics=attempt.verdict.word_diagnostics,

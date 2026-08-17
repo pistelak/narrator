@@ -4,9 +4,10 @@ The measured story (bench/RESULTS.md §11): Higgs v3 renders terminal falls at
 ~97% (31/32 verified wh/declarative takes), but yes/no question rises are
 stochastic — ~60% of verified takes rise, the same text flips contour between
 takes, and reference-clip engineering plateaus around 67%. The retry ladder in
-synth.py already generates up to three verified takes per chunk; this module
-supplies the contour signal that lets it prefer a rising verified take when
-the CALLER says the text should rise.
+synth.py already carries a budget of three attempts per chunk (returning at
+the first verified take); this module supplies the contour signal that lets
+it keep spending that budget in search of a rising verified take when the
+CALLER says the text should rise.
 
 Intent is the caller's, not punctuation's: wh-questions end in `?` too and
 canonically FALL — a punctuation trigger would demand rises on the one
@@ -132,11 +133,13 @@ _WH_WORDS = {
         "who", "whom", "whose", "what", "which", "when", "where", "why", "how",
     },
     "cs": {
-        "kdo", "koho", "komu", "kom", "kým", "co", "čeho", "čemu", "čím",
-        "který", "která", "které", "kteří", "kterou", "kterého", "kterým",
+        "kdo", "koho", "komu", "kom", "kým", "co", "čeho", "čemu", "čem", "čím",
+        "který", "která", "které", "kteří", "kterou", "kterého", "kterému",
+        "kterém", "kterým", "kterých", "kterými",
         "kdy", "kde", "kam", "odkud", "kudy", "proč", "nač",
-        "jak", "jaký", "jaká", "jaké", "jakou", "jakého",
-        "kolik", "kolikrát", "čí",
+        "jak", "jaký", "jaká", "jaké", "jakou", "jakého", "jakém", "jakým",
+        "jakých", "jakými",
+        "kolik", "kolika", "kolikrát", "čí",
     },
 }
 
@@ -149,13 +152,15 @@ _WORD = re.compile(r"\w+", re.UNICODE)
 
 
 def yes_no_question(text: str, lang: str) -> bool:
-    """Heuristic rising-intent policy: `?`-final and not wh-fronted.
+    """Heuristic rising-intent policy: `?`-final and containing no wh-word.
 
-    A wh-word in the first TWO tokens counts as wh-fronted, because Czech
-    questions open with conjunctions and prepositions ("A kdy přijdeš?") —
-    and the safe error direction is False: a yes/no question misread as wh
-    merely keeps today's behavior, while a wh-question misread as yes/no
-    would demand a rise where the measured-correct contour is a fall.
+    ANY wh-word anywhere in the sentence disqualifies, not just a fronted
+    one, because the error directions are asymmetric: a yes/no question
+    misread as wh merely keeps today's behavior (an embedded-wh question
+    like "Víš, kdy přijde?" is a deliberately accepted false negative),
+    while a wh-question misread as yes/no — "A kdy přijdeš?", "V čem je
+    problém?", "And just why did it fail?" — would demand a rise where the
+    measured-correct contour is a fall (97% correct, bench/RESULTS.md §11).
     Callers with real script knowledge should pass their own policy.
     """
     if not _FINAL_QUESTION.search(text.strip()):
@@ -163,5 +168,5 @@ def yes_no_question(text: str, lang: str) -> bool:
     wh = _WH_WORDS.get(lang.split("-")[0])
     if wh is None:
         return False  # unknown language: no basis for demanding a contour
-    first_two = [w.lower() for w in _WORD.findall(text)[:2]]
-    return bool(first_two) and not any(w in wh for w in first_two)
+    words = [w.lower() for w in _WORD.findall(text)]
+    return bool(words) and not any(w in wh for w in words)
