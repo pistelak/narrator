@@ -51,21 +51,40 @@ SHORT_SENTENCE_WORDS = 3
 # Spelled-out numerals in the languages this is used on. Anything matching is
 # dropped from BOTH sides before comparison — see trap 3.
 #
+# Per-language, NOT one blind pool. "set" is the genitive plural of Czech sto
+# ("pět set" = 500) and also core English vocabulary, so the pooled list
+# deleted a real English content word from both sides — and once the
+# all-numeral fail-closed reached whole references, "One set." rejected a
+# PERFECT transcript as unverifiable (frontier review, this diff). English
+# text therefore blinds only English numerals. Czech keeps the UNION: these
+# scripts narrate English tech content, where trap 3's "SHA two fifty six"
+# appears verbatim inside Czech prose, so English numerals must stay blind
+# there. The union carries one KNOWN collision the other way, inherited
+# unchanged from the pooled list: English "ten" is blinded inside Czech text,
+# where "ten" is the demonstrative pronoun — "Vyber ten." against the ASR's
+# "Vyber deset." passes today exactly as it did on main. Left in place
+# deliberately: removing "ten" from the Czech blind set changes cs verdicts
+# on real renders and needs its own measured pass, not a drive-by.
+_NUMBER_WORDS_EN = set(
+    """
+    zero one two three four five six seven eight nine ten eleven twelve thirteen
+    fourteen fifteen sixteen seventeen eighteen nineteen twenty thirty forty fifty
+    sixty seventy eighty ninety hundred thousand million billion
+    """.split()
+)
 # Czech declines its numerals, and prose uses the oblique forms constantly:
 # "dvou tisíc čtyřiceti osmi slov" is 2048 in the genitive. The ASR writes
 # "2048", so a blind list holding only the citation forms left every inflected
 # numeral unmatched — measured on a real render as four chunks failing at
 # 0.52-0.89 on orthography, not audio. The oblique forms are numerals and
 # nothing else in Czech, so blinding them collides with no content word.
-_NUMBER_WORDS = set(
+_NUMBER_WORDS_CS = _NUMBER_WORDS_EN | set(
     """
-    zero one two three four five six seven eight nine ten eleven twelve thirteen
-    fourteen fifteen sixteen seventeen eighteen nineteen twenty thirty forty fifty
-    sixty seventy eighty ninety hundred thousand million billion
     nula jedna jeden jedno dva dvě tři čtyři pět šest sedm osm devět deset
     jedenáct dvanáct třináct čtrnáct patnáct šestnáct sedmnáct osmnáct devatenáct
     dvacet třicet čtyřicet padesát šedesát sedmdesát osmdesát devadesát
     sto stě sta set tisíc tisíce milion miliony milionů miliarda miliard miliardy
+    milión milióny miliónů miliónu
     jedné jednoho jednomu jedním jednou dvou dvěma tří třech třem třemi
     čtyř čtyřech čtyřem čtyřmi pěti šesti sedmi osmi devíti deseti
     jedenácti dvanácti třinácti čtrnácti patnácti šestnácti sedmnácti osmnácti
@@ -161,39 +180,166 @@ _NUMERAL_VALUES: dict[str, int] = {
     "dvaceti": 20, "třiceti": 30, "čtyřiceti": 40, "padesáti": 50,
     "šedesáti": 60, "sedmdesáti": 70, "osmdesáti": 80, "devadesáti": 90,
     "stu": 100, "tisíci": 1000,
+    # DETERMINATE forms of the large units only. "milion" and its singular
+    # obliques mean exactly 10**6; a bare PLURAL does not — "Byly jich
+    # miliony." means "there were millions (of them)", and mapping
+    # miliony=10**6 certified a transcript's literal "1000000" against it at
+    # 1.0 (gate review of this change). Indeterminate forms deliberately
+    # appear NOWHERE — see the note below the table. "stě" IS determinate:
+    # a singular case form of sto ("ve stě případech", locative beside
+    # "stu"), whose plural reading ("dvě stě") only occurs inside
+    # compounds, which are suppressed before any value lookup. "sta" is
+    # NOT here, by a harder call than it looks: it is the exact genitive
+    # singular in "jeden ze sta" (IJP, heslo sto) — valuing it fixed that
+    # correct transcript — but ALSO the indeterminate plural in "na sta
+    # hostů", "hundreds of guests" (ÚJČ), where the same value certified
+    # a transcript's literal "100" against audio that said "hundreds".
+    # An ambiguous token cannot carry a definite value: it falls to the
+    # per-form sentinel, the genitive burns a retry, and the false accept
+    # is gone — the only direction this library trades in.
+    "stě": 100,
+    # Both Czech spellings of the singular are current ("milion" post-reform,
+    # "milión" traditional) and an ASR may write either; the accented plural
+    # obliques fold onto their unaccented sentinels, which is how "milióny"
+    # matches "miliony" while "milionů" still refuses both.
+    "milion": 10**6, "milionu": 10**6, "milión": 10**6, "miliónu": 10**6,
+    "miliarda": 10**9, "miliardě": 10**9,
 }
 
+# Indeterminate large-unit forms (set, tisíce/tisících, miliony/milionů,
+# miliard/miliardy) deliberately have NO entry anywhere: a bare plural names
+# a magnitude, not a number, so it cannot equate to any digit ("Byly jich
+# miliony." is not 1000000 — gate review) — but it cannot simply go unvalued
+# either, because an unvalued blinded token once vanished from the value
+# comparison entirely and DELETING "miliony" compared [] == [] at 1.0 (the
+# next gate review). They fall through to isolated_numerals' per-form "?"
+# sentinels instead: identity and fold-level spelling variance match,
+# everything else — digits, deletion, and OTHER INFLECTIONS — refuses. A
+# shared per-magnitude class was tried between those two reviews and matched
+# "miliony" to "milionů", which are audibly different endings in teaching
+# audio (third gate review); fold() already absorbs the variance an ASR
+# actually produces, so the sentinel is per spoken form.
 
-def has_compound_numeral(words: list[str]) -> bool:
+
+def has_compound_numeral(words: list[str], lang: str = "en") -> bool:
     """Two numerals side by side, e.g. "two fifty six"."""
     return any(
-        is_numberish(w) and is_numberish(words[i + 1])
+        is_numberish(w, lang) and is_numberish(words[i + 1], lang)
         for i, w in enumerate(words[:-1])
     )
 
 
-def isolated_numerals(words: list[str]) -> list[int]:
-    """Values of numerals that stand ALONE, with no numeral either side.
+def isolated_numeral_positions(
+    words: list[str], lang: str = "en", quote_foreign: bool = False,
+) -> list[tuple[int, int | str]]:
+    """isolated_numerals with each element's token index, for the weld
+    rescue, which must know a missing numeral's NEIGHBORS to decide whether
+    a merged transcript token could really be that numeral's weld."""
+    def numberish(w: str) -> bool:
+        if is_numberish(w, lang):
+            return True
+        return quote_foreign and not w.isascii() and w in _NUMERAL_VALUES
+
+    values: list[tuple[int, int | str]] = []
+    for i, word in enumerate(words):
+        if not numberish(word):
+            continue
+        prev_num = i > 0 and numberish(words[i - 1])
+        next_num = i + 1 < len(words) and numberish(words[i + 1])
+        if prev_num or next_num:
+            continue          # part of a compound; ambiguous, so skip
+        if _plain_digits(word) and len(word) <= 18 and str(int(word)) == word:
+            values.append((i, int(word)))
+        elif word in _NUMERAL_VALUES:
+            values.append((i, _NUMERAL_VALUES[word]))
+        else:
+            # The FULL folded token, never a truncation: sentinels compare by
+            # equality, and truncating to a prefix made two 19-digit numbers
+            # differing past the cut identical (gate review). Pathological
+            # length only ever reaches the refusal message, where it is noise,
+            # not a verdict.
+            values.append((i, "?" + fold(word, lang)))
+    return values
+
+
+def isolated_numerals(
+    words: list[str], lang: str = "en", quote_foreign: bool = False,
+) -> list[int | str]:
+    """Typed values of numerals that stand ALONE, with no numeral either side.
 
     Compounds are skipped deliberately. "two fifty six" and "256" denote the same
     quantity but tokenize as [2, 50, 6] versus [256], so comparing them would
     manufacture exactly the false failures number-blinding exists to prevent.
     An isolated numeral has no such ambiguity: "four bytes" against "nine bytes"
     is unambiguously wrong.
+
+    Every isolated numeral yields exactly one element — the comparison this
+    feeds is a multiset equality, and three earlier holes were all one bug: a
+    token that produced NO element was invisible to it. Deleting an unvalued
+    "miliony" compared [] == [], a unicode "²" vanished the same way, and
+    "Set." against silence certified nothing against nothing (three gate
+    reviews). So the element is typed instead of optional:
+
+    - exact ints for canonical ASCII digits and determinate word forms.
+      Canonical means str(int(t)) == t: "04" is an ASR's digit-by-digit
+      "oh four", which one value cannot confirm — int() once folded it into
+      a pass. Capped at 18 digits because int() itself raises past 4300 and
+      a verifier crash mid-render is worse than any refusal.
+    - "?<folded token>" for everything numberish-but-unvalued — unknown
+      forms and the indeterminate plurals — so a token still matches its
+      own identity transcript and refuses everything else, including its
+      OTHER inflections: "miliony" and "milionů" are audibly different
+      endings, and a shared per-magnitude class matched them (gate
+      review). Folded, because fold() is this library's measured answer
+      to the spelling variance an ASR actually produces.
+
+    `quote_foreign` additionally treats non-ASCII tokens with table entries
+    as numerals — the reference side of the changed-numeral check uses it so
+    an English script quoting "čtyři" contributes the 4 its transcript will
+    contain, and a transcript digit can never satisfy both the quoted word
+    and a native numeral at once (gate review: dropping "čtyři" beside a
+    legitimate "four" was absorbed as one soft miss while the lone digit
+    balanced both).
     """
-    values: list[int] = []
-    for i, word in enumerate(words):
-        if not is_numberish(word):
-            continue
-        prev_num = i > 0 and is_numberish(words[i - 1])
-        next_num = i + 1 < len(words) and is_numberish(words[i + 1])
-        if prev_num or next_num:
-            continue          # part of a compound; ambiguous, so skip
-        if word.isdigit():
-            values.append(int(word))
-        elif word in _NUMERAL_VALUES:
-            values.append(_NUMERAL_VALUES[word])
-    return values
+    return [v for _, v in isolated_numeral_positions(words, lang, quote_foreign)]
+
+
+# Digit grouping in the RAW text, before normalize erases which separator
+# was used — that erasure is the point of doing it here. A token-level fuse
+# after normalize saw only "1 000" and could not tell an English decimal
+# from a Czech grouped thousand: "1.000" is one thousand in Czech
+# orthography but 1.0 in English, and fusing it in English certified audio
+# that said "one point zero zero zero" (gate review). Each language fuses
+# only ITS grouping separator — en: comma; cs: dot or thin space — in the
+# exact grouped shape (1-3 digit head, all-3-digit groups). Everything else
+# falls apart into adjacent digit tokens, which compound suppression
+# refuses: the fail-closed direction for every ambiguous spelling.
+_DIGIT_GROUPS = {
+    "en": re.compile(r"\b\d{1,3}(?:,\d{3})+\b"),
+    # Czech groups with a dot or a space — and recognisers write the space
+    # as ASCII, no-break (U+00A0), or thin (U+2009), so all three count;
+    # matching only ASCII space refused a correct "1 000" (gate review).
+    "cs": re.compile(r"\b\d{1,3}(?:[.\u00A0\u2009 ]\d{3})+\b"),
+}
+
+
+def _numeral_tokens(text: str, lang: str) -> list[str]:
+    """Normalized tokens for the numeral checks: grouping fused per SENTENCE.
+
+    Fusing across the whole text let punctuation masquerade as grouping —
+    "4. 500." is two spoken numbers, but a full-text view read it as the
+    single 4500 an ASR wrote for different audio (gate review). A grouped
+    number never spans a sentence; two bare numerals in adjacent sentences
+    land adjacent after concatenation and compound suppression refuses
+    them, the fail-closed direction.
+    """
+    pattern = _DIGIT_GROUPS["cs" if lang.startswith("cs") else "en"]
+    tokens: list[str] = []
+    for sentence in split_sentences(text):
+        fused = pattern.sub(
+            lambda m: re.sub(r"\D", "", m.group()), sentence)
+        tokens.extend(normalize(fused, lang).split())
+    return tokens
 
 
 
@@ -351,18 +497,34 @@ def normalize(text: str, lang: str = "en") -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", text)).strip()
 
 
-def is_numberish(word: str) -> bool:
+def _plain_digits(token: str) -> bool:
+    """ASCII digits only — a necessary gate before int(), not a sufficient one.
+
+    str.isdigit() accepts superscripts and other unicode digits that int()
+    rejects — coverage("Four.", "²") CRASHED with ValueError mid-verdict
+    (gate review), and a verifier crash is worse than any refusal: it takes
+    the whole render down instead of failing one chunk closed. Not
+    sufficient: int() ALSO raises past 4300 ASCII digits, so the value paths
+    additionally cap length (second gate review found "9"*4301). Every int()
+    on transcript text sits behind both checks, never behind bare
+    isdigit()."""
+    return token.isascii() and token.isdigit()
+
+
+def is_numberish(word: str, lang: str = "en") -> bool:
     """A token that carries only numeric value, so it can be ignored.
 
     Deliberately NOT "contains a digit": that deleted `utf8`, `iso9001`, `rfc822`
     and `base64` from both sides, which are content words in this domain — the
-    verifier was blind to whether the audio said them at all.
+    verifier was blind to whether the audio said them at all. And per-language,
+    not pooled — see the _NUMBER_WORDS split: Czech "set" is English content.
     """
-    return word.isdigit() or word in _NUMBER_WORDS
+    words = _NUMBER_WORDS_CS if lang.startswith("cs") else _NUMBER_WORDS_EN
+    return word.isdigit() or word in words
 
 
 def content_words(text: str, lang: str = "en") -> list[str]:
-    return [w for w in normalize(text, lang).split() if not is_numberish(w)]
+    return [w for w in normalize(text, lang).split() if not is_numberish(w, lang)]
 
 
 def _bounded_matches(hyp_words: list[str], needle_words: list[str]) -> list[tuple[int, int]]:
@@ -434,11 +596,18 @@ def coverage_detail(
     That separation is the entire reason this is per-sentence.
 
     Known limit, stated because it is not obvious: a sentence whose content words
-    are ALL numerals cannot be verified this way. Scripts spell numerals out
+    are ALL numerals cannot be word-aligned this way. Scripts spell numerals out
     because digits are unspeakable, every ASR writes them back as digits, and
     number-blinding — which is what makes the rest of this work — leaves such a
-    sentence with nothing to compare. Those are counted, not silently skipped, and
-    the duration bounds remain the only guard on them.
+    sentence with nothing to align. What happens then is decided here, never by
+    the duration bounds (an earlier version said they were the only guard, and
+    then never consulted its own unverifiable list — a dropped all-numeral
+    sentence scored 1.0): when the whole reference is such a sentence and its
+    numerals are isolated, the VALUES are compared instead — "Four." against
+    the transcript's "4" passes, against "9" or nothing fails; everything else
+    in the class — a compound like "two fifty six", or an all-numeral sentence
+    inside a longer chunk — is refused as unverifiable rather than certified
+    unseen.
     """
     # Caller-supplied equivalences — vocabulary, not phonology. A pronunciation
     # lexicon pair IS one by construction: the engine is told to say the spoken
@@ -465,6 +634,99 @@ def coverage_detail(
     ref_words = [_fold(w) for w in ref_display]
     hyp_words = [_fold(w) for w in hyp_display]
     if not ref_words:
+        # Empty CONTENT is not empty TEXT. A reference whose words were all
+        # blinded numerals must hit the same unverifiable fail-closed as the
+        # per-sentence loop below — this early return used to score it 1.0
+        # against ANY transcript, including the empty one, so the sentence-split
+        # fallback laundered "Two fifty six." rendered alone (or dropped
+        # entirely) into a clean pass, at exactly the granularity the fallback
+        # exists to make failures visible. Found by preflight's identity oracle:
+        # a chunk it declared doomed rendered "clean" through this hole.
+        ref_tokens = normalize(reference, lang).split()
+        if ref_tokens:
+            # ...but fail-closed only where there is genuinely nothing to
+            # compare. ISOLATED numerals carry comparable value, so "Four."
+            # against a transcript's "4" is verified, not unverifiable — the
+            # first version of this fix refused that pair, which broke the
+            # sentence-split rescue for every short answer sentence a teaching
+            # script contains (frontier review, this diff). Comparable means:
+            # the transcript has no non-numeral content the script never asked
+            # for, and neither side compounds ("two fifty six" vs "256"
+            # tokenize as [2,50,6] vs [256] — the ambiguity blinding exists
+            # to absorb, still unverifiable here as everywhere).
+            # A declared pronunciation pair is the caller stating two
+            # spellings are one sound, and it must reach this branch too:
+            # ("Four", "fore") verified everywhere except here, where the
+            # raw tokens hid the equivalence and correct audio always
+            # refused (gate review). Grouped into equivalence CLASSES, not
+            # walked one hop — alignment composes pairs, so ("Four","fore")
+            # plus ("fore","for") verifies "for", and a single-hop map
+            # refused the chain the caller declared (gate review, again).
+            # Each class canonicalizes into its numeral member; a class with
+            # two distinct numeral spellings refuses to map at all, since
+            # collapsing them would invent an equivalence between numbers.
+            alike_clusters: list[set[str]] = []
+            for written, spoken in sound_alikes:
+                wt = normalize(written, lang).split()
+                st = normalize(spoken, lang).split()
+                if len(wt) != 1 or len(st) != 1 or wt[0] == st[0]:
+                    continue
+                cluster = {wt[0], st[0]}
+                rest = []
+                for group in alike_clusters:
+                    if group & cluster:
+                        cluster |= group
+                    else:
+                        rest.append(group)
+                alike_clusters = [*rest, cluster]
+            to_numeral: dict[str, str] = {}
+            for cluster in alike_clusters:
+                numeral = sorted(
+                    m for m in cluster
+                    if is_numberish(m, lang)
+                    or m in _NUMERAL_VALUES)
+                if len(numeral) == 1:
+                    to_numeral.update(
+                        {m: numeral[0] for m in cluster if m != numeral[0]})
+            hyp_tokens = [
+                to_numeral.get(t, t) for t in _numeral_tokens(hypothesis, lang)
+            ]
+            ref_tokens = [
+                to_numeral.get(t, t) for t in _numeral_tokens(reference, lang)
+            ]
+
+            # Every isolated numeral now yields a typed element (see
+            # isolated_numerals), so the multiset comparison IS the guard:
+            # identity always matches, and silence, deletion, substitution,
+            # non-canonical digits ("04"), and unknown forms all mismatch.
+            # The earlier _valued/_canonical predicates this replaces refused
+            # some of those as "unverifiable" instead — with the side effect
+            # that an IDENTITY transcript of "04." refused too, dooming a
+            # correct chunk. Cross-language equivalence follows the blind
+            # vocabulary: `not hyp_words` means every transcript token is
+            # numberish IN LANG, which for cs deliberately includes English
+            # (see _NUMBER_WORDS_CS) — "Sto." against "hundred" passes there
+            # by design, while in en a foreign numeral word is content and
+            # lands in hyp_words, refusing here. "-4" passes and is recorded
+            # as such: normalize treats the sign as punctuation, so this
+            # branch cannot see it by construction.
+            # Content is judged AFTER pair canonicalization — "fore" under a
+            # ("Four", "fore") pair is the declared spelling of a numeral,
+            # not leftover content the script never asked for.
+            comparable = (
+                all(is_numberish(t, lang) for t in hyp_tokens)
+                and not has_compound_numeral(ref_tokens, lang)
+                and not has_compound_numeral(hyp_tokens, lang)
+            )
+            if comparable:
+                ref_nums = sorted(isolated_numerals(ref_tokens, lang), key=str)
+                hyp_nums = sorted(isolated_numerals(hyp_tokens, lang), key=str)
+                if ref_nums == hyp_nums:
+                    return CoverageDetail(1.0, "")
+                return CoverageDetail(
+                    0.0, f"[numeral changed: {ref_nums} became {hyp_nums}]")
+            return CoverageDetail(
+                0.0, f"[unverifiable, all-numeral] {reference.strip()}")
         return CoverageDetail(1.0, "")
 
     covered = [False] * len(ref_words)
@@ -541,12 +803,25 @@ def coverage_detail(
         n = len(content_words(sentence, lang))
 
         if n == 0:
+            if not normalize(sentence, lang).split():
+                # No TOKENS at all — a punctuation-only sentence like "...",
+                # a pause the script spells rather than speech. There is
+                # nothing the audio could have said, so nothing to refuse;
+                # treating it as all-numeral hard-failed an exact identity
+                # round-trip of "Alpha beta gamma. ..." (gate review). The
+                # whole-reference early return above makes the same call for
+                # a reference that is only punctuation.
+                continue
             # Every content word was a numeral, so number-blinding left nothing to
-            # compare. This is genuinely unverifiable by a text round-trip: the
-            # script says "two fifty six" precisely because digits are unspeakable,
-            # and the ASR says "256", so no squashed form matches either. Recorded
-            # rather than skipped — silently passing it is how a dropped sentence
-            # gets through, which this used to do.
+            # align. IN CONTEXT this is unverifiable even for isolated numerals:
+            # the chunk-wide value multiset cannot place a value inside a specific
+            # sentence, so "Four." dropped while a 4 survives elsewhere would
+            # still balance — only the whole-reference path (early return above),
+            # where the sentence stands alone, may compare by value. Compounds
+            # are worse: the script says "two fifty six" precisely because digits
+            # are unspeakable, the ASR says "256", and no squashed form matches
+            # either. Recorded rather than skipped — silently passing it is how
+            # a dropped sentence gets through, which this used to do.
             unverifiable.append(sentence.strip())
             continue
 
@@ -642,15 +917,31 @@ def coverage_detail(
     # An isolated numeral that changed value is a content error, not an ASR
     # spelling difference. Compounds are excluded above, so this cannot fire on
     # "two fifty six" vs "256".
-    ref_tokens = normalize(reference, lang).split()
-    hyp_tokens = normalize(hypothesis, lang).split()
+    #
+    # Both sides run with quote_foreign: a quoted foreign numeral word
+    # ("The Czech word is čtyři.") contributes its value on WHICHEVER side it
+    # appears, so the transcript's digit balances the quoted word — and a
+    # single digit can no longer satisfy both the quoted word and a native
+    # numeral at once ("čtyři means four" against "means 4" was absorbed as
+    # one soft miss while the lone 4 balanced both; gate review). The word
+    # itself stays CONTENT in coverage — a quoting sentence still owes
+    # acoustic evidence there, which is what dents a short sentence and lets
+    # a long one absorb the spelling difference, exactly the pooled-list
+    # behavior where it was safe. Known limit, deferred deliberately: a
+    # quoted foreign COMPOUND — "dvacet jedna" against the ASR's "21" —
+    # still hard-fails; composing a value across foreign word sequences is
+    # the [2,50,6]-vs-[256] ambiguity compound suppression exists to avoid.
+    ref_tokens = _numeral_tokens(reference, lang)
+    hyp_tokens = _numeral_tokens(hypothesis, lang)
     # Skip if EITHER side compounds. The check must be symmetric: "two fifty six"
     # is three adjacent numerals in the script and collapses to the single
     # isolated "256" in the transcript, so an asymmetric rule reads a correct
     # transcription as a changed number.
-    compound = has_compound_numeral(ref_tokens) or has_compound_numeral(hyp_tokens)
-    ref_nums = [] if compound else sorted(isolated_numerals(ref_tokens))
-    hyp_nums = [] if compound else sorted(isolated_numerals(hyp_tokens))
+    compound = has_compound_numeral(ref_tokens, lang) or has_compound_numeral(hyp_tokens, lang)
+    ref_nums = [] if compound else sorted(
+        isolated_numerals(ref_tokens, lang, quote_foreign=True), key=str)
+    hyp_nums = [] if compound else sorted(
+        isolated_numerals(hyp_tokens, lang, quote_foreign=True), key=str)
     if ref_nums != hyp_nums:
         # Merge rescue, one direction only. The ASR sometimes welds a numeral
         # to its neighbour — "dva z" comes back as "dvaze" — and the welded
@@ -667,11 +958,83 @@ def coverage_detail(
         for v in ref_nums:
             if v in extra:
                 extra.remove(v)
-        welded = [t for t in hyp_tokens if not is_numberish(t)]
+        # Only UNCLAIMED transcript tokens can hide a weld: a token the
+        # alignment already matched to a reference word is that word, spoken
+        # correctly — "onerous" aligned to the script's "onerous" was still
+        # rescuing a deleted "one" through its first three letters (gate
+        # review). The real weld ("dvaze") matches no reference word by
+        # construction, so it is always unclaimed.
+        welded = [t for t, taken in zip(hyp_display, hyp_claimed, strict=True)
+                  if not taken]
+        ref_positions = isolated_numeral_positions(
+            ref_tokens, lang, quote_foreign=True)
         for v in list(missing):
-            forms = [w for w, val in _NUMERAL_VALUES.items() if val == v]
-            if any(f in t for f in forms for t in welded):
-                missing.remove(v)
+            # Three restrictions keep the rescue from excusing real
+            # deletions, each pinned to an accept it prevented (gate reviews):
+            #
+            # Only the CURRENT language's spellings can hide inside a welded
+            # token — the ASR that welded "dva z" into "dvaze" writes Czech,
+            # so a Czech render searches Czech forms. Searching every
+            # language's forms let the Czech "set" (= 100, briefly valued)
+            # rescue a dropped English "hundred" through "settings", and the
+            # Czech "sto" would rescue a dropped English 100 through "stole".
+            #
+            # Only as the PREFIX of the welded token — the weld this rescue
+            # exists for keeps the numeral's own spelling at the front
+            # ("dva" + "ze"). An anywhere-substring search let "stě" (a real
+            # singular form of sto) excuse a deleted "sto" through the
+            # unrelated "městě", and "one" hide inside "stone".
+            #
+            # And the REMAINDER must be the word that FOLLOWS the numeral in
+            # the reference — a weld preserves temporal order, so a
+            # numeral-first welded token can only continue with the word the
+            # audio spoke next: "dvaze" is "dva" + the "z" that follows in
+            # the script. Prefix alone let any unclaimed word starting with
+            # a numeral spelling qualify ("oneself" excused a deleted "one"
+            # whose neighbors were elsewhere entirely), and matching EITHER
+            # neighbor accepted the temporally impossible "onealpha" for
+            # "alpha one" (gate reviews, consecutive). The comparison is
+            # ACCENT-blind but not fold-blind: the ASR's unaccented "dveze"
+            # is the same audio as "dvě z", so the _FOLD table applies —
+            # but the full fold() is context-dependent (a bare Czech "z"
+            # devoices to "s"; the same z inside the weld does not), so
+            # folding the pieces separately can never reassemble the token.
+            # The remainder side is prefix-loose one direction ("ze"
+            # against the script's "z" is that preposition's vowel variant).
+            def _accents(w: str) -> str:
+                return w.translate(_FOLD) if lang.startswith("cs") else w
+            forms = [
+                _accents(w) for w, val in _NUMERAL_VALUES.items()
+                if val == v and is_numberish(w, lang)
+            ]
+            followers = {
+                _accents(ref_tokens[i + 1])
+                for i, val in ref_positions
+                if val == v and i + 1 < len(ref_tokens)
+            }
+            def _weld_matches(
+                t: str, ff: str, followers: set[str] = followers,
+            ) -> bool:
+                ft = _accents(t)
+                if not ft.startswith(ff) or ft == ff:
+                    return False
+                rest = ft[len(ff):]
+                # One direction only: the weld swallowed the WHOLE follower,
+                # possibly plus a stray vowel ("ze" for the script's "z").
+                # The reverse — the remainder as a mere prefix of the
+                # follower — had no motivating weld and let a one-letter
+                # fragment qualify: "oned" rescued a deleted "one" because
+                # "delta" happens to start with "d" (gate review).
+                return any(rest.startswith(nb) for nb in followers if nb)
+            # A weld that rescues is CONSUMED: one welded token is one
+            # spoken numeral, and leaving it in the pool let a single
+            # "onealpha" excuse two missing "one"s — the second of which
+            # the audio genuinely dropped (gate review).
+            for t in welded:
+                if any(_weld_matches(t, ff) for ff in forms):
+                    welded.remove(t)
+                    missing.remove(v)
+                    break
         if missing or extra:
             return CoverageDetail(
                 0.0, f"[numeral changed: {ref_nums} became {hyp_nums}]", word_diagnostics)
@@ -726,20 +1089,29 @@ def coverage_detail(
         return CoverageDetail(
             0.0, f"[meaning-critical token changed: {', '.join(changed)}]", word_diagnostics)
 
+    if unverifiable:
+        # Fail closed, and BEFORE the insertion score below: this is a hard
+        # refusal and that is a soft ratio, and when both fired the ratio
+        # returned first — a chunk that dropped its all-numeral sentence
+        # while the ASR appended a stray token scored 0.98 and passed, the
+        # ordering alone laundering the exact refusal this list exists for
+        # (gate review). These sentences are all-numeral inside a longer
+        # chunk, where even the isolated-numeral values cannot be PLACED
+        # (see the sentence loop) — the whole-reference by-value path never
+        # applies here. The list was previously built and then ignored,
+        # which meant a dropped all-numeral sentence scored a clean 1.0 —
+        # documenting a blind spot is not the same as refusing to certify
+        # what you cannot see. The sentence-split fallback is the recovery:
+        # rendered alone, an isolated numeral becomes the whole reference
+        # and verifies by value.
+        return CoverageDetail(
+            0.0, f"[unverifiable, all-numeral] {unverifiable[0]}", word_diagnostics)
+
     if precision < worst:
         # Something was inserted rather than dropped. Report the whole chunk,
         # since an insertion does not belong to any one reference sentence.
         return CoverageDetail(
             precision, f"[inserted content] {reference.strip()[:70]}", word_diagnostics)
-
-    if unverifiable:
-        # Fail closed. These sentences are all-numeral, so number-blinding left
-        # nothing to compare and a text round-trip genuinely cannot check them.
-        # The list was previously built and then ignored, which meant a dropped
-        # all-numeral sentence scored a clean 1.0 — documenting a blind spot is
-        # not the same as refusing to certify what you cannot see.
-        return CoverageDetail(
-            0.0, f"[unverifiable, all-numeral] {unverifiable[0]}", word_diagnostics)
 
     return CoverageDetail(worst, worst_sentence, word_diagnostics)
 

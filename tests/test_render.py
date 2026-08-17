@@ -39,13 +39,18 @@ def test_writes_a_file_and_reports_clean(tmp_path: Path) -> None:
 
 
 def test_gap_duration_is_honoured_exactly(tmp_path: Path) -> None:
-    """A pause is content. A renderer that 'improves' the timing is editing."""
+    """A pause is content. A renderer that 'improves' the timing is editing.
+
+    Non-numeral words on purpose: the original "One two three four." is
+    all-numeral, which the verifier refuses to certify — it only ever passed
+    here through the empty-reference hole test_verify pins closed.
+    """
     backend, verifier = build()
-    short = render([Text("One two three four.")], VOICE, backend, tmp_path / "a.wav", verifier)
+    short = render([Text("Alpha beta gamma delta.")], VOICE, backend, tmp_path / "a.wav", verifier)
 
     backend2, verifier2 = build()
     withgap = render(
-        [Text("One two three four."), Gap(5.0)], VOICE, backend2, tmp_path / "b.wav", verifier2
+        [Text("Alpha beta gamma delta."), Gap(5.0)], VOICE, backend2, tmp_path / "b.wav", verifier2
     )
     assert withgap.duration_s - short.duration_s == pytest.approx(5.0, abs=0.05)
 
