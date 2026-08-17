@@ -900,6 +900,49 @@ def test_sound_alike_chains_and_protected_pairs() -> None:
                     sound_alikes=(("cannot", "cant"),))[0] == 0.0
 
 
+def test_sound_alike_pairs_apply_to_whole_words_not_substrings() -> None:
+    """A pair whose written form is a PREFIX of its spoken form used to corrupt
+    the transcript it was declared to align.
+
+    Pairs were applied with str.replace in fold space, so ("jen", "jenom") —
+    a real Czech cast, where a colloquial voice reference systematically said
+    the informal "jenom" for the script's "jen" — rewrote the transcript's own
+    "jenom" into "jenomom". The pair then aligned nothing, and the sentence
+    scored purely on the words around it: 0.95 here, 0.909 on the paragraph the
+    failure was found in — both above the 0.90 gate, both carrying an
+    "[inserted content]" diagnostic that named no insertion. A pass by accident,
+    with a lie attached, and one bad sentence away from a false accept. Only the
+    reversed pair worked, and reversed is the wrong direction for a
+    written -> spoken pronunciation lexicon.
+
+    Whole-word application is also what the guard above already declares: a pair
+    is a single content word per side or it is skipped entirely.
+    """
+    ref = "Podpis viděla jen ona a byla jediná na světě."
+    hyp = "Podpis viděla jenom ona a byla jediná na světě."
+    pair = (("jen", "jenom"),)
+    assert coverage(ref, hyp, "cs", sound_alikes=pair)[0] == 1.0
+    # Declared in either direction, because a caller should not have to know
+    # which side the substring corruption used to bite.
+    assert coverage(ref, hyp, "cs", sound_alikes=(("jenom", "jen"),))[0] == 1.0
+    # Without the pair the substitution still hard-fails: jen is a restrictive
+    # quantifier and lives in _CRITICAL_TOKENS.
+    assert coverage(ref, hyp, "cs")[0] == 0.0
+    # And the pair canonicalizes, never exempts — dropping the word outright
+    # still refuses, exactly as the knot/not case above.
+    assert coverage(ref, ref.replace(" jen ", " "), "cs", sound_alikes=pair)[0] == 0.0
+
+    # The other half of the same bug: substring application also reached words
+    # the pair never named. Under ("cat", "caterpillar") an unrelated "bobcat"
+    # became "bobcaterpillar", dragging a real substitution to 0.797 — a
+    # reject, but for a reason the caller never declared. A pair must now be
+    # inert on tokens it does not name: same verdict as no pair at all.
+    named = "alphabet bravo charlie delta echo foxtrot golf hotel india juliett."
+    swapped = named.replace("juliett", "bobcat")
+    assert (coverage(named, swapped, sound_alikes=(("cat", "caterpillar"),))[0]
+            == coverage(named, swapped)[0])
+
+
 def test_bare_contraction_spellings_stay_meaning_critical() -> None:
     """The regressions a bare-token expansion table bought, each measured against
     the pre-change behavior it broke:
