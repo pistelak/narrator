@@ -622,9 +622,31 @@ def coverage_detail(
             alike_pairs.append((wf[0], sf[0]))
 
     def _fold(word: str) -> str:
+        # WHOLE-WORD, not substring. A pair is a single content word on each
+        # side by construction (the guard above), so substring application is
+        # broader than what the caller declared: it rewrites EVERY token
+        # containing the written form. Two ways that bites, both measured.
+        #
+        # It corrupts the pair's own target when written is a prefix of spoken.
+        # ("jen", "jenom") turned the transcript's "jenom" into "jenomom", so
+        # the pair aligned neither word it was declared for and the sentence
+        # scored on its neighbours alone — 0.95 on the pinned test, 0.909 on
+        # the paragraph this was found in, both ABOVE the gate, both carrying
+        # an "[inserted content]" diagnostic naming no insertion. Same shape
+        # for ("Tom", "Tomáš").
+        #
+        # And it reaches words the pair never named. Under ("cat",
+        # "caterpillar") an unrelated "bobcat" became "bobcaterpillar",
+        # dragging a real substitution from 0.9 to 0.797 — a reject, but by
+        # accident and for the wrong reason. Whole-word makes a pair inert on
+        # tokens it does not name: same verdict as declaring no pair at all.
+        #
+        # Chains still compose — the loop is sequential, so a declared a->b->c
+        # still reaches c, which the pinned chain test covers.
         w = fold(word, lang)
         for a, b in alike_pairs:
-            w = w.replace(a, b)
+            if w == a:
+                w = b
         return w
 
     # The display arrays are index-aligned with the folded ones by
