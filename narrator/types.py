@@ -75,6 +75,14 @@ class Voice:
     engines want a clip plus its transcript, while engines that ship a voice bank
     want a name. A backend uses whichever it supports and says so plainly when
     handed the other.
+
+    A reference is behavioural conditioning, not merely a timbre sample. Beyond
+    identity and drift, it carries the speaker's register — which words they
+    reach for — so a clip whose register differs from the script's can make the
+    engine follow the voice rather than the page, which a word-for-word verifier
+    then correctly rejects. Cast in the script's register, or write in the
+    reference's; the measured case and why per-word equivalences do not fix it
+    are in README, "Casting", and #9.
     """
     audio_path: Path | None = None
     transcript: str = ""

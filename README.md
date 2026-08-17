@@ -43,6 +43,32 @@ print(report.summary())
 Verification is on by default and needs no setup: narrator picks its own
 recogniser stack, matched to the engine's sample rate.
 
+### Casting: match the reference's register to the script's
+
+A reference clip is **behavioural conditioning, not merely a timbre sample**.
+Pinning it holds identity and stops drift — that is why it exists — but a
+cloning engine conditions on the whole clip, so it also carries how that person
+talks: which words they reach for, not only how they sound.
+
+Cast a reference in a different register from the script and the model can
+follow the voice rather than the page. Measured on one Czech cast: a clip of
+colloquial speech rendered `jen` ("only") as `jenom` on 10 of 10 attempts, where
+the standard-Czech reference passed the same paragraph on the first attempt.
+Both recognisers agreed on both clips — strong evidence the substitution was in
+the audio and not the transcription ([#9]). Under a word-for-word contract that
+audio genuinely does not match, so by default the retries are exhausted and the
+render is quarantined, correctly.
+
+Per-word equivalences are the wrong repair for this. `sound_alikes` exists, and
+earns its place for pronunciation pairs — but a register is an open-ended set of
+such preferences, and each entry widens the gate a little. Either recast in the
+script's register, or write the script in the reference's. Verification
+therefore doubles as a **casting-compatibility check**: a reference that
+systematically rewrites script content is not usable with a literal script, and
+a render will normally surface that on the first attempt.
+
+[#9]: https://github.com/pistelak/narrator/issues/9
+
 ## How it works
 
 Every chunk is transcribed back by a speech recogniser and scored against the
