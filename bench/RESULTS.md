@@ -674,7 +674,7 @@ bench/.voices/ref/adhoc.wav --tag baseline` (per-take data in
 
 ### 11.4 Reference A/B and voice casting (same day)
 
-The probe then screened the tutor project's eight zero-shot casting rolls
+The probe then screened eight operator-supplied zero-shot casting rolls
 (same declarative text, temperature 0.7, no reference) and A/B-tested
 question-bearing composite references (original clip + a spliced, verified,
 F0-selected rising take of "Dává ti to smysl?" — a question deliberately
@@ -683,11 +683,11 @@ outside the test set):
 | reference | yes/no rise (verified, defined) | failed verification | run time |
 |---|---|---|---|
 | adhoc 6.8 s (baseline) | 62% | 4/63 | 170 s |
-| explainer-01 "Tom" (129 Hz) | 67% | 12/63 | 2155 s |
+| explainer-01 (129 Hz) | 67% | 12/63 | 2155 s |
 | explainer-03 (137 Hz) | 71%* | 14/63 | 208 s |
 | explainer-07 (99 Hz) | 59% | 3/63 | 177 s |
-| explainer-04 "Mira" (177 Hz) | 48% | 0/63 | 150 s |
-| Mira + question splice | **59% (cs: 40%→67%)** | 2/63 | 161 s |
+| explainer-04 (177 Hz) | 48% | 0/63 | 150 s |
+| explainer-04 + question splice | **59% (cs: 40%→67%)** | 2/63 | 161 s |
 | explainer-07 + question splice | 59% (no change) | 3/63 | 175 s |
 
 \* small denominator — the voice fails verification too often to trust it.
@@ -698,11 +698,11 @@ Findings:
   invisible until measured: two of four screened voices (01, 03) fail the
   cascade on ~20% of takes and burn up to 13× the compute in retries. For
   casting, run the probe before falling in love with a voice. Cast picked:
-  explainer-04 ("Mira") + explainer-07 (male), both effectively fully
+  explainer-04 + explainer-07 (male), both effectively fully
   stable (their only rejections are the "jsi"→"si" orthographic
   sound-alike).
 - **A question-bearing reference helps when the voice has headroom and does
-  nothing when it doesn't**: Mira's Czech rise rate jumped 40%→67% from one
+  nothing when it doesn't**: explainer-04's Czech rise rate jumped 40%→67% from one
   spliced exemplar (itself only +2.45 st — the strongest of six takes);
   explainer-07 stayed exactly at his 67%-cs / 59%-overall ceiling.
 - **Reference engineering alone plateaus around ~60-67%.** No configuration
@@ -725,7 +725,7 @@ with `--ranked` (`wants_rise=yes_no_question`, threshold 1.5 st, unchanged
 
 | voice, yes/no takes | raw rise | ranked rise | extra generations | verify |
 |---|---|---|---|---|
-| Mira (+question ref) | 16/27 (59%) | 20/27 (74%) | +24 over 63 takes | 63/63 |
+| explainer-04 (+question ref) | 16/27 (59%) | 20/27 (74%) | +24 over 63 takes | 63/63 |
 | explainer-07 | 16/27 (59%) | 22/26 (85%) | +17 over 63 takes | 60/63* |
 
 \* the recurring "jsi"→"si" orthographic rejections, unrelated to prosody.
@@ -734,7 +734,7 @@ with `--ranked` (`wants_rise=yes_no_question`, threshold 1.5 st, unchanged
   that it assumed i.i.d. takes. Measured uplift is +15/+26 points to
   74–85%, because rise probability is per-text, not per-take: the misses
   cluster in the same few sentences (e.g. "Běží ti ten deployment na
-  Kubernetes?" and "Are you coming to the meeting tomorrow?" for Mira),
+  Kubernetes?" and "Are you coming to the meeting tomorrow?" for explainer-04),
   which flat-line through all three attempts.
 - Falls and verification are untouched — wh/declarative categories match
   their raw runs, and no ranked take failed verification that its raw
@@ -749,7 +749,7 @@ with `--ranked` (`wants_rise=yes_no_question`, threshold 1.5 st, unchanged
 
 ### 11.6 Where the question cue actually lives (operator listening finding)
 
-Listening to the Tom samples, the operator noticed the intonation differing
+Listening to the explainer-01 samples, the operator noticed the intonation differing
 mostly at the *beginning* of questions, not the end. Measured on the
 existing minimal pairs (same wording as question and declarative, onset =
 median F0 of the first 500 ms of voicing, register = utterance median,
@@ -758,7 +758,7 @@ question minus declarative, averaged over takes per voice):
 - **English carries the cue at the onset**: "Are you coming to the meeting
   tomorrow?" starts +0.8 to +3.7 st above its declarative twin and sits
   +1.3 to +4.6 st higher in register on EVERY voice — while its terminal
-  contour stays flat. Tom shows the largest gap (+3.2 st onset, +4.1 st
+  contour stays flat. explainer-01 shows the largest gap (+3.2 st onset, +4.1 st
   register), which is what the operator heard.
 - **Czech carries it terminally**: onset deltas hover near zero or
   negative; the question signal is the terminal rise the §11 metric
@@ -798,7 +798,7 @@ operator's ear can.
 Terminal-event strength (terminal minus global slope) separates the classes
 cleanly (+20..+33 vs −2..−4 st/s) and is the right metric if conclusive
 falls are ever selected for. Levers, unmeasured, in cost order: a reference
-exemplar with a crisp conclusive fall (the bootstrap that lifted Mira's
+exemplar with a crisp conclusive fall (the bootstrap that lifted explainer-04's
 question rises 40%→67%); terminal-event selection for chunk-final
 declaratives (expensive — statements dominate chunks, so extra generations
 would apply broadly). Parked pending a decision that the naturalness gain
@@ -816,13 +816,13 @@ arm: base reference vs base + UNSELECTED declarative vs base + metric-
 selected crisp-fall declarative, to separate contour transfer from "adding
 a third sentence changed things".
 
-**male07: the gate failed at generation.** Twelve verified takes of an
+**explainer-07: the gate failed at generation.** Twelve verified takes of an
 out-of-set declarative produced zero fall events (+2.0 to +12.6 st/s —
 terminal always FLATTENS relative to his steep −14..−19 st/s declination).
 A selector cannot select what the model never samples: both the splice and
 any ladder-based fall selection are dead for this voice. Recorded, closed.
 
-**Mira: the splice failed the three-arm test.** Her raw takes do sample
+**explainer-04: the splice failed the three-arm test.** Its raw takes do sample
 mild fall events (8/13 declarative takes event-negative at base), and a
 genuine −5.8 st/s exemplar existed to splice. It did not transfer
 (median event over verified takes):
@@ -839,14 +839,16 @@ nothing — without arm B this would have misread as a weak positive.
 Question rises were unharmed in all arms (+30..+35 st/s terminal).
 
 Conclusion: **reference engineering is exhausted for conclusive falls**,
-and for male07 so is take selection. What remains, all unmeasured and
-parked: casting for fall propensity (Mira samples mild events, male07
+and for explainer-07 so is take selection. What remains, all unmeasured and
+parked: casting for fall propensity (explainer-04 samples mild events, explainer-07
 none — the trait is real and screenable), terminal-nucleus F0 resynthesis
 (artifact risk, needs re-verification), and the possibility that the
 deficit matters less in context — every §11.7-11.8 number is from
 isolated sentences, and the in-context question check showed isolated
 measurements understate contextual prosody. The production references
-remain `mira_q.wav` and `male07.wav`; the `_dctrl`/`_dfall` composites
+remain the question-spliced explainer-04 composite and the plain
+explainer-07 clip (operator-local files, gitignored); the control and
+fall-splice composites
 are measurement artifacts, not candidates.
 
 ## Appendix A — Reproducing
