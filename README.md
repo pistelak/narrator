@@ -63,9 +63,9 @@ render(
 Chunking never crosses a segment, so a voice cannot bleed into another
 speaker's turn.
 
-Two reference clips recorded at different levels ship as a lopsided dialogue,
-and mastering cannot repair it — loudness normalisation moves both speakers by
-the same amount. `Voice.gain_db` is where you state the correction:
+Two voices can arrive at different levels, and mastering cannot repair it —
+loudness normalisation moves both speakers by the same amount, so the file gets
+no closer to balanced. `Voice.gain_db` is where you state the correction:
 
 ```python
 questioner = Voice(Path("questioner.wav"), "transcript of the clip", gain_db=-4.0)
@@ -73,6 +73,20 @@ questioner = Voice(Path("questioner.wav"), "transcript of the clip", gain_db=-4.
 
 It is one constant gain applied to every chunk that voice speaks, so a whisper
 stays a whisper — only the speaker moves, never the performance.
+
+**Getting the number.** Render every voice speaking a few ordinary, comparable
+lines in **one** file with no gains set, then compare their levels and turn the
+louder ones down by the difference. It has to be one file: each render is
+mastered to the same loudness target on its own, so two separately rendered
+files are normalised to the same level by construction and the imbalance you
+are trying to measure is gone before you can look at it.
+
+If your voices are cloned from reference clips, loudness-normalising those clips
+first (`ffmpeg -af loudnorm`, two-pass linear) is reasonable hygiene and may be
+all you need — R128 gates out pauses and room tone properly, which is the part
+that is hard to do by hand. It is not a guaranteed substitute: matched reference
+loudness need not mean matched output, and preset voices have no clip to
+normalise at all. Calibrate as above either way.
 
 Narrator will not work the number out for you, and that is deliberate. Three
 designs that inferred it from the rendered audio were built and measured, and

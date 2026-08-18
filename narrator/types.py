@@ -106,10 +106,17 @@ class Voice:
     gain_db: float = 0.0
     """Level correction for this voice, applied to every chunk it speaks.
 
-    A cloning engine carries its reference clip's level into the output, so two
-    references recorded at different levels ship as a lopsided dialogue —
-    and mastering cannot repair it, because loudness normalisation moves both
-    speakers by the same amount. This is where a caller states the offset.
+    Two voices can arrive at different baseline levels, and mastering cannot
+    repair it: loudness normalisation moves both speakers by the same amount,
+    so the file gets no closer to balanced. This is where a caller states the
+    offset.
+
+    Deliberately cause-agnostic. Whether the difference came from recording gain
+    in a reference clip, from how loudly someone performed, or from the engine's
+    own behaviour on a given voice, it lands in the file the same way and this
+    corrects it the same way. Narrator does not need to know which — and does
+    not claim to: that a cloning engine carries its reference's level into its
+    output is plausible and unmeasured here, so no rule rests on it.
 
     Declared, never inferred, and that boundary was expensive to find. Three
     designs that derived it from the rendered audio were built and measured, and
