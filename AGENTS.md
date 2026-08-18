@@ -87,6 +87,19 @@ verified findings and name any left unresolved.
 - **The pronunciation lexicon applies at synthesis only**; verification always
   compares against the caller's original text. Substituting upstream makes
   correct audio fail.
+- **Speaker level is declared (`Voice.gain_db`), never inferred.** Do not add a
+  stage that works out how loud a voice "should" be from the rendered audio.
+  Three were built and measured, each rejected: pulling chunks toward the batch
+  median boosted a deliberate whisper 6 dB purely because a second speaker
+  existed; a per-voice median let one whispered aside cut a twenty-turn
+  narrator 6 dB; an "a voice needs two chunks to anchor" guard only moved the
+  failure to a cliff, where splitting that aside in two flipped the outcome
+  (1.000 vs 0.501). Rendered audio cannot separate a quiet *delivery* from a
+  quiet *reference*, and measuring the reference clips instead needs real VAD —
+  a peak-relative threshold read 2 s of room tone as 3 dB (-17.05 vs -20.06
+  dBFS). Note `docs/long-form.md` §11.3 proposes clamped per-chunk LUFS
+  matching: that targets chunk-to-chunk drift within *one* narrator, was never
+  implemented, and is not licence for the above.
 - **`source_rate` must be the backend's actual rate** everywhere an ASR is
   constructed — a mismatch silently corrupts every verdict. `default_verifier`
   exists so callers stop assembling this by hand; keep it the single policy.
