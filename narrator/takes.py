@@ -159,7 +159,10 @@ def _voice_identity(voice: Voice) -> str | None:
         try:
             reference = json.dumps([str(voice.audio_path.resolve()),
                                     content_digest(voice.audio_path)])
-        except OSError:
+        except Exception:
+            # Not only OSError: `resolve` raises RuntimeError on a symlink loop.
+            # Any reference this cannot read is a reference this cannot key on,
+            # and that disables the store rather than the render.
             return None
     return json.dumps([reference, voice.transcript, voice.lang, voice.preset])
 
@@ -229,10 +232,14 @@ class TakeStore:
     """Takes that could not be written. Counted, never raised: the store is an
     optimisation, and a full disk must not fail a render that synthesised fine."""
     usable: int = field(default=0, init=False)
-    """Chunks of THIS render that are addressable in the store — read from it or
-    filed into it. What a caller needs after a refusal is not how many files the
-    directory holds (most of which may belong to another script) but how much of
-    the render they are about to repeat is already paid for."""
+    """Chunks of THIS render that are addressable in the store — filed into it,
+    or read AND used. What a caller needs after a refusal is not how many files
+    the directory holds (most of which may belong to another script) but how
+    much of the render they are about to repeat is already paid for.
+
+    Counted by `used`, not by `get`, because a take can be read and then set
+    aside — a sentence-split take under a new prosody policy is — and counting
+    the read would promise a chunk that will be regenerated next time too."""
 
     def get(self, key: str, sample_rate: int, index: int, text: str) -> ChunkResult | None:
         """The stored take for `key`, or None for any reason at all.
@@ -293,8 +300,11 @@ class TakeStore:
         except Exception:
             return None
         else:
-            self.usable += 1
             return result
+
+    def used(self) -> None:
+        """A take this store returned is being kept. See `usable`."""
+        self.usable += 1
 
     def put(self, key: str, result: ChunkResult, sample_rate: int) -> None:
         """Commit a verified take. The sidecar is written LAST and is the marker.
@@ -334,24 +344,25 @@ class TakeStore:
             "word_diagnostics": list(result.word_diagnostics),
             "synthesized_attempts": result.attempts,
         }
+        stamp = uuid.uuid4().hex
+        tmp_wav = self.root / f"{key}.{stamp}.wav.tmp"
+        tmp_meta = self.root / f"{key}.{stamp}.json.tmp"
         try:
             import soundfile as sf
 
             self.root.mkdir(parents=True, exist_ok=True)
+            # The temp names above hold a uuid no other writer can hold: two
+            # renders filing the same key at once would otherwise interleave
+            # through one pair of temp files and commit a sidecar describing the
+            # other's audio. The pid alone was not enough — two renders in one
+            # process share it.
             wav = self.root / f"{key}.wav"
-            # A name no other writer can hold: two renders filing the same key
-            # at once would otherwise interleave through one pair of temp files
-            # and commit a sidecar describing the other's audio. The pid alone
-            # was not enough — two renders in one process share it.
-            stamp = uuid.uuid4().hex
-            tmp_wav = self.root / f"{key}.{stamp}.wav.tmp"
             # `format` stated, because the temp name ends in .tmp and soundfile
             # otherwise infers the container from the extension and refuses.
             sf.write(str(tmp_wav), audio, sample_rate, subtype="FLOAT", format="WAV")
             os.replace(tmp_wav, wav)
 
             sidecar = self.root / f"{key}.json"
-            tmp_meta = self.root / f"{key}.{stamp}.json.tmp"
             tmp_meta.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
             os.replace(tmp_meta, sidecar)
             self.usable += 1
@@ -361,4 +372,12 @@ class TakeStore:
             # failed — a store that cannot file a take must never take down a
             # render that synthesised correctly.
             self.write_failures += 1
+        finally:
+            # A failure partway leaves a temp file no lookup can reach. On the
+            # disk-full case that is the one thing that must not accumulate.
+            for leftover in (tmp_wav, tmp_meta):
+                try:
+                    leftover.unlink(missing_ok=True)
+                except OSError:
+                    pass
 

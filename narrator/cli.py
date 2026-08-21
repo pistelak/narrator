@@ -82,7 +82,9 @@ def main(argv: list[str] | None = None) -> int:
         # silently ignored reroll looks exactly like a reroll that produced the
         # same take again.
         numbers = [int(n) for n in args.reroll.split(",") if n.strip()]
-        if any(n < 1 for n in numbers):
+        if any(n < 1 for n in numbers) or (args.reroll.strip() and not numbers):
+            # `--reroll ,` names nothing while asking for something. Reusing
+            # every take is the opposite of what was asked for.
             raise ValueError
         reroll = frozenset(n - 1 for n in numbers)
     except ValueError:

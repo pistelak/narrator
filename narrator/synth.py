@@ -237,6 +237,7 @@ def synthesize_chunk(
     if key is not None and reuse:
         cached = store.get(key, keyed_rate, index, text)
         if cached is not None and _usable_under(cached, cfg):
+            store.used()
             return cached
 
     result = _synthesize(text, index, backend, verifier, voice, cfg, intent)

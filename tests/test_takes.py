@@ -21,7 +21,7 @@ from narrator.backends.fake import Failure, FakeASR, FakeBackend
 from narrator.render import RenderConfig, RenderFailed, render
 from narrator.synth import SynthConfig, synthesize_chunk
 from narrator.takes import TakeStore, identity_of
-from narrator.types import Gap, Text, Voice
+from narrator.types import ChunkResult, Gap, Text, Voice
 from narrator.verify import CoverageVerifier, NullVerifier
 
 SEGMENTS = [
@@ -828,3 +828,41 @@ def test_two_orthographies_that_spell_differently_are_not_one_asr() -> None:
     one = FakeASR(backend, orthography={"cat": "dog", "dog": "fox"})
     other = FakeASR(backend, orthography={"dog": "fox", "cat": "dog"})
     assert identity_of(one) != identity_of(other)
+
+
+def test_a_take_that_is_read_but_set_aside_is_not_counted_as_paid(tmp_path: Path) -> None:
+    """A split take under a new prosody policy is read and then declined; a
+    refusal that counted the read would promise a chunk that regenerates anyway."""
+    takes = tmp_path / "takes"
+    voice = voice_at(tmp_path)
+    chunk = [Text("Tohle je důležité. Máš teď chvilku?")]
+    _, first = render_with(tmp_path, takes, segments=chunk, voice=voice, out="a.wav",
+                           script=dict.fromkeys(range(3), Failure.DROP_SENTENCE))
+    assert first.chunks[0].recovered_by == "sentence-split"
+
+    store = TakeStore(takes)
+    key = next(takes.glob("*.json")).stem
+    assert store.get(key, 24000, 0, chunk[0].text) is not None
+    assert store.usable == 0        # read, not kept
+
+
+def test_a_failed_write_leaves_no_temporary_files(tmp_path: Path) -> None:
+    """On the disk-full case, the one thing that must not accumulate."""
+    takes = tmp_path / "takes"
+    takes.mkdir()
+    store = TakeStore(takes)
+    result = ChunkResult(index=0, text="x", audio=np.zeros(10, dtype=np.float32),
+                         duration_s=0.1, attempts=1, ok=True)
+    (takes / "key.wav").mkdir()      # os.replace onto a directory fails
+    store.put("key", result, 24000)
+
+    assert store.write_failures == 1
+    assert not list(takes.glob("*.tmp"))
+
+
+def test_reroll_that_names_nothing_is_refused(tmp_path: Path) -> None:
+    """Asking for a reroll and reusing everything is the opposite of the request."""
+    from narrator.cli import main
+
+    assert main([str(tmp_path / "a.txt"), str(tmp_path / "o.wav"), "--voice", "v.wav",
+                 "--voice-text", "x", "--reroll", ","]) == 2
