@@ -27,6 +27,7 @@ from narrator.audio import (
 )
 from narrator.chunking import MAX_CHARS, chunk
 from narrator.synth import SynthConfig, synthesize_chunk
+from narrator.takes import TakeStore, identity_of
 from narrator.types import (
     Audio,
     Backend,
@@ -45,7 +46,8 @@ from narrator.verify import default_verifier, format_word_diagnostics
 class RenderFailed(RuntimeError):
     """Some chunk could not be rendered correctly, and no file was written."""
 
-    def __init__(self, report: RenderReport) -> None:
+    def __init__(self, report: RenderReport, takes: Path | None = None,
+                 cached: int = 0) -> None:
         failures = report.failures
         detail = "\n".join(
             f"  chunk {c.index}: coverage {c.coverage:.2f}"
@@ -55,9 +57,24 @@ class RenderFailed(RuntimeError):
                if c.word_diagnostics else "")
             for c in failures[:10]
         )
+        # What makes this refusal cheap to act on: fix the line, run again, pay
+        # for that line, where before the 87 chunks that passed were discarded
+        # along with the one that did not.
+        #
+        # `cached` counts THIS render's chunks that the store read or filed —
+        # not the chunks that passed, and not the files in the directory. Not
+        # every passing chunk is stored (an unidentifiable verifier, a
+        # rise-wanting chunk and a failed write each produce none), and a
+        # directory holding another script's takes proves nothing about this one.
+        # Promising reuse that will not happen sends someone into a 25-minute
+        # render expecting a 20-second one.
+        resume = ""
+        if takes is not None and cached:
+            resume = (f"\n{cached} of this render's chunks are cached in {takes}; "
+                      "re-running after a fix re-synthesises only what changed.")
         super().__init__(
             f"{len(failures)} of {len(report.chunks)} chunks failed verification:\n{detail}\n"
-            "No file written. Pass quarantine=False to write anyway."
+            "No file written. Pass quarantine=False to write anyway." + resume
         )
         self.report = report
 
@@ -70,6 +87,40 @@ class RenderConfig:
     mastering: MasterConfig = MasterConfig()
     quarantine: bool = True
     on_progress: Callable[[ChunkResult, int], None] | None = None
+
+    takes: Path | None = None
+    """Directory of verified takes to reuse and extend. None disables it.
+
+    A directory rather than an injected store, and opt-in rather than default:
+    narrator owns the one caching policy the way it owns the one verification
+    policy, and a store nobody asked for would quietly write ~90 MB of takes next
+    to a caller's output. With it, an edited script re-synthesises only the chunks
+    whose inputs changed, and a killed render resumes from what it had finished."""
+
+    reroll: frozenset[int] = frozenset()
+    """Chunk indices to generate fresh, ignoring any stored take.
+
+    How a caller asks a sampled model for another take of audio that verifies but
+    does not SOUND right — a content key would otherwise return the same take
+    forever. It bypasses the lookup rather than deleting the entry first: two
+    identical paragraphs share one key, so an earlier occurrence would refill a
+    deleted entry before the requested index was ever reached.
+
+    That sharing is worth stating plainly, because it is what content-addressing
+    means: chunks with identical inputs are one entry, so rerolling one of them
+    replaces the take that any LATER identical chunk will then reuse. The
+    alternative is the chunk index in the key, which was rejected for a bigger
+    reason — it would re-render an entire episode because a paragraph was
+    inserted at the top.
+
+    An index past the end of the render is refused rather than ignored: it is
+    almost always a stale number from a previous script, and silently reusing
+    everything looks exactly like a reroll that produced the same take again.
+
+    One corner where a reroll does not propagate: chunk 0 under the default
+    verifier has no key at all (see `_DeferredDefaultVerifier.identity`), so
+    rerolling it cannot replace a stored entry, and a later identical chunk goes
+    on serving the take a previous run filed."""
 
 
 def render(
@@ -104,8 +155,15 @@ def render(
         # each pair names a written form and what the audio will actually say.
         verifier = _DeferredDefaultVerifier(backend, cfg.synth.pronunciation)
     started = time.perf_counter()
+    store = TakeStore(cfg.takes) if cfg.takes is not None else None
     plan = _plan(segments, cfg.max_chars)
     total = sum(1 for s in plan if isinstance(s, Text))
+    if cfg.reroll and (max(cfg.reroll) >= total or min(cfg.reroll) < 0):
+        raise ValueError(
+            f"reroll={sorted(cfg.reroll)} names chunks outside this render, which has "
+            f"{total} (0..{total - 1}). Nothing would be re-generated and the render "
+            "would look like a reroll that changed nothing."
+        )
 
     pieces: list[Audio | Gap] = []
     results: list[ChunkResult] = []
@@ -128,7 +186,8 @@ def render(
 
         chunk_voice = segment.voice or voice
         result = synthesize_chunk(segment.text, index, backend, verifier,
-                                  chunk_voice, cfg.synth)
+                                  chunk_voice, cfg.synth,
+                                  store=store, reuse=index not in cfg.reroll)
         results.append(result)
         index += 1
         if cfg.on_progress is not None:
@@ -156,10 +215,11 @@ def render(
         loudness_lufs=lufs,
         peak_dbfs=peak,
         render_s=time.perf_counter() - started,
+        takes_unwritten=store.write_failures if store is not None else 0,
     )
 
     if cfg.quarantine and not report.clean:
-        raise RenderFailed(report)
+        raise RenderFailed(report, cfg.takes, store.usable if store is not None else 0)
 
     _write(out, audio, backend.sample_rate)   # master() already laid out the channels
     return report
@@ -180,6 +240,20 @@ class _DeferredDefaultVerifier:
     backend: Backend
     sound_alikes: tuple[tuple[str, str], ...]
     _verifier: Verifier | None = None
+
+    @property
+    def identity(self) -> str | None:
+        """Absent until the inner verifier exists — so chunk 0 is never cached.
+
+        The identity has to name the rate its ASRs were built with, and that rate
+        is only settled by the first synthesis. Resolving it early to win the
+        lookup would bake in the stale value, which is the corruption this class
+        exists to prevent; claiming an identity we have not resolved would be
+        worse still. So the first chunk of a render on the default policy pays a
+        generation nobody gets to reuse, and every chunk after it hits. One in
+        eighty-eight, against a rule that must not be softened.
+        """
+        return identity_of(self._verifier)
 
     def verify(self, audio: Audio, text: str, lang: str) -> Verdict:
         if self._verifier is None:

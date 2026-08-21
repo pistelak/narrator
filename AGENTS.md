@@ -106,6 +106,18 @@ verified findings and name any left unresolved.
   Note a backend may only settle its true rate during its first synthesis,
   which is why `render()` builds the default verifier on first use, never
   eagerly.
+- **The take store fails closed, and `gain_db` never reaches a backend.** A
+  stored take is reused without being re-verified, so its key must cover
+  everything that produced it — text, spoken form, voice (the reference clip's
+  *bytes*), engine, recogniser, their package versions, and the semantics
+  versions in `synth.py` and `verify.py`. **Bump those when behaviour changes**;
+  forgetting leaves takes certified by a policy that no longer exists. An object
+  that declares no `identity` disables the store rather than being guessed at,
+  and `identity` is read with `getattr`, never declared on the runtime-checkable
+  protocols. The one deliberate omission is `Voice.gain_db`, and it is safe only
+  because `synth` zeroes it before the engine call: gain is applied after
+  synthesis, so no backend may act on it. Rise-wanting chunks are not stored at
+  all — the analyser picks which take ships and is environment-dependent.
 - The input vocabulary is `Text` and `Gap` only. Narrator never learns markup;
   callers translate their own conventions into segments.
 - Verification policy: with the `[parakeet]` extra, `default_verifier` runs

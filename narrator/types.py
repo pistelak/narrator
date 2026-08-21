@@ -175,6 +175,17 @@ class ChunkResult:
     recovered_by: str = ""      # "", "retry", or "sentence-split"
     word_diagnostics: tuple[str, ...] = ()
     """The failed verdict's typed word codes — see verify.CoverageDetail."""
+    reused: bool = False
+    """This audio came from the take store, not from the engine on this run.
+
+    Appended, like every field before it, because this is a dataclass and
+    inserting mid-list silently rebinds positional constructor calls.
+
+    A reused take carries the verdict it was stored with rather than being
+    re-verified, which is only honest if the report says so. It is not a claim
+    that the run measured anything: `attempts` is 0 on a reused chunk because
+    this run spent no generations, while `recovered_by` is preserved, because it
+    describes how the audio itself was made and that is still true."""
 
     @property
     def words(self) -> int:
@@ -196,6 +207,13 @@ class RenderReport:
     loudness_lufs: float = 0.0
     peak_dbfs: float = 0.0
     render_s: float = 0.0
+    takes_unwritten: int = 0
+    """Verified takes the store could not file (a full disk, an unwritable path).
+
+    Reported rather than raised, and reported rather than swallowed. The store is
+    an optimisation, so a failure to write one must not fail a render that
+    synthesised correctly — but a store that silently caches nothing looks
+    identical to one that is working until the next render bills for it."""
 
     @property
     def failures(self) -> list[ChunkResult]:
@@ -207,11 +225,18 @@ class RenderReport:
 
     def summary(self) -> str:
         rec = sum(1 for c in self.chunks if c.recovered_by)
+        # Reused chunks are named in the summary because a reused take carries a
+        # verdict this run did not measure. The count is what tells a reader how
+        # much of "0 failed" was checked just now and how much was checked before.
+        reused = sum(1 for c in self.chunks if c.reused)
+        cached = f", {reused} reused" if reused else ""
+        unwritten = f" | {self.takes_unwritten} take(s) not cached" if self.takes_unwritten else ""
         return (
             f"{self.out_path.name}: {self.duration_s / 60:.1f} min | "
-            f"{len(self.chunks)} chunks, {len(self.failures)} failed, {rec} recovered | "
+            f"{len(self.chunks)} chunks, {len(self.failures)} failed, {rec} recovered"
+            f"{cached} | "
             f"{self.loudness_lufs:.1f} LUFS, peak {self.peak_dbfs:.1f} dBFS | "
-            f"rendered in {self.render_s / 60:.1f} min"
+            f"rendered in {self.render_s / 60:.1f} min{unwritten}"
         )
 
 
@@ -290,3 +315,32 @@ class ASR(Protocol):
     """Speech recognition, behind a seam so verification is testable without a model."""
 
     def transcribe(self, audio: Audio, lang: str) -> str: ...
+
+
+class Identified(Protocol):
+    """Declares a stable string identity, so takes made with this object can be cached.
+
+    Separate from `Backend`, `Verifier` and `ASR` on purpose, and NOT
+    @runtime_checkable. Those three are: a protocol member is structurally
+    required, so declaring `identity` on them would make every implementation
+    without one — the third-party ones this is meant to leave working, and this
+    repo's own `isinstance(HiggsBackend(), Backend)` assertions — stop satisfying
+    the protocol. Read it with `takes.identity_of`, which returns None for
+    anything that does not declare one, and None disables the store.
+
+    An identity must cover everything about the object that reaches the audio or
+    the verdict: its class, its model, the version of the package that does the
+    work, and any setting that changes generation. Two objects sharing an
+    identity is a promise that their output is interchangeable.
+
+    **A subclass that adds configuration must extend this**, and the bundled
+    implementations cannot do it for you. They name their own class, so a
+    subclass is never confused with its parent, and `CoverageVerifier` walks its
+    instance state — but a backend cannot, because its instance also holds a
+    loaded model and a reference cache that change within a single render, and
+    an identity built from those would never match itself twice. So a backend
+    subclass that adds a pitch or a sampler setting is on its own: override
+    `identity`, or return None from it and take the re-synthesis.
+    """
+
+    identity: str

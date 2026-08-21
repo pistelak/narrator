@@ -30,12 +30,25 @@ Three traps, each of which cost real debugging:
 from __future__ import annotations
 
 import difflib
+import json
 import re
 import unicodedata
 from dataclasses import dataclass
 
 from narrator.chunking import split_sentences
+from narrator.takes import _class_id, identity_of
 from narrator.types import ASR, Audio, Verdict, Verifier
+
+SEMANTICS = 1
+"""Version of what "correct" means here, for the take store's key.
+
+Bump it on ANY behavioural change to scoring: a new fold, a hard-fail rule, the
+critical-token or numeral tables, the sound-alike handling. A stored take carries
+the verdict it was given, so without this a fix to a false acceptance would leave
+every take that false acceptance produced reusable — certified clean by a policy
+that no longer exists. Cheap to bump, silent to forget, which is why it is named
+next to the threshold rather than hidden in the store.
+"""
 
 MIN_COVERAGE = 0.90
 """Near-complete, deliberately.
@@ -1189,6 +1202,40 @@ class CoverageVerifier:
     min_coverage: float = MIN_COVERAGE
     sound_alikes: tuple[tuple[str, str], ...] = ()
 
+    @property
+    def identity(self) -> str | None:
+        """Composed from the recogniser's, and absent when the recogniser's is.
+
+        This class contributes the policy; every word it scores comes from
+        `self.asr.transcribe`, so an unidentifiable ASR makes an unidentifiable
+        verifier.
+        """
+        asr_id = identity_of(self.asr)
+        if asr_id is None:
+            return None
+        # The class name is in it, because a subclass that overrides `verify`
+        # scores by different rules while inheriting every field this is built
+        # from. So is its state, read off the INSTANCE rather than listed here:
+        # `min_coverage` comes from the instance because a caller may have set
+        # its own gate, and a subclass that adds a strictness knob of its own is
+        # covered the day it is written rather than the day someone remembers
+        # this method. The instance dict rather than `dataclasses.fields`,
+        # because a subclass of a dataclass is still a dataclass and `fields`
+        # would report only the parent's — exactly the subclass this is for. An
+        # object with no instance dict cannot be walked and is therefore not
+        # identifiable, the same refusal to guess as everywhere else.
+        #
+        # Encoded, not joined: sound-alike pairs are caller vocabulary and may
+        # contain any character a separator could use, and two policies sharing
+        # one identity means a take accepted under one is reported clean under
+        # the other.
+        state = getattr(self, "__dict__", None)
+        if state is None:  # pragma: no cover - a __slots__ subclass
+            return None
+        declared = sorted((name, repr(value))
+                          for name, value in state.items() if name != "asr")
+        return "coverage/" + json.dumps([_class_id(self), SEMANTICS, declared, asr_id])
+
     def verify(self, audio: Audio, text: str, lang: str) -> Verdict:
         transcript = self.asr.transcribe(audio, lang)
         detail = coverage_detail(text, transcript, lang, self.sound_alikes)
@@ -1248,6 +1295,19 @@ class CascadeVerifier:
         if not self.verifiers:
             raise ValueError("CascadeVerifier needs at least one verifier")
 
+    @property
+    def identity(self) -> str | None:
+        """All members, in order, and absent if any one of them is.
+
+        Order is part of it even though it does not change accept-if-any
+        semantics: it decides which verdict — and which diagnostics — a stored
+        take carries.
+        """
+        parts = [identity_of(v) for v in self.verifiers]
+        if any(p is None for p in parts):
+            return None
+        return "cascade/" + json.dumps([_class_id(self), parts])
+
     def verify(self, audio: Audio, text: str, lang: str) -> Verdict:
         best: Verdict | None = None
         error: Exception | None = None
@@ -1299,6 +1359,15 @@ class NullVerifier:
     retries useless, because a skipped check returned a perfect score that no
     later attempt could beat.
     """
+
+    @property
+    def identity(self) -> str:
+        """Named rather than absent, and that is the useful part: an unverified
+        take is cacheable among unverified renders, and a verified render will
+        never reuse one, because the identity it looks under is a different
+        string. A property rather than a field, so that a subclass that starts
+        checking something cannot inherit the claim that it checks nothing."""
+        return f"null/1/{_class_id(self)}"
 
     def verify(self, audio: Audio, text: str, lang: str) -> Verdict:
         return Verdict(ok=True, coverage=1.0)

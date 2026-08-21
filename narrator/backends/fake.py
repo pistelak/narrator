@@ -15,13 +15,15 @@ dropped sentence, through the real coverage code, without a model anywhere.
 
 from __future__ import annotations
 
+import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
 import numpy as np
 
 from narrator.chunking import split_sentences
+from narrator.takes import _class_id
 from narrator.types import Audio, Voice
 
 
@@ -43,6 +45,11 @@ class FakeBackend:
     `script` maps a 0-based call index to the failure it should exhibit, so a test
     can say "fail the first two attempts, then succeed" and exercise the retry
     ladder exactly.
+
+    Call indices, not chunk indices — which matters once a take store is in play:
+    a reused chunk makes no call, so every later index shifts. A test that renders
+    twice against one script is scripting two different things. Give each render
+    its own backend, or script a range rather than a position.
     """
 
     sample_rate: int = 24000
@@ -64,11 +71,38 @@ class FakeBackend:
     voice_amplitude: dict[Voice, float] = field(default_factory=dict)
     """Per-voice tone amplitude, so a test can stage the lopsided dialogue that
     `Voice.gain_db` exists for. Without it every voice speaks at one level and
-    no test can tell a level correction from a no-op."""
+    no test can tell a level correction from a no-op.
+
+    Matched ignoring `gain_db`, because that is what it models: the level a
+    reference clip happens to come out at, which the caller's declared correction
+    does not change. It also has to be, now — `synth` zeroes `gain_db` before the
+    engine call, so a lookup that saw it would miss every entry a test declared."""
     amplitude_script: dict[int, float] = field(default_factory=dict)
     """Call index -> amplitude, overriding `voice_amplitude`. Models one voice
     delivering one turn quietly — the whisper that three inference designs kept
     mistaking for a quiet reference clip."""
+
+    @property
+    def identity(self) -> str:
+        """For the take store: what this fake was CONFIGURED to do, never what it
+        has done so far.
+
+        The injected failure script belongs here. A test that renders once, then
+        re-renders with `{0: Failure.DROP_SENTENCE}` to prove the ladder recovers,
+        would otherwise be served the take from the clean run and prove nothing.
+        Call counters and remembered utterances are excluded for the opposite
+        reason: they move on every synthesis, and a key that changes mid-render
+        never hits.
+        """
+        return "fake/" + json.dumps([
+            _class_id(self),
+            self.sample_rate, self.fps, self.words_per_second, self.honours_frame_cap,
+            str(self.default),
+            sorted((i, str(m)) for i, m in self.script.items()),
+            self.amplitude,
+            sorted(self.amplitude_script.items()),
+            sorted((str(v), a) for v, a in self._levels().items()),
+        ])
 
     def frames_per_second(self) -> int:
         return self.fps
@@ -100,11 +134,27 @@ class FakeBackend:
         # analysis block. A fake that does not survive the real pipeline tests
         # nothing downstream of itself.
         t = np.arange(samples, dtype=np.float32) / self.sample_rate
-        level = self.amplitude_script.get(index, self.voice_amplitude.get(voice, self.amplitude))
+        level = self.amplitude_script.get(index, self._level_for(voice))
         audio = (level * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
         audio[0] = self._stamp(index)
         self._spoken[index] = spoken
         return audio
+
+    def _levels(self) -> dict[Voice, float]:
+        """`voice_amplitude` with `gain_db` normalised away.
+
+        Both the lookup and `identity` read THIS, so they cannot disagree. The
+        scan they replaced returned the first inserted match while the identity
+        sorted, so two mappings holding the same gain-only-different voices in
+        opposite orders shared an identity and generated different levels — a
+        fake that lies about what it is configured to do.
+        """
+        return {replace(voice, gain_db=0.0): level
+                for voice, level in self.voice_amplitude.items()}
+
+    def _level_for(self, voice: Voice) -> float:
+        """Declared amplitude for this voice's reference, `gain_db` ignored."""
+        return self._levels().get(replace(voice, gain_db=0.0), self.amplitude)
 
     def _apply(self, text: str, mode: Failure) -> str:
         sentences = split_sentences(text)
@@ -147,6 +197,18 @@ class FakeASR:
     pronunciation lexicon must not reach the verifier. Without this the fake
     reports the respelling back and the asymmetry that caused three real render
     failures cannot be reproduced."""
+
+    @property
+    def identity(self) -> str:
+        """Composed from the backend's, since this fake hears only what that fake
+        said — the same recursion a real CoverageVerifier does over its ASR."""
+        return "fake-asr/" + json.dumps(
+            # Insertion order, NOT sorted: `transcribe` applies these in the
+            # order they were declared, so {cat: dog, dog: fox} and the reverse
+            # spell one word two different ways. An identity that sorted them
+            # said the two fakes were one.
+            [_class_id(self), self.backend.identity, self.perfect,
+             list(self.orthography.items())])
 
     def transcribe(self, audio: Audio, lang: str) -> str:
         spoken = self.backend.heard(audio)

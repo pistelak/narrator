@@ -24,6 +24,7 @@ import tempfile
 from dataclasses import dataclass, field
 from typing import Any
 
+from narrator.takes import _class_id, package_version
 from narrator.types import Audio
 
 
@@ -40,6 +41,28 @@ class WhisperASR:
     repo: str = "mlx-community/whisper-large-v3-turbo"
     source_rate: int = 24_000
     """See the module docstring: must match the backend's actual rate."""
+
+    @property
+    def identity(self) -> str | None:
+        """For the take store. `source_rate` is IN it, deliberately.
+
+        A verdict obtained at the wrong rate is unreliable in the way this
+        module's docstring describes, and a stored take carries its verdict
+        rather than being re-verified. Leaving the rate out would let a take
+        checked by a misconfigured verifier be picked up by a correctly
+        configured render later — laundering exactly the corruption the
+        source_rate rule exists to prevent.
+
+        Known limit: `repo` names a mutable model repository, so re-published
+        weights under an unchanged package version are invisible here. Pinning
+        would mean resolving a revision from the hub cache on every render, and
+        released recogniser weights are not re-published in practice — but a
+        take made before such a change would be reused without the new
+        recogniser ever hearing it. Bump SEMANTICS in verify.py if that happens.
+        """
+        model = package_version("mlx-whisper")
+        return (f"whisper/{_class_id(self)}/{self.repo}/{self.source_rate}/{model}"
+                if model is not None else None)
 
     def transcribe(self, audio: Audio, lang: str) -> str:
         try:
@@ -74,6 +97,22 @@ class ParakeetASR:
     """See the module docstring: must match the backend's actual rate."""
 
     _model: Any = field(default=None, repr=False, compare=False)
+    _loaded_repo: str = field(default="", repr=False, compare=False)
+
+    @property
+    def identity(self) -> str | None:
+        """See WhisperASR.identity for why the rate belongs in this string.
+
+        The repo reported is the one actually LOADED once there is a model: this
+        class loads once and keeps it, so changing `repo` afterwards changes
+        nothing about who transcribes, and an identity that followed the field
+        would file this recogniser's verdicts under another's name. (WhisperASR
+        needs no equivalent — it passes the repo on every call.)
+        """
+        model = package_version("parakeet-mlx")
+        repo = self._loaded_repo or self.repo
+        return (f"parakeet/{_class_id(self)}/{repo}/{self.source_rate}/{model}"
+                if model is not None else None)
 
     def transcribe(self, audio: Audio, lang: str) -> str:
         if audio.size == 0:
@@ -86,6 +125,7 @@ class ParakeetASR:
                     "Parakeet verification needs: pip install 'narrator[parakeet]'"
                 ) from exc
             self._model = from_pretrained(self.repo)
+            self._loaded_repo = self.repo
 
         import soundfile as sf
 

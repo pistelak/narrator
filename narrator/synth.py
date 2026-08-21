@@ -26,7 +26,17 @@ import numpy as np
 
 from narrator import prosody
 from narrator.chunking import split_sentences
+from narrator.takes import TakeStore, take_key
 from narrator.types import Audio, Backend, ChunkResult, Verdict, Verifier, Voice
+
+SEMANTICS = 1
+"""Version of the ladder's own behaviour, for the take store's key.
+
+Bump it whenever a change here alters which take ships or how one is made —
+ranking, attempt budget, the split fallback, the cheap checks. The config fields
+are keyed on automatically; this covers the code around them, so that a fix
+re-renders rather than certifying old audio as if this version had produced it.
+"""
 
 
 @dataclass(frozen=True)
@@ -171,6 +181,18 @@ _LETTER_NAMES = {
 _ACRONYM = re.compile(r"\b[A-Z]{2,6}\b")
 
 
+def resolve_spoken(text: str, lang: str, cfg: SynthConfig) -> str:
+    """What the engine is actually asked to say, for this text under this config.
+
+    One home, two callers: the ladder speaks it, and the take store keys on it.
+    Keying on the resolved form rather than on (text + the whole lexicon) is what
+    keeps a pronunciation entry local — adding a respelling for a name that
+    appears in three chunks leaves the other eighty-five addressable.
+    """
+    spoken = apply_pronunciation(text, cfg.pronunciation) if cfg.pronunciation else text
+    return spell_acronyms(spoken, lang) if cfg.spell_acronyms else spoken
+
+
 def spell_acronyms(text: str, lang: str) -> str:
     """Respell every all-caps token as its letter names — how acronyms are read.
 
@@ -192,9 +214,155 @@ def synthesize_chunk(
     verifier: Verifier,
     voice: Voice,
     cfg: SynthConfig = SynthConfig(),
+    store: TakeStore | None = None,
+    reuse: bool = True,
 ) -> ChunkResult:
-    """Render one chunk. `ChunkResult.ok` is the only trustworthy field."""
-    attempt = _best_attempt(text, backend, verifier, voice, cfg)
+    """Render one chunk. `ChunkResult.ok` is the only trustworthy field.
+
+    With a `store`, a take that was already made for these exact inputs is
+    returned instead of being generated again, and a new one is filed as soon as
+    it verifies — so a killed render resumes and an edited script pays only for
+    what changed. `reuse=False` forces a fresh generation for this chunk and
+    overwrites the entry: it is how a caller asks a sampled model for another
+    take of audio that verifies but does not sound right.
+
+    The store is consulted around the ladder, never inside it. A single
+    generation is stochastic and may be wrong; only the take the ladder decided
+    to ship is worth keeping, and only when it passed.
+    """
+    intent = resolve_rise_intent(text, voice, cfg)
+    key = (_take_key(text, backend, verifier, voice, cfg)
+           if store is not None and intent.cacheable else None)
+    keyed_rate = backend.sample_rate
+    if key is not None and reuse:
+        cached = store.get(key, keyed_rate, index, text)
+        if cached is not None and _usable_under(cached, cfg):
+            store.used()
+            return cached
+
+    result = _synthesize(text, index, backend, verifier, voice, cfg, intent)
+
+    # Three things must still hold to file it. The split fallback may have
+    # applied rise selection to a sentence since the key was computed; and a
+    # backend that only settles its true rate during its first synthesis (a
+    # Supertonic-style one) has just invalidated the identity the key was built
+    # from, so storing would leave an entry no lookup can ever read.
+    if (key is not None and result.ok and intent.cacheable
+            and backend.sample_rate == keyed_rate):
+        store.put(key, result, keyed_rate)
+    return result
+
+
+def _usable_under(cached: ChunkResult, cfg: SynthConfig) -> bool:
+    """Whether a stored take is answerable by the CURRENT prosody policy.
+
+    `wants_rise` is a caller callable and cannot be in the key, so a policy
+    change is invisible to it. The chunk-level case is still covered — a chunk
+    that wants a rise is never looked up at all — but a take assembled by the
+    sentence-split fallback was made one sentence at a time, and a policy that
+    now wants a rise for one of those sentences would never get to say so.
+
+    Those takes are the failure path and therefore rare, so refusing to reuse
+    them whenever a policy exists costs almost nothing, and asking the policy
+    here instead would spend a stateful one's answers on a chunk that is not
+    being rendered.
+    """
+    return not (cfg.wants_rise is not None and cached.recovered_by == "sentence-split")
+
+
+def _take_key(
+    text: str, backend: Backend, verifier: Verifier, voice: Voice, cfg: SynthConfig
+) -> str | None:
+    """This chunk's address in the store, or None when it cannot be addressed."""
+    return take_key(
+        text=text,
+        spoken=resolve_spoken(text, voice.lang, cfg),
+        voice=voice,
+        backend=backend,
+        verifier=verifier,
+        cfg=cfg,
+        semantics=SEMANTICS,
+    )
+
+
+@dataclass
+class _RiseIntent:
+    """Whether rise selection touched this chunk — asked when the ladder needs it.
+
+    The caller's policy is a caller's function and this code cannot assume it is
+    pure ("rise on the first question of a paragraph" is reasonable and is
+    stateful). So it is asked exactly where the previous, cacheless code asked
+    it: once for the chunk, and once per sentence only if the split fallback
+    actually runs. Nothing is asked speculatively for the store's benefit.
+
+    The store then reads a FACT rather than a prediction — `rose` records that
+    selection applied to something actually rendered — which is what lets the
+    lookup happen before synthesis and the decision to file happen after it.
+    """
+
+    chunk: bool
+    trusted: bool
+    """The policy answered without raising. It never destabilises a render — an
+    exception reads as "no preference" for synthesis, exactly as before — but a
+    policy that cannot be asked cannot be keyed on either."""
+    rose: bool = False
+    """Rise selection was applied to audio this chunk shipped."""
+
+    def __post_init__(self) -> None:
+        self.rose = self.rose or self.chunk
+
+    @property
+    def cacheable(self) -> bool:
+        """Rise-touched chunks are not stored, and a resolved boolean is not
+        enough to key on instead.
+
+        The contour analysis picks WHICH verified take ships, and it is
+        environment-dependent — `prosody.rise_delta_checker` returns None when
+        librosa is absent — so one key could serve a first verified take where
+        this machine would have kept searching for a rising one. Rises are a
+        minority (yes/no questions), so the carve-out is cheap and fails closed.
+        """
+        return self.trusted and not self.rose
+
+    def wants(self, sentence: str, voice: Voice, cfg: SynthConfig) -> bool:
+        """Ask about one sentence the split fallback is about to render alone."""
+        if cfg.wants_rise is None:
+            return False
+        try:
+            answer = bool(cfg.wants_rise(sentence, voice.lang))
+        except Exception:
+            self.trusted = False
+            return False
+        self.rose = self.rose or answer
+        return answer
+
+
+def resolve_rise_intent(text: str, voice: Voice, cfg: SynthConfig) -> _RiseIntent:
+    """Ask the caller's intent policy about the chunk as a whole.
+
+    Total: a policy that raises reads as "no intent" — prosody must never be able
+    to fail (or even destabilise) a render — and marks the answer untrusted, so
+    nothing is stored on the strength of it.
+    """
+    if cfg.wants_rise is None:
+        return _RiseIntent(False, True)
+    try:
+        return _RiseIntent(bool(cfg.wants_rise(text, voice.lang)), True)
+    except Exception:
+        return _RiseIntent(False, False)
+
+
+def _synthesize(
+    text: str,
+    index: int,
+    backend: Backend,
+    verifier: Verifier,
+    voice: Voice,
+    cfg: SynthConfig,
+    intent: _RiseIntent,
+) -> ChunkResult:
+    """The ladder itself, with no store in the picture."""
+    attempt = _best_attempt(text, backend, verifier, voice, cfg, intent.chunk)
 
     if attempt is not None and attempt.ok:
         # "retry" means a failure was recovered. Keyed off prior_failures, not
@@ -204,7 +372,8 @@ def synthesize_chunk(
 
     split_spent = 0
     if cfg.allow_sentence_split:
-        audio_, coverage_, split_spent = _sentence_split(text, backend, verifier, voice, cfg)
+        audio_, coverage_, split_spent = _sentence_split(text, backend, verifier, voice, cfg,
+                                                         intent)
         if audio_ is not None:
             return ChunkResult(
                 index=index, text=text, audio=audio_,
@@ -244,18 +413,13 @@ def synthesize_chunk(
     return _result(index, text, attempt, extra_calls=split_spent)
 
 
-def _rise_wanted(text: str, voice: Voice, cfg: SynthConfig) -> Callable | None:
-    """The resolved contour checker when this chunk should rise, else None.
+def _rise_checker(wanted: bool) -> Callable | None:
+    """The resolved contour checker when this text should rise, else None.
 
-    Total: a caller-supplied intent policy that raises reads as "no intent" —
-    prosody must never be able to fail (or even destabilise) a render.
+    `wanted` is decided by `resolve_rise_intent`, not asked again here: the
+    caller's policy is consulted once per chunk and every path reads that answer.
     """
-    if cfg.wants_rise is None:
-        return None
-    try:
-        if not cfg.wants_rise(text, voice.lang):
-            return None
-    except Exception:
+    if not wanted:
         return None
     try:
         # Resolution can fail beyond ImportError — a broken librosa install
@@ -269,7 +433,8 @@ def _rise_wanted(text: str, voice: Voice, cfg: SynthConfig) -> Callable | None:
 
 
 def _best_attempt(
-    text: str, backend: Backend, verifier: Verifier, voice: Voice, cfg: SynthConfig
+    text: str, backend: Backend, verifier: Verifier, voice: Voice, cfg: SynthConfig,
+    wants_rise: bool = False,
 ) -> _Attempt | None:
     words = len(text.split())
     cap = frame_cap(words, backend.frames_per_second(), cfg)
@@ -277,15 +442,22 @@ def _best_attempt(
     best: _Attempt | None = None
     first_ok: _Attempt | None = None
     failures = 0
-    rise_check = _rise_wanted(text, voice, cfg)
+    rise_check = _rise_checker(wants_rise)
 
-    spoken = apply_pronunciation(text, cfg.pronunciation) if cfg.pronunciation else text
-    if cfg.spell_acronyms:
-        spoken = spell_acronyms(spoken, voice.lang)
+    spoken = resolve_spoken(text, voice.lang, cfg)
+    # The engine is handed a voice with no level correction. `gain_db` is applied
+    # by `render` AFTER synthesis, so no backend has any business reading it —
+    # and stripping it here is what lets the take store leave it out of the key,
+    # which is what makes "-3 dB, listen, -4 dB" cost nothing instead of 88
+    # generations. Structural, not a convention: the bundled fake already keys
+    # its per-voice amplitude on the Voice object itself, so a backend CAN see
+    # a field it should not act on.
+    engine_voice = replace(voice, gain_db=0.0) if voice.gain_db else voice
 
     for number in range(1, cfg.max_attempts + 1):
         try:
-            audio = backend.synthesize(spoken, voice, max_frames=cap, temperature=cfg.temperature)
+            audio = backend.synthesize(spoken, engine_voice,
+                                       max_frames=cap, temperature=cfg.temperature)
         except Exception:
             # One bad attempt must not lose the whole render. The predecessor had
             # no guard here, so a transient error at chunk 80 discarded fifteen
@@ -360,7 +532,8 @@ def _best_attempt(
 
 
 def _sentence_split(
-    text: str, backend: Backend, verifier: Verifier, voice: Voice, cfg: SynthConfig
+    text: str, backend: Backend, verifier: Verifier, voice: Voice, cfg: SynthConfig,
+    intent: _RiseIntent,
 ) -> tuple[Audio | None, float, int]:
     """Render sentence by sentence. Audio is None unless every sentence passes.
 
@@ -384,7 +557,11 @@ def _sentence_split(
     worst = 1.0
     attempts = 0
     for sentence in sentences:
-        attempt = _best_attempt(sentence, backend, verifier, voice, cfg)
+        # Asked here, where the sentence is actually about to be rendered alone.
+        # Asking up front for the store's benefit would consume a stateful
+        # policy's answers for sentences no ladder ever reaches.
+        attempt = _best_attempt(sentence, backend, verifier, voice, cfg,
+                                intent.wants(sentence, voice, cfg))
         if attempt is None or not attempt.ok:
             attempts += attempt.calls_spent if attempt is not None else cfg.max_attempts
             return None, 0.0, attempts
