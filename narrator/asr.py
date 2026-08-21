@@ -24,7 +24,7 @@ import tempfile
 from dataclasses import dataclass, field
 from typing import Any
 
-from narrator.takes import package_version
+from narrator.takes import _class_id, package_version
 from narrator.types import Audio
 
 
@@ -60,8 +60,9 @@ class WhisperASR:
         take made before such a change would be reused without the new
         recogniser ever hearing it. Bump SEMANTICS in verify.py if that happens.
         """
-        return (f"whisper/{type(self).__qualname__}/{self.repo}/{self.source_rate}/"
-                f"{package_version('mlx-whisper')}")
+        model = package_version("mlx-whisper")
+        return (f"whisper/{_class_id(self)}/{self.repo}/{self.source_rate}/{model}"
+                if model is not None else None)
 
     def transcribe(self, audio: Audio, lang: str) -> str:
         try:
@@ -100,8 +101,9 @@ class ParakeetASR:
     @property
     def identity(self) -> str:
         """See WhisperASR.identity for why the rate belongs in this string."""
-        return (f"parakeet/{type(self).__qualname__}/{self.repo}/{self.source_rate}/"
-                f"{package_version('parakeet-mlx')}")
+        model = package_version("parakeet-mlx")
+        return (f"parakeet/{_class_id(self)}/{self.repo}/{self.source_rate}/{model}"
+                if model is not None else None)
 
     def transcribe(self, audio: Audio, lang: str) -> str:
         if audio.size == 0:

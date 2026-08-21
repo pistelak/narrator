@@ -36,7 +36,7 @@ import unicodedata
 from dataclasses import dataclass
 
 from narrator.chunking import split_sentences
-from narrator.takes import identity_of
+from narrator.takes import _class_id, identity_of
 from narrator.types import ASR, Audio, Verdict, Verifier
 
 SEMANTICS = 1
@@ -1211,7 +1211,7 @@ class CoverageVerifier:
         verifier. `min_coverage` is read off the instance, not from the module
         constant, because a caller may have set its own gate.
         """
-        from narrator.takes import identity_of
+        from narrator.takes import _class_id, identity_of
 
         asr_id = identity_of(self.asr)
         if asr_id is None:
@@ -1224,7 +1224,7 @@ class CoverageVerifier:
         # different rules while inheriting every field this identity is built
         # from, and would otherwise reuse takes the base class accepted.
         return "coverage/" + json.dumps(
-            [type(self).__qualname__, SEMANTICS, self.min_coverage,
+            [_class_id(self), SEMANTICS, self.min_coverage,
              [list(p) for p in self.sound_alikes], asr_id])
 
     def verify(self, audio: Audio, text: str, lang: str) -> Verdict:
@@ -1297,7 +1297,7 @@ class CascadeVerifier:
         parts = [identity_of(v) for v in self.verifiers]
         if any(p is None for p in parts):
             return None
-        return "cascade/" + json.dumps([type(self).__qualname__, parts])
+        return "cascade/" + json.dumps([_class_id(self), parts])
 
     def verify(self, audio: Audio, text: str, lang: str) -> Verdict:
         best: Verdict | None = None
@@ -1358,7 +1358,7 @@ class NullVerifier:
         never reuse one, because the identity it looks under is a different
         string. A property rather than a field, so that a subclass that starts
         checking something cannot inherit the claim that it checks nothing."""
-        return f"null/1/{type(self).__qualname__}"
+        return f"null/1/{_class_id(self)}"
 
     def verify(self, audio: Audio, text: str, lang: str) -> Verdict:
         return Verdict(ok=True, coverage=1.0)

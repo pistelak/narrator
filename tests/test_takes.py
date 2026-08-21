@@ -646,3 +646,37 @@ def test_an_identity_that_raises_disables_the_store_and_not_the_render(
                     RenderConfig(takes=takes))
     assert report.clean
     assert not list(takes.glob("*.json"))
+
+
+def test_a_dependency_with_no_metadata_disables_the_store(monkeypatch) -> None:
+    """One spelling of "unknown" would make two different unknowns look alike.
+
+    A vendored or editable checkout carrying no distribution metadata is exactly
+    the case `identity_of` refuses to guess at everywhere else.
+    """
+    import narrator.asr
+    from narrator.asr import WhisperASR
+
+    monkeypatch.setattr(narrator.asr, "package_version", lambda name: "0.4.3")
+    assert identity_of(WhisperASR()) is not None
+
+    monkeypatch.setattr(narrator.asr, "package_version", lambda name: None)
+    assert identity_of(WhisperASR()) is None
+
+
+def test_two_subclasses_sharing_a_name_are_not_one_verifier() -> None:
+    """`__qualname__` alone collides across modules; the rules do not."""
+    from narrator.takes import _class_id
+
+    def define(module: str) -> type:
+        class Stricter(CoverageVerifier):
+            pass
+
+        Stricter.__module__ = module
+        return Stricter
+
+    here, elsewhere = define("one.place"), define("other.place")
+    assert here.__qualname__ == elsewhere.__qualname__
+
+    backend = FakeBackend()
+    assert _class_id(here(FakeASR(backend))) != _class_id(elsewhere(FakeASR(backend)))

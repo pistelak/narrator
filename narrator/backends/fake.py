@@ -23,6 +23,7 @@ from enum import StrEnum
 import numpy as np
 
 from narrator.chunking import split_sentences
+from narrator.takes import _class_id
 from narrator.types import Audio, Voice
 
 
@@ -94,7 +95,7 @@ class FakeBackend:
         never hits.
         """
         return "fake/" + json.dumps([
-            type(self).__qualname__,
+            _class_id(self),
             self.sample_rate, self.fps, self.words_per_second, self.honours_frame_cap,
             str(self.default),
             sorted((i, str(m)) for i, m in self.script.items()),
@@ -193,7 +194,7 @@ class FakeASR:
         """Composed from the backend's, since this fake hears only what that fake
         said — the same recursion a real CoverageVerifier does over its ASR."""
         return "fake-asr/" + json.dumps(
-            [type(self).__qualname__, self.backend.identity, self.perfect,
+            [_class_id(self), self.backend.identity, self.perfect,
              sorted(self.orthography.items())])
 
     def transcribe(self, audio: Audio, lang: str) -> str:

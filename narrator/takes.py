@@ -69,21 +69,27 @@ def content_digest(path: Path) -> str:
     return hashlib.blake2b(path.read_bytes(), digest_size=16).hexdigest()
 
 
-def package_version(name: str) -> str:
-    """Installed version of a dependency, or "absent".
+def package_version(name: str) -> str | None:
+    """Installed version of a dependency, or None when it cannot be established.
 
     In the key because the engines and recognisers are lower-bounded, not pinned
     (see pyproject): upgrading mlx-audio changes the samples a prompt produces, and
     upgrading a recogniser changes the verdict attached to them, with no other part
     of the key moving. An upgrade should re-render, not certify old audio as if the
     new stack had made it.
+
+    None rather than a sentinel string, and the identities that read it return
+    None in turn, disabling the store. A vendored or editable checkout carrying no
+    distribution metadata is an unknown, and one shared spelling of "unknown"
+    would make two different unknowns look like the same dependency — the same
+    mistake as guessing at an object with no identity at all.
     """
     from importlib.metadata import PackageNotFoundError, version
 
     try:
         return version(name)
     except PackageNotFoundError:  # pragma: no cover - environment-dependent
-        return "absent"
+        return None
 
 
 def identity_of(obj: Any) -> str | None:
@@ -109,6 +115,17 @@ def identity_of(obj: Any) -> str | None:
         # takes down a render the store was only supposed to speed up.
         return None
     return value if isinstance(value, str) and value else None
+
+
+def _class_id(obj: Any) -> str:
+    """Module and qualified name — what an override is, not just what it is called.
+
+    A subclass inherits every field an identity is built from, so the class has to
+    be part of it or a stricter verifier reuses what a laxer one accepted. The
+    module belongs there too: two subclasses can share a name in different files
+    and mean entirely different rules.
+    """
+    return f"{type(obj).__module__}.{type(obj).__qualname__}"
 
 
 def _voice_identity(voice: Voice) -> str | None:

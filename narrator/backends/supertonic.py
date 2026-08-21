@@ -36,7 +36,7 @@ from typing import Any
 
 import numpy as np
 
-from narrator.takes import content_digest, package_version
+from narrator.takes import _class_id, content_digest, package_version
 from narrator.types import Audio, Voice
 
 MODEL = "supertonic-3"
@@ -79,10 +79,12 @@ class SupertonicBackend:
         """For the take store. Every setting that reaches the waveform is here,
         `default_preset` included: a preset-less Voice resolves against it, so two
         backends differing only in that default speak with different voices."""
+        engine = package_version("supertonic")
+        if engine is None:
+            return None
         return "supertonic/" + json.dumps(
-            [type(self).__qualname__, self.model_id, self.default_preset, self.total_steps,
-             self.speed, self.sample_rate, self.honours_frame_cap,
-             package_version("supertonic")])
+            [_class_id(self), self.model_id, self.default_preset, self.total_steps,
+             self.speed, self.sample_rate, self.honours_frame_cap, engine])
 
     def frames_per_second(self) -> int:
         return self.fps

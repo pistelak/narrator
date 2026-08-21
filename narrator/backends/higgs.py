@@ -28,7 +28,7 @@ from typing import Any
 
 import numpy as np
 
-from narrator.takes import content_digest, package_version
+from narrator.takes import _class_id, content_digest, package_version
 from narrator.types import Audio, Voice
 
 MODEL = "bosonai/higgs-audio-v3-tts-4b"
@@ -75,9 +75,11 @@ class HiggsBackend:
         """For the take store: the model, the rate it speaks at, and the port's
         version — mlx-audio is lower-bounded rather than pinned, and an upgrade
         changes the samples a prompt produces without moving anything else."""
-        return "higgs/" + json.dumps([type(self).__qualname__, self.model_id,
-                                     self.sample_rate, self.fps, self.honours_frame_cap,
-                                     package_version("mlx-audio")])
+        engine = package_version("mlx-audio")
+        if engine is None:
+            return None
+        return "higgs/" + json.dumps([_class_id(self), self.model_id, self.sample_rate,
+                                     self.fps, self.honours_frame_cap, engine])
 
     def frames_per_second(self) -> int:
         return self.fps
