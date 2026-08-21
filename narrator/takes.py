@@ -274,14 +274,18 @@ class TakeStore:
 
             self.root.mkdir(parents=True, exist_ok=True)
             wav = self.root / f"{key}.wav"
-            tmp_wav = wav.with_suffix(".wav.tmp")
+            # Per-process temp names: two renders filing the same key at once
+            # would otherwise interleave through one pair of temp files and
+            # commit a sidecar describing the other run's audio. That fails
+            # closed (a digest mismatch is a miss) but costs a real take.
+            tmp_wav = self.root / f"{key}.{os.getpid()}.wav.tmp"
             # `format` stated, because the temp name ends in .tmp and soundfile
             # otherwise infers the container from the extension and refuses.
             sf.write(str(tmp_wav), audio, sample_rate, subtype="FLOAT", format="WAV")
             os.replace(tmp_wav, wav)
 
             sidecar = self.root / f"{key}.json"
-            tmp_meta = sidecar.with_suffix(".json.tmp")
+            tmp_meta = self.root / f"{key}.{os.getpid()}.json.tmp"
             tmp_meta.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
             os.replace(tmp_meta, sidecar)
         except Exception:

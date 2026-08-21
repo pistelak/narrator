@@ -30,6 +30,7 @@ for "kódování base 64 check" — mispronouncing a plain Czech word and turnin
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -78,9 +79,9 @@ class SupertonicBackend:
         """For the take store. Every setting that reaches the waveform is here,
         `default_preset` included: a preset-less Voice resolves against it, so two
         backends differing only in that default speak with different voices."""
-        return (f"supertonic/{self.model_id}/{self.default_preset}/{self.total_steps}/"
-                f"{self.speed}/{self.sample_rate}/{self.honours_frame_cap}/"
-                f"{package_version('supertonic')}")
+        return "supertonic/" + json.dumps(
+            [self.model_id, self.default_preset, self.total_steps, self.speed,
+             self.sample_rate, self.honours_frame_cap, package_version("supertonic")])
 
     def frames_per_second(self) -> int:
         return self.fps

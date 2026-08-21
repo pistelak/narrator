@@ -15,6 +15,7 @@ dropped sentence, through the real coverage code, without a model anywhere.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -87,13 +88,14 @@ class FakeBackend:
         reason: they move on every synthesis, and a key that changes mid-render
         never hits.
         """
-        script = ",".join(f"{i}:{m}" for i, m in sorted(self.script.items()))
-        levels = ",".join(f"{i}:{a}" for i, a in sorted(self.amplitude_script.items()))
-        voices = ",".join(f"{v}:{a}" for v, a in sorted(
-            self.voice_amplitude.items(), key=lambda kv: str(kv[0])))
-        return (f"fake/{self.sample_rate}/{self.fps}/{self.words_per_second}/"
-                f"{self.honours_frame_cap}/{self.default}/[{script}]/"
-                f"{self.amplitude}/[{levels}]/[{voices}]")
+        return "fake/" + json.dumps([
+            self.sample_rate, self.fps, self.words_per_second, self.honours_frame_cap,
+            str(self.default),
+            sorted((i, str(m)) for i, m in self.script.items()),
+            self.amplitude,
+            sorted(self.amplitude_script.items()),
+            sorted((str(v), a) for v, a in self.voice_amplitude.items()),
+        ])
 
     def frames_per_second(self) -> int:
         return self.fps
@@ -184,8 +186,8 @@ class FakeASR:
     def identity(self) -> str:
         """Composed from the backend's, since this fake hears only what that fake
         said — the same recursion a real CoverageVerifier does over its ASR."""
-        spellings = ",".join(f"{k}>{v}" for k, v in sorted(self.orthography.items()))
-        return f"fake-asr/{self.backend.identity}/{self.perfect}/[{spellings}]"
+        return "fake-asr/" + json.dumps(
+            [self.backend.identity, self.perfect, sorted(self.orthography.items())])
 
     def transcribe(self, audio: Audio, lang: str) -> str:
         spoken = self.backend.heard(audio)

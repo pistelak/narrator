@@ -21,6 +21,7 @@ Two things about this backend that are not obvious:
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -74,8 +75,8 @@ class HiggsBackend:
         """For the take store: the model, the rate it speaks at, and the port's
         version — mlx-audio is lower-bounded rather than pinned, and an upgrade
         changes the samples a prompt produces without moving anything else."""
-        return (f"higgs/{self.model_id}/{self.sample_rate}/{self.fps}/"
-                f"{self.honours_frame_cap}/{package_version('mlx-audio')}")
+        return "higgs/" + json.dumps([self.model_id, self.sample_rate, self.fps,
+                                     self.honours_frame_cap, package_version("mlx-audio")])
 
     def frames_per_second(self) -> int:
         return self.fps

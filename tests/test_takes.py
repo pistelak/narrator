@@ -498,3 +498,30 @@ def test_reroll_refuses_a_chunk_number_that_cannot_exist(tmp_path: Path) -> None
             "--voice", "v.wav", "--voice-text", "x", "--reroll"]
     assert main([*argv, "0"]) == 2
     assert main([*argv, "two"]) == 2
+
+
+def test_a_raising_sentence_query_does_not_cost_the_chunk_its_rise(tmp_path: Path) -> None:
+    """The sentences are asked eagerly; only the split fallback ever uses them.
+
+    Discarding the chunk's own answer because a sentence query raised would drop
+    a rise the ladder honoured before the cache decision existed.
+    """
+    from narrator.synth import resolve_rise_intent
+
+    def policy(text: str, lang: str) -> bool:
+        if text != "Máš teď chvilku? Tohle je důležité.":
+            raise RuntimeError("only the whole chunk is answerable")
+        return True
+
+    intent = resolve_rise_intent("Máš teď chvilku? Tohle je důležité.",
+                                 Voice(tmp_path / "v.wav", "r", "cs"),
+                                 SynthConfig(wants_rise=policy))
+    assert intent.chunk is True          # the ladder still gets its preference
+    assert not intent.cacheable          # but nothing is stored on a policy that raised
+
+
+def test_reroll_past_the_end_of_the_render_is_refused(tmp_path: Path) -> None:
+    backend, verifier = build()
+    with pytest.raises(ValueError, match="outside this render"):
+        render(SEGMENTS, voice_at(tmp_path), backend, tmp_path / "a.wav", verifier,
+               RenderConfig(reroll=frozenset({999})))

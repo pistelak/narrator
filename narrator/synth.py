@@ -301,18 +301,29 @@ def resolve_rise_intent(text: str, voice: Voice, cfg: SynthConfig) -> _RiseInten
     Total: a policy that raises reads as "no intent" — prosody must never be able
     to fail (or even destabilise) a render — and marks the answers untrusted, so
     nothing is cached on the strength of them.
+
+    Asked per candidate, not in one guarded block. The sentences are queried
+    eagerly here but are only ever USED if the chunk fails and the split fallback
+    runs, so letting one of them raise discard the chunk's own answer would drop
+    a rise the ladder would have honoured before this resolution existed — a
+    feature regression paid for a cache decision.
     """
     if cfg.wants_rise is None:
         return _RiseIntent(False, (), True)
-    try:
-        return _RiseIntent(
-            chunk=bool(cfg.wants_rise(text, voice.lang)),
-            sentences=tuple(bool(cfg.wants_rise(s, voice.lang))
-                            for s in split_sentences(text)),
-            trusted=True,
-        )
-    except Exception:
-        return _RiseIntent(False, (), False)
+
+    def ask(candidate: str) -> tuple[bool, bool]:
+        try:
+            return bool(cfg.wants_rise(candidate, voice.lang)), True
+        except Exception:
+            return False, False
+
+    chunk, chunk_ok = ask(text)
+    answers = [ask(sentence) for sentence in split_sentences(text)]
+    return _RiseIntent(
+        chunk=chunk,
+        sentences=tuple(answer for answer, _ in answers),
+        trusted=chunk_ok and all(ok for _, ok in answers),
+    )
 
 
 def _synthesize(

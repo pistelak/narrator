@@ -106,7 +106,18 @@ class RenderConfig:
     does not SOUND right — a content key would otherwise return the same take
     forever. It bypasses the lookup rather than deleting the entry first: two
     identical paragraphs share one key, so an earlier occurrence would refill a
-    deleted entry before the requested index was ever reached."""
+    deleted entry before the requested index was ever reached.
+
+    That sharing is worth stating plainly, because it is what content-addressing
+    means: chunks with identical inputs are one entry, so rerolling one of them
+    replaces the take that any LATER identical chunk will then reuse. The
+    alternative is the chunk index in the key, which was rejected for a bigger
+    reason — it would re-render an entire episode because a paragraph was
+    inserted at the top.
+
+    An index past the end of the render is refused rather than ignored: it is
+    almost always a stale number from a previous script, and silently reusing
+    everything looks exactly like a reroll that produced the same take again."""
 
 
 def render(
@@ -144,6 +155,12 @@ def render(
     store = TakeStore(cfg.takes) if cfg.takes is not None else None
     plan = _plan(segments, cfg.max_chars)
     total = sum(1 for s in plan if isinstance(s, Text))
+    if cfg.reroll and (max(cfg.reroll) >= total or min(cfg.reroll) < 0):
+        raise ValueError(
+            f"reroll={sorted(cfg.reroll)} names chunks outside this render, which has "
+            f"{total} (0..{total - 1}). Nothing would be re-generated and the render "
+            "would look like a reroll that changed nothing."
+        )
 
     pieces: list[Audio | Gap] = []
     results: list[ChunkResult] = []
