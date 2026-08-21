@@ -30,11 +30,13 @@ Three traps, each of which cost real debugging:
 from __future__ import annotations
 
 import difflib
+import json
 import re
 import unicodedata
 from dataclasses import dataclass
 
 from narrator.chunking import split_sentences
+from narrator.takes import identity_of
 from narrator.types import ASR, Audio, Verdict, Verifier
 
 SEMANTICS = 1
@@ -1214,8 +1216,12 @@ class CoverageVerifier:
         asr_id = identity_of(self.asr)
         if asr_id is None:
             return None
-        alikes = ",".join(f"{w}>{s}" for w, s in self.sound_alikes)
-        return f"coverage/{SEMANTICS}/{self.min_coverage}/[{alikes}]/{asr_id}"
+        # Encoded, not joined: sound-alike pairs are caller vocabulary and may
+        # contain any character a separator could use, and two policies sharing
+        # one identity means a take accepted under one is reported clean under
+        # the other.
+        return "coverage/" + json.dumps(
+            [SEMANTICS, self.min_coverage, [list(p) for p in self.sound_alikes], asr_id])
 
     def verify(self, audio: Audio, text: str, lang: str) -> Verdict:
         transcript = self.asr.transcribe(audio, lang)
@@ -1284,12 +1290,10 @@ class CascadeVerifier:
         semantics: it decides which verdict — and which diagnostics — a stored
         take carries.
         """
-        from narrator.takes import identity_of
-
         parts = [identity_of(v) for v in self.verifiers]
         if any(p is None for p in parts):
             return None
-        return "cascade/" + "+".join(parts)
+        return "cascade/" + json.dumps(parts)
 
     def verify(self, audio: Audio, text: str, lang: str) -> Verdict:
         best: Verdict | None = None

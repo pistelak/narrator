@@ -52,6 +52,13 @@ class WhisperASR:
         checked by a misconfigured verifier be picked up by a correctly
         configured render later — laundering exactly the corruption the
         source_rate rule exists to prevent.
+
+        Known limit: `repo` names a mutable model repository, so re-published
+        weights under an unchanged package version are invisible here. Pinning
+        would mean resolving a revision from the hub cache on every render, and
+        released recogniser weights are not re-published in practice — but a
+        take made before such a change would be reused without the new
+        recogniser ever hearing it. Bump SEMANTICS in verify.py if that happens.
         """
         return f"whisper/{self.repo}/{self.source_rate}/{package_version('mlx-whisper')}"
 

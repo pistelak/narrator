@@ -402,3 +402,99 @@ def test_the_store_survives_a_take_written_by_another_run(tmp_path: Path) -> Non
     key = next(takes.glob("*.json")).stem
     sf.write(str(takes / f"{key}.wav"), np.zeros(1000, dtype=np.float32), 24000, subtype="FLOAT")
     assert store.get(key, 24000, 0, "whatever") is None
+
+
+# ------------------------------------------------------------ frontier-review regressions
+
+def test_the_intent_policy_is_asked_once_and_both_paths_read_the_answer(
+    tmp_path: Path,
+) -> None:
+    """A caller's policy need not be pure.
+
+    "Rise on the first question of a paragraph" is a reasonable policy and is
+    stateful. When the cache check and the ladder each asked separately, one
+    could answer False and the other True — storing rise-selected audio under
+    the rule that says it must not be stored. So it is asked once, for the chunk
+    and for each sentence the split fallback could render alone, and both the
+    ladder and the store read those answers.
+    """
+    asked: list[str] = []
+
+    def policy(text: str, lang: str) -> bool:
+        asked.append(text)
+        return True
+
+    takes = tmp_path / "takes"
+    chunk = Text("Máš teď chvilku? Tohle je důležité.")
+    render_with(tmp_path, takes, segments=[chunk], out="a.wav",
+                synth=SynthConfig(wants_rise=policy))
+
+    assert asked == [chunk.text, "Máš teď chvilku?", "Tohle je důležité."]
+    assert not list(takes.glob("*.json"))
+
+
+def test_two_voices_differing_only_inside_a_field_are_not_one_voice(
+    tmp_path: Path,
+) -> None:
+    """A transcript is arbitrary caller text, so it cannot be a delimiter's problem."""
+    from narrator.takes import _voice_identity
+
+    clip = tmp_path / "v.wav"
+    clip.write_bytes(b"reference")
+    assert (_voice_identity(Voice(clip, "a|b", "en"))
+            != _voice_identity(Voice(clip, "a", "b|en")))
+
+
+def test_two_sound_alike_policies_differing_inside_a_pair_are_not_one_policy() -> None:
+    backend = FakeBackend()
+    lumped = CoverageVerifier(FakeASR(backend), sound_alikes=(("a", "b,c>d"),))
+    split = CoverageVerifier(FakeASR(backend), sound_alikes=(("a", "b"), ("c", "d")))
+    assert identity_of(lumped) != identity_of(split)
+
+
+def test_a_frame_cap_that_is_not_enforced_is_part_of_the_backend(tmp_path: Path) -> None:
+    """`honours_frame_cap` decides whether a cap-length take is a runaway.
+
+    A take stored while the check was off must not be reused by a backend that
+    would now reject it.
+    """
+    capped = FakeBackend()
+    uncapped = FakeBackend(honours_frame_cap=False)
+    assert identity_of(capped) != identity_of(uncapped)
+
+
+def test_a_sidecar_missing_a_field_is_a_miss(tmp_path: Path) -> None:
+    """Corruption that parses is still corruption."""
+    takes = tmp_path / "takes"
+    render_with(tmp_path, takes, out="a.wav")
+    for sidecar in takes.glob("*.json"):
+        meta = json.loads(sidecar.read_text())
+        del meta["coverage"]
+        sidecar.write_text(json.dumps(meta))
+
+    backend, report = render_with(tmp_path, takes, out="b.wav")
+    assert backend.calls == 2
+    assert report.clean
+
+
+def test_the_refusal_only_promises_takes_that_exist(tmp_path: Path) -> None:
+    """Every chunk here is rise-wanting, so nothing was stored — say nothing."""
+    takes = tmp_path / "takes"
+    synth = SynthConfig(wants_rise=lambda text, lang: True)
+    with pytest.raises(RenderFailed) as exc:
+        render_with(tmp_path, takes, segments=[SEGMENTS[0]], out="a.wav", synth=synth,
+                    script=dict.fromkeys(range(20), Failure.TRUNCATE))
+    assert "cached in" not in str(exc.value)
+
+
+def test_reroll_refuses_a_chunk_number_that_cannot_exist(tmp_path: Path) -> None:
+    """A silently ignored reroll looks exactly like one that changed nothing.
+
+    Refused before anything is read or loaded, so a typo costs no time.
+    """
+    from narrator.cli import main
+
+    argv = [str(tmp_path / "absent.txt"), str(tmp_path / "o.wav"),
+            "--voice", "v.wav", "--voice-text", "x", "--reroll"]
+    assert main([*argv, "0"]) == 2
+    assert main([*argv, "two"]) == 2

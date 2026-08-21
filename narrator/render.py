@@ -56,13 +56,24 @@ class RenderFailed(RuntimeError):
                if c.word_diagnostics else "")
             for c in failures[:10]
         )
-        # The good takes are already on disk when a store is in use, which is
-        # what makes this refusal cheap to act on: fix the line, run again, pay
-        # for that line. Without it the 87 chunks that passed are discarded along
-        # with the one that did not.
-        resume = (f"\nThe {len(report.chunks) - len(failures)} chunk(s) that passed are cached "
-                  f"in {takes}; re-running after a fix re-synthesises only what changed."
-                  if takes is not None else "")
+        # What makes this refusal cheap to act on: fix the line, run again, pay
+        # for that line, where before the 87 chunks that passed were discarded
+        # along with the one that did not.
+        #
+        # Counted off the directory rather than off the chunks that passed. Not
+        # every passing chunk is stored — an unidentifiable verifier, a
+        # rise-wanting chunk and a failed write all produce none — and promising
+        # reuse that will not happen sends someone into a 25-minute render
+        # expecting a 20-second one.
+        resume = ""
+        if takes is not None:
+            try:
+                stored = len(list(takes.glob("*.json")))
+            except OSError:
+                stored = 0
+            if stored:
+                resume = (f"\n{stored} verified take(s) are cached in {takes}; "
+                          "re-running after a fix re-synthesises only what changed.")
         super().__init__(
             f"{len(failures)} of {len(report.chunks)} chunks failed verification:\n{detail}\n"
             "No file written. Pass quarantine=False to write anyway." + resume

@@ -75,6 +75,21 @@ def main(argv: list[str] | None = None) -> int:
                              "verifies but does not sound right")
     args = parser.parse_args(argv)
 
+    try:
+        # 1-based on the way in, to match the progress lines the user is reading
+        # them off; 0-based inside, where chunk indices live. `0` and negatives
+        # are refused rather than shifted into indices that match nothing: a
+        # silently ignored reroll looks exactly like a reroll that produced the
+        # same take again.
+        numbers = [int(n) for n in args.reroll.split(",") if n.strip()]
+        if any(n < 1 for n in numbers):
+            raise ValueError
+        reroll = frozenset(n - 1 for n in numbers)
+    except ValueError:
+        print(f"--reroll takes chunk numbers counting from 1, got {args.reroll!r}",
+              file=sys.stderr)
+        return 2
+
     from narrator.backends.higgs import HiggsBackend
     from narrator.verify import NullVerifier
 
@@ -84,14 +99,6 @@ def main(argv: list[str] | None = None) -> int:
     segments = parse_text(args.text.read_text(encoding="utf-8"), args.paragraph_gap)
     if not segments:
         print(f"{args.text}: nothing to say", file=sys.stderr)
-        return 2
-
-    try:
-        # 1-based on the way in, to match the progress lines the user is reading
-        # them off; 0-based inside, where chunk indices live.
-        reroll = frozenset(int(n) - 1 for n in args.reroll.split(",") if n.strip())
-    except ValueError:
-        print(f"--reroll takes chunk numbers, got {args.reroll!r}", file=sys.stderr)
         return 2
 
     cfg = RenderConfig(

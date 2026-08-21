@@ -48,7 +48,7 @@ _EXCLUDED_SYNTH_FIELDS = frozenset({
     # chunks.
     "wants_rise",
     # A caller callable, not data. Chunks it applies to are not stored at all —
-    # see `synth._rise_wanted_anywhere` for why a resolved boolean is not enough.
+    # see `synth._RiseIntent` for why a resolved boolean is not enough.
 })
 """Everything else in SynthConfig is keyed on, INCLUDING fields added later:
 the key is built by walking the dataclass, so a new knob that changes the audio
@@ -116,14 +116,20 @@ def _voice_identity(voice: Voice) -> str | None:
     An unreadable reference disables the store instead of raising — a missing clip
     is the backend's error to report, in its own words, and the tests construct
     `Voice(Path("nonexistent.wav"))` on purpose.
+
+    JSON-encoded rather than joined on a separator, because a transcript is
+    arbitrary caller text: any delimiter that can appear inside a field makes two
+    different voices produce one identity, and a colliding voice identity means
+    audio conditioned on one speaker is served for another.
     """
     reference = ""
     if voice.audio_path is not None:
         try:
-            reference = f"{voice.audio_path.resolve()}:{content_digest(voice.audio_path)}"
+            reference = json.dumps([str(voice.audio_path.resolve()),
+                                    content_digest(voice.audio_path)])
         except OSError:
             return None
-    return "|".join([reference, voice.transcript, voice.lang, voice.preset or ""])
+    return json.dumps([reference, voice.transcript, voice.lang, voice.preset])
 
 
 def take_key(
@@ -216,28 +222,29 @@ class TakeStore:
                 # a corrupted file, or a wav paired with another take's sidecar
                 # while an entry is being overwritten.
                 return None
+            # Inside the guard, like everything above it: a sidecar that parses
+            # but is missing a field is corruption too, and corruption is a miss.
+            return ChunkResult(
+                index=index,
+                text=text,
+                audio=audio,
+                duration_s=meta["duration_s"],
+                # Zero, not the stored count: `attempts` is what this run spent,
+                # and this run spent nothing. What the original render paid stays
+                # in the sidecar, under `synthesized_attempts`.
+                attempts=0,
+                ok=True,
+                coverage=meta["coverage"],
+                dropped_sentence=meta.get("dropped_sentence", ""),
+                transcript=meta.get("transcript", ""),
+                # Kept as stored: it describes how THIS AUDIO was made, which is
+                # still true. `reused` says what the run did.
+                recovered_by=meta.get("recovered_by", ""),
+                word_diagnostics=tuple(meta.get("word_diagnostics", ())),
+                reused=True,
+            )
         except Exception:
             return None
-
-        return ChunkResult(
-            index=index,
-            text=text,
-            audio=audio,
-            duration_s=meta["duration_s"],
-            # Zero, not the stored count: `attempts` is what this run spent, and
-            # this run spent nothing. What the original render paid stays in the
-            # sidecar, under `synthesized_attempts`.
-            attempts=0,
-            ok=True,
-            coverage=meta["coverage"],
-            dropped_sentence=meta.get("dropped_sentence", ""),
-            transcript=meta.get("transcript", ""),
-            # Kept as stored: it describes how THIS AUDIO was made, which is still
-            # true. `reused` says what the run did.
-            recovered_by=meta.get("recovered_by", ""),
-            word_diagnostics=tuple(meta.get("word_diagnostics", ())),
-            reused=True,
-        )
 
     def put(self, key: str, result: ChunkResult, sample_rate: int) -> None:
         """Commit a verified take. The sidecar is written LAST and is the marker.
@@ -277,6 +284,10 @@ class TakeStore:
             tmp_meta = sidecar.with_suffix(".json.tmp")
             tmp_meta.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
             os.replace(tmp_meta, sidecar)
-        except OSError:
+        except Exception:
+            # Not just OSError: soundfile raises LibsndfileError (a RuntimeError)
+            # of its own. The rule is about consequence, not about which library
+            # failed — a store that cannot file a take must never take down a
+            # render that synthesised correctly.
             self.write_failures += 1
 
