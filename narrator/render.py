@@ -46,7 +46,8 @@ from narrator.verify import default_verifier, format_word_diagnostics
 class RenderFailed(RuntimeError):
     """Some chunk could not be rendered correctly, and no file was written."""
 
-    def __init__(self, report: RenderReport, takes: Path | None = None) -> None:
+    def __init__(self, report: RenderReport, takes: Path | None = None,
+                 cached: int = 0) -> None:
         failures = report.failures
         detail = "\n".join(
             f"  chunk {c.index}: coverage {c.coverage:.2f}"
@@ -60,20 +61,17 @@ class RenderFailed(RuntimeError):
         # for that line, where before the 87 chunks that passed were discarded
         # along with the one that did not.
         #
-        # Counted off the directory rather than off the chunks that passed. Not
-        # every passing chunk is stored — an unidentifiable verifier, a
-        # rise-wanting chunk and a failed write all produce none — and promising
-        # reuse that will not happen sends someone into a 25-minute render
-        # expecting a 20-second one.
+        # `cached` counts THIS render's chunks that the store read or filed —
+        # not the chunks that passed, and not the files in the directory. Not
+        # every passing chunk is stored (an unidentifiable verifier, a
+        # rise-wanting chunk and a failed write each produce none), and a
+        # directory holding another script's takes proves nothing about this one.
+        # Promising reuse that will not happen sends someone into a 25-minute
+        # render expecting a 20-second one.
         resume = ""
-        if takes is not None:
-            try:
-                stored = len(list(takes.glob("*.json")))
-            except OSError:
-                stored = 0
-            if stored:
-                resume = (f"\n{stored} verified take(s) are cached in {takes}; "
-                          "re-running after a fix re-synthesises only what changed.")
+        if takes is not None and cached:
+            resume = (f"\n{cached} of this render's chunks are cached in {takes}; "
+                      "re-running after a fix re-synthesises only what changed.")
         super().__init__(
             f"{len(failures)} of {len(report.chunks)} chunks failed verification:\n{detail}\n"
             "No file written. Pass quarantine=False to write anyway." + resume
@@ -216,7 +214,7 @@ def render(
     )
 
     if cfg.quarantine and not report.clean:
-        raise RenderFailed(report, cfg.takes)
+        raise RenderFailed(report, cfg.takes, store.usable if store is not None else 0)
 
     _write(out, audio, backend.sample_rate)   # master() already laid out the channels
     return report

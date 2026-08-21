@@ -219,6 +219,11 @@ class TakeStore:
     write_failures: int = field(default=0, init=False)
     """Takes that could not be written. Counted, never raised: the store is an
     optimisation, and a full disk must not fail a render that synthesised fine."""
+    usable: int = field(default=0, init=False)
+    """Chunks of THIS render that are addressable in the store — read from it or
+    filed into it. What a caller needs after a refusal is not how many files the
+    directory holds (most of which may belong to another script) but how much of
+    the render they are about to repeat is already paid for."""
 
     def get(self, key: str, sample_rate: int, index: int, text: str) -> ChunkResult | None:
         """The stored take for `key`, or None for any reason at all.
@@ -253,7 +258,7 @@ class TakeStore:
                 return None
             # Inside the guard, like everything above it: a sidecar that parses
             # but is missing a field is corruption too, and corruption is a miss.
-            return ChunkResult(
+            result = ChunkResult(
                 index=index,
                 text=text,
                 audio=audio,
@@ -278,6 +283,9 @@ class TakeStore:
             )
         except Exception:
             return None
+        else:
+            self.usable += 1
+            return result
 
     def put(self, key: str, result: ChunkResult, sample_rate: int) -> None:
         """Commit a verified take. The sidecar is written LAST and is the marker.
@@ -295,6 +303,12 @@ class TakeStore:
         means naming files by content and keeping a superseded copy of every
         take on disk, which is a worse trade than one re-synthesis in a race
         nobody has hit.
+
+        Overwriting an existing entry — a reroll — has the same bounded shape: a
+        kill between the two replacements leaves the new audio under the old
+        verdict, which is a mismatch, which is a miss. No ordering avoids it,
+        because a reroll means to replace the entry; only keeping the superseded
+        take would, at the same cost.
         """
         audio = np.ascontiguousarray(result.audio, dtype=np.float32)
         meta = {
@@ -330,6 +344,7 @@ class TakeStore:
             tmp_meta = self.root / f"{key}.{os.getpid()}.json.tmp"
             tmp_meta.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
             os.replace(tmp_meta, sidecar)
+            self.usable += 1
         except Exception:
             # Not just OSError: soundfile raises LibsndfileError (a RuntimeError)
             # of its own. The rule is about consequence, not about which library

@@ -516,6 +516,59 @@ def test_the_refusal_only_promises_takes_that_exist(tmp_path: Path) -> None:
     assert "cached in" not in str(exc.value)
 
 
+def test_the_refusal_counts_this_render_not_the_directory(tmp_path: Path) -> None:
+    """Another script's takes in the same directory prove nothing about this one."""
+    takes = tmp_path / "takes"
+    render_with(tmp_path, takes, segments=[Text("An unrelated paragraph entirely.")],
+                out="other.wav")
+    assert len(list(takes.glob("*.json"))) == 1
+
+    # This render caches nothing of its own: every chunk fails.
+    with pytest.raises(RenderFailed) as exc:
+        render_with(tmp_path, takes, segments=[SEGMENTS[0]], out="a.wav",
+                    script=dict.fromkeys(range(20), Failure.TRUNCATE))
+    assert "cached in" not in str(exc.value)
+
+
+def test_the_refusal_counts_reused_chunks_as_already_paid(tmp_path: Path) -> None:
+    """A render that reuses and then still fails is cheap to re-run, and says so.
+
+    The failing chunk comes first on purpose: `FakeBackend`'s failures are keyed
+    by CALL index, and a reused chunk makes no call, so a failure scripted after
+    one would shift onto a different generation the second time round.
+    """
+    takes = tmp_path / "takes"
+    voice = voice_at(tmp_path)
+    segments = [Text("They were sent to a destination that does not exist."),
+                Text("Not the keeper.")]
+    # The first chunk's three attempts, and nothing else. It is a single
+    # sentence, so the split fallback declines and it spends exactly three.
+    script = dict.fromkeys(range(3), Failure.TRUNCATE)
+
+    with pytest.raises(RenderFailed):
+        render_with(tmp_path, takes, segments=segments, voice=voice, out="a.wav",
+                    script=script)
+    assert len(list(takes.glob("*.json"))) == 1
+
+    backend, _ = build(script)
+    with pytest.raises(RenderFailed) as exc:
+        render(segments, voice, backend, tmp_path / "b.wav",
+               CoverageVerifier(FakeASR(backend)), RenderConfig(takes=takes))
+    assert backend.calls == 3          # the failing chunk, again; the other reused
+    assert "1 of this render's chunks are cached" in str(exc.value)
+
+
+def test_the_fake_cannot_claim_a_configuration_it_does_not_honour() -> None:
+    """Identity and behaviour read one normalised mapping, so order cannot split them."""
+    quiet = Voice(Path("a.wav"), "r", "en")
+    same_but_corrected = Voice(Path("a.wav"), "r", "en", gain_db=-6.0)
+
+    one = FakeBackend(voice_amplitude={quiet: 0.05, same_but_corrected: 0.20})
+    other = FakeBackend(voice_amplitude={same_but_corrected: 0.20, quiet: 0.05})
+    assert (identity_of(one) == identity_of(other)) == (
+        one._level_for(quiet) == other._level_for(quiet))
+
+
 def test_reroll_refuses_a_chunk_number_that_cannot_exist(tmp_path: Path) -> None:
     """A silently ignored reroll looks exactly like one that changed nothing.
 

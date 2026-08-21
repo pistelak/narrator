@@ -101,7 +101,7 @@ class FakeBackend:
             sorted((i, str(m)) for i, m in self.script.items()),
             self.amplitude,
             sorted(self.amplitude_script.items()),
-            sorted((str(v), a) for v, a in self.voice_amplitude.items()),
+            sorted((str(v), a) for v, a in self._levels().items()),
         ])
 
     def frames_per_second(self) -> int:
@@ -140,12 +140,21 @@ class FakeBackend:
         self._spoken[index] = spoken
         return audio
 
+    def _levels(self) -> dict[Voice, float]:
+        """`voice_amplitude` with `gain_db` normalised away.
+
+        Both the lookup and `identity` read THIS, so they cannot disagree. The
+        scan they replaced returned the first inserted match while the identity
+        sorted, so two mappings holding the same gain-only-different voices in
+        opposite orders shared an identity and generated different levels — a
+        fake that lies about what it is configured to do.
+        """
+        return {replace(voice, gain_db=0.0): level
+                for voice, level in self.voice_amplitude.items()}
+
     def _level_for(self, voice: Voice) -> float:
         """Declared amplitude for this voice's reference, `gain_db` ignored."""
-        for candidate, level in self.voice_amplitude.items():
-            if replace(candidate, gain_db=0.0) == replace(voice, gain_db=0.0):
-                return level
-        return self.amplitude
+        return self._levels().get(replace(voice, gain_db=0.0), self.amplitude)
 
     def _apply(self, text: str, mode: Failure) -> str:
         sentences = split_sentences(text)
