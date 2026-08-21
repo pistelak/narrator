@@ -24,6 +24,7 @@ import tempfile
 from dataclasses import dataclass, field
 from typing import Any
 
+from narrator.takes import package_version
 from narrator.types import Audio
 
 
@@ -40,6 +41,19 @@ class WhisperASR:
     repo: str = "mlx-community/whisper-large-v3-turbo"
     source_rate: int = 24_000
     """See the module docstring: must match the backend's actual rate."""
+
+    @property
+    def identity(self) -> str:
+        """For the take store. `source_rate` is IN it, deliberately.
+
+        A verdict obtained at the wrong rate is unreliable in the way this
+        module's docstring describes, and a stored take carries its verdict
+        rather than being re-verified. Leaving the rate out would let a take
+        checked by a misconfigured verifier be picked up by a correctly
+        configured render later — laundering exactly the corruption the
+        source_rate rule exists to prevent.
+        """
+        return f"whisper/{self.repo}/{self.source_rate}/{package_version('mlx-whisper')}"
 
     def transcribe(self, audio: Audio, lang: str) -> str:
         try:
@@ -74,6 +88,11 @@ class ParakeetASR:
     """See the module docstring: must match the backend's actual rate."""
 
     _model: Any = field(default=None, repr=False, compare=False)
+
+    @property
+    def identity(self) -> str:
+        """See WhisperASR.identity for why the rate belongs in this string."""
+        return f"parakeet/{self.repo}/{self.source_rate}/{package_version('parakeet-mlx')}"
 
     def transcribe(self, audio: Audio, lang: str) -> str:
         if audio.size == 0:

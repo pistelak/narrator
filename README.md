@@ -182,6 +182,43 @@ alone.
 Verification is on by default; opting out is always explicit (`--no-verify`,
 or `NullVerifier()`), never a silent fallback.
 
+## Reusing takes (opt-in)
+
+Point a render at a directory of takes and it stops re-doing work it has
+already done:
+
+```bash
+narrate script.txt episode.wav --voice v.wav --voice-text "..." --takes .takes
+```
+
+```python
+render(segments, voice, backend, out, cfg=RenderConfig(takes=Path(".takes")))
+```
+
+Each verified chunk is filed under a digest of everything that produced it. So
+changing one word in a script re-synthesises the chunk that changed and reuses
+the rest; a killed run resumes from what it finished; and a render that
+**refuses to write** — the default when a chunk cannot be verified — keeps the
+chunks that passed, so fixing the offending line costs one chunk instead of an
+episode. Tuning `Voice.gain_db` costs nothing at all: level is applied after
+synthesis, so it is deliberately not part of the key.
+
+A reused chunk is reported as reused, in the progress line and the summary,
+because it carries the verdict it was stored with rather than one measured just
+now. Everything that could make a stored take the wrong answer invalidates it:
+the text, the pronunciation lexicon, the voice — down to the *bytes* of the
+reference clip, since a same-size replacement would otherwise ship the previous
+speaker under a clean report — the engine, the recogniser, their package
+versions, and narrator's own synthesis and verification semantics. A backend or
+verifier that does not declare an identity disables reuse entirely rather than
+being guessed at.
+
+Two things it will not do. It never returns a *different* take of the same
+text, so audio that verifies but does not sound right needs `--reroll 12,40`
+(or `RenderConfig(reroll=...)`) to force a fresh generation. And an edit that
+changes how a paragraph packs into chunks invalidates that paragraph's chunks
+from the edit onward — boundaries are not content-defined.
+
 ## Question intonation (opt-in)
 
 The measured engines render yes/no question rises stochastically — roughly 3

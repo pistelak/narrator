@@ -35,6 +35,7 @@ from typing import Any
 
 import numpy as np
 
+from narrator.takes import content_digest, package_version
 from narrator.types import Audio, Voice
 
 MODEL = "supertonic-3"
@@ -72,6 +73,14 @@ class SupertonicBackend:
     _tts: Any = field(default=None, repr=False)
     _styles: dict[str, Any] = field(default_factory=dict, repr=False)
 
+    @property
+    def identity(self) -> str:
+        """For the take store. Every setting that reaches the waveform is here,
+        `default_preset` included: a preset-less Voice resolves against it, so two
+        backends differing only in that default speak with different voices."""
+        return (f"supertonic/{self.model_id}/{self.default_preset}/{self.total_steps}/"
+                f"{self.speed}/{self.sample_rate}/{package_version('supertonic')}")
+
     def frames_per_second(self) -> int:
         return self.fps
 
@@ -93,15 +102,26 @@ class SupertonicBackend:
         The cache key is namespaced: a clip at a path spelled like a preset name
         (`Voice(audio_path=Path("M1"))`) must not collide with preset "M1" — a
         multi-voice render mixes both kinds in one cache, and a collision would
-        silently synthesize the wrong narrator while still verifying clean."""
+        silently synthesize the wrong narrator while still verifying clean.
+
+        It digests the clip as well, exactly as the Higgs backend does and for the
+        same reason: path alone serves the previous speaker after an in-place edit,
+        and ASR checks the words, not who said them, so the render still verifies
+        clean. The take store makes that reachable in a new way — it misses
+        correctly on the edited reference, and a long-lived backend would then
+        refill the miss with the OLD speaker's audio, now filed under the new
+        reference's digest.
+
+        Validation comes before the lookup because the key reads the file."""
         preset = voice.preset or self.default_preset
-        key = f"path:{voice.audio_path}" if voice.audio_path else f"preset:{preset}"
+        if voice.audio_path is not None and not voice.audio_path.is_file():
+            raise FileNotFoundError(f"Voice reference not found: {voice.audio_path}")
+        key = (f"path:{voice.audio_path.resolve()}:{content_digest(voice.audio_path)}"
+               if voice.audio_path else f"preset:{preset}")
         if key in self._styles:
             return self._styles[key]
 
         if voice.audio_path is not None:
-            if not voice.audio_path.is_file():
-                raise FileNotFoundError(f"Voice reference not found: {voice.audio_path}")
             style = self._tts.get_voice_style_from_path(str(voice.audio_path))
         else:
             try:

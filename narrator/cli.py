@@ -33,6 +33,10 @@ def parse_text(raw: str, paragraph_gap: float) -> list[Segment]:
 def _progress(result: ChunkResult, total: int) -> None:
     mark = "ok " if result.ok else "FAIL"
     note = f" ({result.recovered_by}, coverage {result.coverage:.2f})" if result.recovered_by else ""
+    if result.reused:
+        # Said plainly: this chunk was not generated or checked on this run, and
+        # a line that looked identical to a fresh one would hide that.
+        note = f" (reused{', ' + result.recovered_by if result.recovered_by else ''})"
     if not result.ok:
         note = f" coverage {result.coverage:.2f}"
         if result.dropped_sentence:
@@ -61,6 +65,14 @@ def main(argv: list[str] | None = None) -> int:
                              "becomes undetectable — the failure this tool exists to prevent")
     parser.add_argument("--write-anyway", action="store_true",
                         help="write the file even if some chunk failed verification")
+    parser.add_argument("--takes", type=Path,
+                        help="directory of verified takes to reuse and extend. An edited "
+                             "script then re-renders only the chunks that changed, and a "
+                             "killed run resumes from what it finished")
+    parser.add_argument("--reroll", default="",
+                        help="comma-separated chunk numbers (as printed, 1-based) to "
+                             "generate fresh, ignoring any stored take — for audio that "
+                             "verifies but does not sound right")
     args = parser.parse_args(argv)
 
     from narrator.backends.higgs import HiggsBackend
@@ -74,11 +86,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{args.text}: nothing to say", file=sys.stderr)
         return 2
 
+    try:
+        # 1-based on the way in, to match the progress lines the user is reading
+        # them off; 0-based inside, where chunk indices live.
+        reroll = frozenset(int(n) - 1 for n in args.reroll.split(",") if n.strip())
+    except ValueError:
+        print(f"--reroll takes chunk numbers, got {args.reroll!r}", file=sys.stderr)
+        return 2
+
     cfg = RenderConfig(
         max_chars=args.max_chars,
         mastering=MasterConfig(channels=1 if args.mono else 2),
         quarantine=not args.write_anyway,
         on_progress=_progress,
+        takes=args.takes,
+        reroll=reroll,
     )
 
     try:

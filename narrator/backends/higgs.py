@@ -21,13 +21,13 @@ Two things about this backend that are not obvious:
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+from narrator.takes import content_digest, package_version
 from narrator.types import Audio, Voice
 
 MODEL = "bosonai/higgs-audio-v3-tts-4b"
@@ -44,18 +44,11 @@ of different references does not grow without bound."""
 def _cache_key(path: Path) -> tuple[str, str]:
     """Resolved path plus a digest of the file, so an edited reference re-encodes.
 
-    Content, not size and mtime: a same-size replacement that preserves the
-    timestamp — or is written inside a filesystem's timestamp granularity, which
-    `st_mtime_ns` reports in nanoseconds without resolving to them — keeps the
-    old key and serves the previous speaker's codes. Verification would not
-    catch it, because ASR checks the words, not who said them, so the wrong
-    voice ships with a clean report. Measured, because it runs once per
-    synthesis call: 0.33 ms for a 10 s reference, 2.2 ms for a 60 s one — 0.03 s
-    and 0.22 s respectively across a hundred chunks, against a render measured
-    in minutes.
+    Content, not size and mtime, and the reasoning now lives with the digest in
+    `narrator.takes.content_digest` — the take store keys voices the same way, for
+    the same reason one level up. Cost is measured there too.
     """
-    digest = hashlib.blake2b(path.read_bytes(), digest_size=16).hexdigest()
-    return (str(path.resolve()), digest)
+    return (str(path.resolve()), content_digest(path))
 
 
 @dataclass
@@ -75,6 +68,14 @@ class HiggsBackend:
 
     _model: Any = field(default=None, repr=False)
     _ref_codes: dict[tuple[str, str], Any] = field(default_factory=dict, repr=False)
+
+    @property
+    def identity(self) -> str:
+        """For the take store: the model, the rate it speaks at, and the port's
+        version — mlx-audio is lower-bounded rather than pinned, and an upgrade
+        changes the samples a prompt produces without moving anything else."""
+        return (f"higgs/{self.model_id}/{self.sample_rate}/{self.fps}/"
+                f"{package_version('mlx-audio')}")
 
     def frames_per_second(self) -> int:
         return self.fps

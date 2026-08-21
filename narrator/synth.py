@@ -26,7 +26,17 @@ import numpy as np
 
 from narrator import prosody
 from narrator.chunking import split_sentences
+from narrator.takes import TakeStore, take_key
 from narrator.types import Audio, Backend, ChunkResult, Verdict, Verifier, Voice
+
+SEMANTICS = 1
+"""Version of the ladder's own behaviour, for the take store's key.
+
+Bump it whenever a change here alters which take ships or how one is made —
+ranking, attempt budget, the split fallback, the cheap checks. The config fields
+are keyed on automatically; this covers the code around them, so that a fix
+re-renders rather than certifying old audio as if this version had produced it.
+"""
 
 
 @dataclass(frozen=True)
@@ -171,6 +181,18 @@ _LETTER_NAMES = {
 _ACRONYM = re.compile(r"\b[A-Z]{2,6}\b")
 
 
+def resolve_spoken(text: str, lang: str, cfg: SynthConfig) -> str:
+    """What the engine is actually asked to say, for this text under this config.
+
+    One home, two callers: the ladder speaks it, and the take store keys on it.
+    Keying on the resolved form rather than on (text + the whole lexicon) is what
+    keeps a pronunciation entry local — adding a respelling for a name that
+    appears in three chunks leaves the other eighty-five addressable.
+    """
+    spoken = apply_pronunciation(text, cfg.pronunciation) if cfg.pronunciation else text
+    return spell_acronyms(spoken, lang) if cfg.spell_acronyms else spoken
+
+
 def spell_acronyms(text: str, lang: str) -> str:
     """Respell every all-caps token as its letter names — how acronyms are read.
 
@@ -192,8 +214,86 @@ def synthesize_chunk(
     verifier: Verifier,
     voice: Voice,
     cfg: SynthConfig = SynthConfig(),
+    store: TakeStore | None = None,
+    reuse: bool = True,
 ) -> ChunkResult:
-    """Render one chunk. `ChunkResult.ok` is the only trustworthy field."""
+    """Render one chunk. `ChunkResult.ok` is the only trustworthy field.
+
+    With a `store`, a take that was already made for these exact inputs is
+    returned instead of being generated again, and a new one is filed as soon as
+    it verifies — so a killed render resumes and an edited script pays only for
+    what changed. `reuse=False` forces a fresh generation for this chunk and
+    overwrites the entry: it is how a caller asks a sampled model for another
+    take of audio that verifies but does not sound right.
+
+    The store is consulted around the ladder, never inside it. A single
+    generation is stochastic and may be wrong; only the take the ladder decided
+    to ship is worth keeping, and only when it passed.
+    """
+    key = _take_key(text, backend, verifier, voice, cfg) if store is not None else None
+    if key is not None and reuse:
+        cached = store.get(key, backend.sample_rate, index, text)
+        if cached is not None:
+            return cached
+
+    result = _synthesize(text, index, backend, verifier, voice, cfg)
+
+    if key is not None and result.ok:
+        store.put(key, result, backend.sample_rate)
+    return result
+
+
+def _take_key(
+    text: str, backend: Backend, verifier: Verifier, voice: Voice, cfg: SynthConfig
+) -> str | None:
+    """This chunk's address in the store, or None when it must not be cached."""
+    if _rise_wanted_anywhere(text, voice, cfg):
+        return None
+    return take_key(
+        text=text,
+        spoken=resolve_spoken(text, voice.lang, cfg),
+        voice=voice,
+        backend=backend,
+        verifier=verifier,
+        cfg=cfg,
+        semantics=SEMANTICS,
+    )
+
+
+def _rise_wanted_anywhere(text: str, voice: Voice, cfg: SynthConfig) -> bool:
+    """Whether rise selection can touch this chunk — in which case it is not stored.
+
+    A resolved "does this chunk want a rise" boolean is NOT enough to key on, for
+    two independent reasons. The sentence-split fallback runs `_best_attempt` per
+    sentence, which asks the caller's policy again for each one, so a chunk-level
+    answer does not describe what was synthesised. And the contour analysis
+    itself picks which verified take ships, while being environment-dependent —
+    `prosody.rise_delta_checker` returns None when librosa is absent — so one key
+    could return a first verified take where this machine would have chosen a
+    later rising one.
+
+    So rise-wanting chunks are simply not cached. They are a minority (yes/no
+    questions), the carve-out is cheap, and it fails closed. A policy that raises
+    counts as wanting one, for the same reason.
+    """
+    if cfg.wants_rise is None:
+        return False
+    try:
+        return any(cfg.wants_rise(candidate, voice.lang)
+                   for candidate in (text, *split_sentences(text)))
+    except Exception:
+        return True
+
+
+def _synthesize(
+    text: str,
+    index: int,
+    backend: Backend,
+    verifier: Verifier,
+    voice: Voice,
+    cfg: SynthConfig,
+) -> ChunkResult:
+    """The ladder itself, with no store in the picture."""
     attempt = _best_attempt(text, backend, verifier, voice, cfg)
 
     if attempt is not None and attempt.ok:
@@ -279,13 +379,20 @@ def _best_attempt(
     failures = 0
     rise_check = _rise_wanted(text, voice, cfg)
 
-    spoken = apply_pronunciation(text, cfg.pronunciation) if cfg.pronunciation else text
-    if cfg.spell_acronyms:
-        spoken = spell_acronyms(spoken, voice.lang)
+    spoken = resolve_spoken(text, voice.lang, cfg)
+    # The engine is handed a voice with no level correction. `gain_db` is applied
+    # by `render` AFTER synthesis, so no backend has any business reading it —
+    # and stripping it here is what lets the take store leave it out of the key,
+    # which is what makes "-3 dB, listen, -4 dB" cost nothing instead of 88
+    # generations. Structural, not a convention: the bundled fake already keys
+    # its per-voice amplitude on the Voice object itself, so a backend CAN see
+    # a field it should not act on.
+    engine_voice = replace(voice, gain_db=0.0) if voice.gain_db else voice
 
     for number in range(1, cfg.max_attempts + 1):
         try:
-            audio = backend.synthesize(spoken, voice, max_frames=cap, temperature=cfg.temperature)
+            audio = backend.synthesize(spoken, engine_voice,
+                                       max_frames=cap, temperature=cfg.temperature)
         except Exception:
             # One bad attempt must not lose the whole render. The predecessor had
             # no guard here, so a transient error at chunk 80 discarded fifteen
