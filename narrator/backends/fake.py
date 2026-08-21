@@ -203,8 +203,12 @@ class FakeASR:
         """Composed from the backend's, since this fake hears only what that fake
         said — the same recursion a real CoverageVerifier does over its ASR."""
         return "fake-asr/" + json.dumps(
+            # Insertion order, NOT sorted: `transcribe` applies these in the
+            # order they were declared, so {cat: dog, dog: fox} and the reverse
+            # spell one word two different ways. An identity that sorted them
+            # said the two fakes were one.
             [_class_id(self), self.backend.identity, self.perfect,
-             sorted(self.orthography.items())])
+             list(self.orthography.items())])
 
     def transcribe(self, audio: Audio, lang: str) -> str:
         spoken = self.backend.heard(audio)

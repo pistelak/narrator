@@ -72,8 +72,9 @@ class SupertonicBackend:
 
     _rate_verified: bool = field(default=False, repr=False)
     _tts: Any = field(default=None, repr=False)
-    _loaded_id: str = field(default="", repr=False)
     _styles: dict[str, Any] = field(default_factory=dict, repr=False)
+    # Appended, not inserted: see the note in the Higgs backend.
+    _loaded_id: str = field(default="", repr=False)
 
     @property
     def identity(self) -> str | None:

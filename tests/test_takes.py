@@ -807,3 +807,24 @@ def test_a_subclass_that_adds_plain_state_is_not_the_base_verifier() -> None:
 
     assert identity_of(Pickier(FakeASR(backend), 1.0)) != identity_of(
         Pickier(FakeASR(backend), 2.0))
+
+
+def test_new_backend_fields_did_not_move_the_existing_ones() -> None:
+    """types.py opens with the bug this prevents: inserting a dataclass field
+    mid-list silently rebinds positional construction."""
+    from dataclasses import fields
+
+    from narrator.backends.higgs import HiggsBackend
+
+    names = [f.name for f in fields(HiggsBackend)]
+    assert names.index("_ref_codes") < names.index("_loaded_id")
+    assert names[:6] == ["model_id", "sample_rate", "fps", "honours_frame_cap",
+                         "_model", "_ref_codes"]
+
+
+def test_two_orthographies_that_spell_differently_are_not_one_asr() -> None:
+    """`transcribe` applies these in declaration order, so the identity must too."""
+    backend = FakeBackend()
+    one = FakeASR(backend, orthography={"cat": "dog", "dog": "fox"})
+    other = FakeASR(backend, orthography={"dog": "fox", "cat": "dog"})
+    assert identity_of(one) != identity_of(other)

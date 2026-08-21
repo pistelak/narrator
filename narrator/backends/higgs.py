@@ -68,8 +68,11 @@ class HiggsBackend:
     """Autoregressive: max_new_frames is a real hard stop."""
 
     _model: Any = field(default=None, repr=False)
-    _loaded_id: str = field(default="", repr=False)
     _ref_codes: dict[tuple[str, str], Any] = field(default_factory=dict, repr=False)
+    # After the existing fields, private included — this is a dataclass, and
+    # inserting mid-list silently rebinds positional construction, which is the
+    # bug types.py opens with.
+    _loaded_id: str = field(default="", repr=False)
 
     @property
     def identity(self) -> str | None:

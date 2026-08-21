@@ -332,6 +332,15 @@ class Identified(Protocol):
     the verdict: its class, its model, the version of the package that does the
     work, and any setting that changes generation. Two objects sharing an
     identity is a promise that their output is interchangeable.
+
+    **A subclass that adds configuration must extend this**, and the bundled
+    implementations cannot do it for you. They name their own class, so a
+    subclass is never confused with its parent, and `CoverageVerifier` walks its
+    instance state — but a backend cannot, because its instance also holds a
+    loaded model and a reference cache that change within a single render, and
+    an identity built from those would never match itself twice. So a backend
+    subclass that adds a pitch or a sampler setting is on its own: override
+    `identity`, or return None from it and take the re-synthesis.
     """
 
     identity: str
