@@ -793,3 +793,17 @@ def test_a_subclass_strictness_knob_is_part_of_the_verifier(tmp_path: Path) -> N
 
     assert identity_of(Pickier(FakeASR(backend), strictness=1.0)) != identity_of(
         Pickier(FakeASR(backend), strictness=2.0))
+
+
+def test_a_subclass_that_adds_plain_state_is_not_the_base_verifier() -> None:
+    """A subclass of a dataclass is still a dataclass, and `fields` would report
+    only the parent's — exactly the subclass this has to cover."""
+    backend = FakeBackend()
+
+    class Pickier(CoverageVerifier):
+        def __init__(self, asr, strictness: float) -> None:
+            super().__init__(asr)
+            self.strictness = strictness
+
+    assert identity_of(Pickier(FakeASR(backend), 1.0)) != identity_of(
+        Pickier(FakeASR(backend), 2.0))

@@ -33,7 +33,7 @@ import difflib
 import json
 import re
 import unicodedata
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 
 from narrator.chunking import split_sentences
 from narrator.takes import _class_id, identity_of
@@ -1215,23 +1215,25 @@ class CoverageVerifier:
             return None
         # The class name is in it, because a subclass that overrides `verify`
         # scores by different rules while inheriting every field this is built
-        # from. So are the fields themselves, read off the dataclass rather than
-        # listed here: `min_coverage` comes from the instance because a caller
-        # may have set its own gate, and a subclass that adds a strictness knob
-        # of its own is covered the day it is written rather than the day
-        # someone remembers this method. A subclass that is not a dataclass
-        # cannot be walked, and is therefore not identifiable — the same refusal
-        # to guess as everywhere else.
+        # from. So is its state, read off the INSTANCE rather than listed here:
+        # `min_coverage` comes from the instance because a caller may have set
+        # its own gate, and a subclass that adds a strictness knob of its own is
+        # covered the day it is written rather than the day someone remembers
+        # this method. The instance dict rather than `dataclasses.fields`,
+        # because a subclass of a dataclass is still a dataclass and `fields`
+        # would report only the parent's — exactly the subclass this is for. An
+        # object with no instance dict cannot be walked and is therefore not
+        # identifiable, the same refusal to guess as everywhere else.
         #
         # Encoded, not joined: sound-alike pairs are caller vocabulary and may
         # contain any character a separator could use, and two policies sharing
         # one identity means a take accepted under one is reported clean under
         # the other.
-        try:
-            declared = sorted((f.name, repr(getattr(self, f.name)))
-                              for f in fields(self) if f.name != "asr")
-        except TypeError:  # pragma: no cover - a subclass that is not a dataclass
+        state = getattr(self, "__dict__", None)
+        if state is None:  # pragma: no cover - a __slots__ subclass
             return None
+        declared = sorted((name, repr(value))
+                          for name, value in state.items() if name != "asr")
         return "coverage/" + json.dumps([_class_id(self), SEMANTICS, declared, asr_id])
 
     def verify(self, audio: Audio, text: str, lang: str) -> Verdict:

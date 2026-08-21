@@ -97,12 +97,21 @@ class ParakeetASR:
     """See the module docstring: must match the backend's actual rate."""
 
     _model: Any = field(default=None, repr=False, compare=False)
+    _loaded_repo: str = field(default="", repr=False, compare=False)
 
     @property
     def identity(self) -> str | None:
-        """See WhisperASR.identity for why the rate belongs in this string."""
+        """See WhisperASR.identity for why the rate belongs in this string.
+
+        The repo reported is the one actually LOADED once there is a model: this
+        class loads once and keeps it, so changing `repo` afterwards changes
+        nothing about who transcribes, and an identity that followed the field
+        would file this recogniser's verdicts under another's name. (WhisperASR
+        needs no equivalent — it passes the repo on every call.)
+        """
         model = package_version("parakeet-mlx")
-        return (f"parakeet/{_class_id(self)}/{self.repo}/{self.source_rate}/{model}"
+        repo = self._loaded_repo or self.repo
+        return (f"parakeet/{_class_id(self)}/{repo}/{self.source_rate}/{model}"
                 if model is not None else None)
 
     def transcribe(self, audio: Audio, lang: str) -> str:
@@ -116,6 +125,7 @@ class ParakeetASR:
                     "Parakeet verification needs: pip install 'narrator[parakeet]'"
                 ) from exc
             self._model = from_pretrained(self.repo)
+            self._loaded_repo = self.repo
 
         import soundfile as sf
 

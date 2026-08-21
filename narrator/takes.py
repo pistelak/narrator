@@ -20,6 +20,14 @@ Under-keying serves audio that was made for different inputs, under a report tha
 still says clean — the failure this library exists to prevent. Over-keying only
 costs time. The same asymmetry decides every open question here: an object that
 cannot state what it is disables the store rather than being guessed at.
+
+What this directory is trusted for, stated plainly because it bounds everything
+below: its contents are the caller's own files, and narrator does not defend
+against someone editing a sidecar by hand. What it does NOT take on trust is
+that a file is what its NAME says — the entry carries the key it was filed
+under — or that audio still matches the verdict beside it, which the digest
+settles. Both are things an ordinary accident produces: a copied file, a merged
+directory, a half-finished write.
 """
 
 from __future__ import annotations
