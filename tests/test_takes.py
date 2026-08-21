@@ -764,3 +764,16 @@ def test_a_split_take_is_not_reused_once_a_prosody_policy_exists(tmp_path: Path)
                                 synth=SynthConfig(wants_rise=lambda t, lang: t.endswith("?")))
     assert fresh.calls > 0
     assert not report.chunks[0].reused
+
+
+def test_a_backend_identity_names_the_model_it_actually_loaded() -> None:
+    """`load` returns early once a model exists, so changing `model_id` after it
+    changes nothing about what speaks — and an identity that followed the field
+    would file this model's audio under another model's name."""
+    from narrator.backends.higgs import HiggsBackend
+
+    backend = HiggsBackend()
+    backend._model, backend._loaded_id = object(), backend.model_id
+    before = identity_of(backend)
+    backend.model_id = "someone/else-v9"
+    assert identity_of(backend) == before

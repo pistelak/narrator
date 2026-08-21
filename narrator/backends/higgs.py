@@ -68,18 +68,20 @@ class HiggsBackend:
     """Autoregressive: max_new_frames is a real hard stop."""
 
     _model: Any = field(default=None, repr=False)
+    _loaded_id: str = field(default="", repr=False)
     _ref_codes: dict[tuple[str, str], Any] = field(default_factory=dict, repr=False)
 
     @property
-    def identity(self) -> str:
+    def identity(self) -> str | None:
         """For the take store: the model, the rate it speaks at, and the port's
         version — mlx-audio is lower-bounded rather than pinned, and an upgrade
         changes the samples a prompt produces without moving anything else."""
         engine = package_version("mlx-audio")
         if engine is None:
             return None
-        return "higgs/" + json.dumps([_class_id(self), self.model_id, self.sample_rate,
-                                     self.fps, self.honours_frame_cap, engine])
+        return "higgs/" + json.dumps([_class_id(self), self._loaded_id or self.model_id,
+                                     self.sample_rate, self.fps, self.honours_frame_cap,
+                                     engine])
 
     def frames_per_second(self) -> int:
         return self.fps
@@ -96,6 +98,11 @@ class HiggsBackend:
                 "reads safetensors with framework='pt'."
             ) from exc
         self._model = load(self.model_id)
+        # What is actually in memory. `load` returns early once a model exists,
+        # so changing `model_id` afterwards changes nothing about what speaks —
+        # and an identity that followed the field would file this model's audio
+        # under another model's name.
+        self._loaded_id = self.model_id
 
     def _codes_for(self, voice: Voice) -> Any:
         """Encode each reference once and cache it for the life of the backend.

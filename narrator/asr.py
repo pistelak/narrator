@@ -43,7 +43,7 @@ class WhisperASR:
     """See the module docstring: must match the backend's actual rate."""
 
     @property
-    def identity(self) -> str:
+    def identity(self) -> str | None:
         """For the take store. `source_rate` is IN it, deliberately.
 
         A verdict obtained at the wrong rate is unreliable in the way this
@@ -99,7 +99,7 @@ class ParakeetASR:
     _model: Any = field(default=None, repr=False, compare=False)
 
     @property
-    def identity(self) -> str:
+    def identity(self) -> str | None:
         """See WhisperASR.identity for why the rate belongs in this string."""
         model = package_version("parakeet-mlx")
         return (f"parakeet/{_class_id(self)}/{self.repo}/{self.source_rate}/{model}"

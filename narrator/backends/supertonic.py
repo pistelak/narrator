@@ -72,10 +72,11 @@ class SupertonicBackend:
 
     _rate_verified: bool = field(default=False, repr=False)
     _tts: Any = field(default=None, repr=False)
+    _loaded_id: str = field(default="", repr=False)
     _styles: dict[str, Any] = field(default_factory=dict, repr=False)
 
     @property
-    def identity(self) -> str:
+    def identity(self) -> str | None:
         """For the take store. Every setting that reaches the waveform is here,
         `default_preset` included: a preset-less Voice resolves against it, so two
         backends differing only in that default speak with different voices."""
@@ -83,8 +84,9 @@ class SupertonicBackend:
         if engine is None:
             return None
         return "supertonic/" + json.dumps(
-            [_class_id(self), self.model_id, self.default_preset, self.total_steps,
-             self.speed, self.sample_rate, self.honours_frame_cap, engine])
+            [_class_id(self), self._loaded_id or self.model_id, self.default_preset,
+             self.total_steps, self.speed, self.sample_rate, self.honours_frame_cap,
+             engine])
 
     def frames_per_second(self) -> int:
         return self.fps
@@ -100,6 +102,9 @@ class SupertonicBackend:
                 "pip install 'narrator[supertonic]'"
             ) from exc
         self._tts = TTS(model=self.model_id, auto_download=True)
+        # See HiggsBackend.load: the identity must name what is loaded, not what
+        # the field currently says.
+        self._loaded_id = self.model_id
 
     def _style_for(self, voice: Voice) -> Any:
         """Resolve a Voice to a Supertonic style, clip or preset, cached.
