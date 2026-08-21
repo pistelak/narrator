@@ -240,7 +240,9 @@ def synthesize_chunk(
 
     result = _synthesize(text, index, backend, verifier, voice, cfg, intent)
 
-    if key is not None and result.ok:
+    # Checked again, because the split fallback may have applied rise selection
+    # to a sentence since the key was computed.
+    if key is not None and result.ok and intent.cacheable:
         store.put(key, result, backend.sample_rate)
     return result
 
@@ -260,75 +262,71 @@ def _take_key(
     )
 
 
-@dataclass(frozen=True)
+@dataclass
 class _RiseIntent:
-    """What the caller's policy said about this chunk — asked exactly once.
+    """Whether rise selection touched this chunk — asked when the ladder needs it.
 
-    Once, because the policy is a caller's function and this code cannot assume
-    it is pure. It is consulted for the whole chunk AND for each sentence the
-    split fallback might render alone, and both the synthesis path and the
-    caching decision then read the SAME answers. Asking twice let the two
-    disagree: a policy answering False for the cache check and True inside the
-    ladder would store rise-selected audio under the rule that says it must not
-    be stored.
+    The caller's policy is a caller's function and this code cannot assume it is
+    pure ("rise on the first question of a paragraph" is reasonable and is
+    stateful). So it is asked exactly where the previous, cacheless code asked
+    it: once for the chunk, and once per sentence only if the split fallback
+    actually runs. Nothing is asked speculatively for the store's benefit.
+
+    The store then reads a FACT rather than a prediction — `rose` records that
+    selection applied to something actually rendered — which is what lets the
+    lookup happen before synthesis and the decision to file happen after it.
     """
 
     chunk: bool
-    sentences: tuple[bool, ...]
     trusted: bool
-    """The policy answered without raising. It never destabilises a render —
-    an exception reads as "no preference" for synthesis, exactly as before —
-    but a policy that cannot be asked cannot be keyed on either."""
+    """The policy answered without raising. It never destabilises a render — an
+    exception reads as "no preference" for synthesis, exactly as before — but a
+    policy that cannot be asked cannot be keyed on either."""
+    rose: bool = False
+    """Rise selection was applied to audio this chunk shipped."""
+
+    def __post_init__(self) -> None:
+        self.rose = self.rose or self.chunk
 
     @property
     def cacheable(self) -> bool:
-        """Rise-wanting chunks are not stored, and that carve-out is why the
-        answers above are resolved rather than keyed on.
+        """Rise-touched chunks are not stored, and a resolved boolean is not
+        enough to key on instead.
 
-        A resolved boolean would not be enough on its own: the contour analysis
-        picks WHICH verified take ships, and it is environment-dependent —
-        `prosody.rise_delta_checker` returns None when librosa is absent — so one
-        key could serve a first verified take where this machine would have kept
-        searching for a rising one. Rises are a minority (yes/no questions), so
-        the carve-out is cheap and it fails closed.
+        The contour analysis picks WHICH verified take ships, and it is
+        environment-dependent — `prosody.rise_delta_checker` returns None when
+        librosa is absent — so one key could serve a first verified take where
+        this machine would have kept searching for a rising one. Rises are a
+        minority (yes/no questions), so the carve-out is cheap and fails closed.
         """
-        return self.trusted and not (self.chunk or any(self.sentences))
+        return self.trusted and not self.rose
+
+    def wants(self, sentence: str, voice: Voice, cfg: SynthConfig) -> bool:
+        """Ask about one sentence the split fallback is about to render alone."""
+        if cfg.wants_rise is None:
+            return False
+        try:
+            answer = bool(cfg.wants_rise(sentence, voice.lang))
+        except Exception:
+            self.trusted = False
+            return False
+        self.rose = self.rose or answer
+        return answer
 
 
 def resolve_rise_intent(text: str, voice: Voice, cfg: SynthConfig) -> _RiseIntent:
-    """Ask the caller's intent policy about a chunk and each of its sentences.
+    """Ask the caller's intent policy about the chunk as a whole.
 
     Total: a policy that raises reads as "no intent" — prosody must never be able
-    to fail (or even destabilise) a render — and marks the answers untrusted, so
-    nothing is cached on the strength of them.
-
-    Asked per candidate, not in one guarded block. The sentences are queried
-    eagerly here but are only ever USED if the chunk fails and the split fallback
-    runs, so letting one of them raise discard the chunk's own answer would drop
-    a rise the ladder would have honoured before this resolution existed — a
-    feature regression paid for a cache decision.
+    to fail (or even destabilise) a render — and marks the answer untrusted, so
+    nothing is stored on the strength of it.
     """
     if cfg.wants_rise is None:
-        return _RiseIntent(False, (), True)
-
-    def ask(candidate: str) -> tuple[bool, bool]:
-        try:
-            return bool(cfg.wants_rise(candidate, voice.lang)), True
-        except Exception:
-            return False, False
-
-    chunk, chunk_ok = ask(text)
-    # Only when the fallback could actually render them alone. `_sentence_split`
-    # gives up below two sentences, so a single-sentence chunk would otherwise be
-    # asked twice about the same string — which for a STATEFUL policy (an
-    # alternating one, say) consumes two answers where the ladder consumes one.
-    sentences = split_sentences(text)
-    answers = [ask(sentence) for sentence in sentences] if len(sentences) > 1 else []
-    return _RiseIntent(
-        chunk=chunk,
-        sentences=tuple(answer for answer, _ in answers),
-        trusted=chunk_ok and all(ok for _, ok in answers),
-    )
+        return _RiseIntent(False, True)
+    try:
+        return _RiseIntent(bool(cfg.wants_rise(text, voice.lang)), True)
+    except Exception:
+        return _RiseIntent(False, False)
 
 
 def _synthesize(
@@ -535,11 +533,12 @@ def _sentence_split(
     gap: Audio | None = None
     worst = 1.0
     attempts = 0
-    for position, sentence in enumerate(sentences):
-        # The caller's policy was asked about these same sentences once, up
-        # front; this reads that answer rather than asking again.
-        wants = intent.sentences[position] if position < len(intent.sentences) else False
-        attempt = _best_attempt(sentence, backend, verifier, voice, cfg, wants)
+    for sentence in sentences:
+        # Asked here, where the sentence is actually about to be rendered alone.
+        # Asking up front for the store's benefit would consume a stateful
+        # policy's answers for sentences no ladder ever reaches.
+        attempt = _best_attempt(sentence, backend, verifier, voice, cfg,
+                                intent.wants(sentence, voice, cfg))
         if attempt is None or not attempt.ok:
             attempts += attempt.calls_spent if attempt is not None else cfg.max_attempts
             return None, 0.0, attempts

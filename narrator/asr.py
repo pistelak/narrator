@@ -60,7 +60,8 @@ class WhisperASR:
         take made before such a change would be reused without the new
         recogniser ever hearing it. Bump SEMANTICS in verify.py if that happens.
         """
-        return f"whisper/{self.repo}/{self.source_rate}/{package_version('mlx-whisper')}"
+        return (f"whisper/{type(self).__qualname__}/{self.repo}/{self.source_rate}/"
+                f"{package_version('mlx-whisper')}")
 
     def transcribe(self, audio: Audio, lang: str) -> str:
         try:
@@ -99,7 +100,8 @@ class ParakeetASR:
     @property
     def identity(self) -> str:
         """See WhisperASR.identity for why the rate belongs in this string."""
-        return f"parakeet/{self.repo}/{self.source_rate}/{package_version('parakeet-mlx')}"
+        return (f"parakeet/{type(self).__qualname__}/{self.repo}/{self.source_rate}/"
+                f"{package_version('parakeet-mlx')}")
 
     def transcribe(self, audio: Audio, lang: str) -> str:
         if audio.size == 0:

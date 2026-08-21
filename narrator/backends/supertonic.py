@@ -80,8 +80,9 @@ class SupertonicBackend:
         `default_preset` included: a preset-less Voice resolves against it, so two
         backends differing only in that default speak with different voices."""
         return "supertonic/" + json.dumps(
-            [self.model_id, self.default_preset, self.total_steps, self.speed,
-             self.sample_rate, self.honours_frame_cap, package_version("supertonic")])
+            [type(self).__qualname__, self.model_id, self.default_preset, self.total_steps,
+             self.speed, self.sample_rate, self.honours_frame_cap,
+             package_version("supertonic")])
 
     def frames_per_second(self) -> int:
         return self.fps

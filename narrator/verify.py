@@ -1220,8 +1220,12 @@ class CoverageVerifier:
         # contain any character a separator could use, and two policies sharing
         # one identity means a take accepted under one is reported clean under
         # the other.
+        # The class name is in it: a subclass that overrides `verify` scores by
+        # different rules while inheriting every field this identity is built
+        # from, and would otherwise reuse takes the base class accepted.
         return "coverage/" + json.dumps(
-            [SEMANTICS, self.min_coverage, [list(p) for p in self.sound_alikes], asr_id])
+            [type(self).__qualname__, SEMANTICS, self.min_coverage,
+             [list(p) for p in self.sound_alikes], asr_id])
 
     def verify(self, audio: Audio, text: str, lang: str) -> Verdict:
         transcript = self.asr.transcribe(audio, lang)
@@ -1293,7 +1297,7 @@ class CascadeVerifier:
         parts = [identity_of(v) for v in self.verifiers]
         if any(p is None for p in parts):
             return None
-        return "cascade/" + json.dumps(parts)
+        return "cascade/" + json.dumps([type(self).__qualname__, parts])
 
     def verify(self, audio: Audio, text: str, lang: str) -> Verdict:
         best: Verdict | None = None
@@ -1347,10 +1351,14 @@ class NullVerifier:
     later attempt could beat.
     """
 
-    identity: str = "null/1"
-    """Named rather than absent, and that is the useful part: an unverified take
-    is cacheable among unverified renders, and a verified render will never reuse
-    one, because the identity it looks under is a different string."""
+    @property
+    def identity(self) -> str:
+        """Named rather than absent, and that is the useful part: an unverified
+        take is cacheable among unverified renders, and a verified render will
+        never reuse one, because the identity it looks under is a different
+        string. A property rather than a field, so that a subclass that starts
+        checking something cannot inherit the claim that it checks nothing."""
+        return f"null/1/{type(self).__qualname__}"
 
     def verify(self, audio: Audio, text: str, lang: str) -> Verdict:
         return Verdict(ok=True, coverage=1.0)

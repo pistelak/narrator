@@ -10,6 +10,7 @@ for different inputs puts wrong audio under a report that still says clean.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -406,17 +407,17 @@ def test_the_store_survives_a_take_written_by_another_run(tmp_path: Path) -> Non
 
 # ------------------------------------------------------------ frontier-review regressions
 
-def test_the_intent_policy_is_asked_once_and_both_paths_read_the_answer(
+def test_the_intent_policy_is_not_asked_about_sentences_nobody_renders(
     tmp_path: Path,
 ) -> None:
     """A caller's policy need not be pure.
 
     "Rise on the first question of a paragraph" is a reasonable policy and is
-    stateful. When the cache check and the ladder each asked separately, one
-    could answer False and the other True — storing rise-selected audio under
-    the rule that says it must not be stored. So it is asked once, for the chunk
-    and for each sentence the split fallback could render alone, and both the
-    ladder and the store read those answers.
+    stateful. Resolving every sentence up front, so the store could decide
+    whether to file the chunk, consumed answers for sentences the ladder never
+    reaches — the split fallback only runs when the whole chunk fails. So the
+    chunk is asked once, the sentences are asked only if the fallback runs, and
+    the store reads what actually happened.
     """
     asked: list[str] = []
 
@@ -429,7 +430,35 @@ def test_the_intent_policy_is_asked_once_and_both_paths_read_the_answer(
     render_with(tmp_path, takes, segments=[chunk], out="a.wav",
                 synth=SynthConfig(wants_rise=policy))
 
-    assert asked == [chunk.text, "Máš teď chvilku?", "Tohle je důležité."]
+    assert asked == [chunk.text]
+    assert not list(takes.glob("*.json"))
+
+
+def test_a_sentence_that_wants_a_rise_keeps_a_recovered_chunk_out_of_the_store(
+    tmp_path: Path,
+) -> None:
+    """The fallback ran, so the sentences were asked — and one wanted a rise.
+
+    The decision to file is taken after synthesis for exactly this case: the
+    chunk itself wanted nothing, so a key existed, and rise selection still
+    reached the audio that shipped.
+    """
+    asked: list[str] = []
+
+    def policy(text: str, lang: str) -> bool:
+        asked.append(text)
+        return text.endswith("?")
+
+    takes = tmp_path / "takes"
+    chunk = Text("Tohle je důležité. Máš teď chvilku?")
+    # The whole-chunk attempts all fail, so the ladder falls through to the
+    # split, which renders each sentence alone.
+    _, report = render_with(tmp_path, takes, segments=[chunk], out="a.wav",
+                            synth=SynthConfig(wants_rise=policy),
+                            script=dict.fromkeys(range(3), Failure.DROP_SENTENCE))
+
+    assert report.chunks[0].recovered_by == "sentence-split"
+    assert asked == [chunk.text, "Tohle je důležité.", "Máš teď chvilku?"]
     assert not list(takes.glob("*.json"))
 
 
@@ -501,23 +530,30 @@ def test_reroll_refuses_a_chunk_number_that_cannot_exist(tmp_path: Path) -> None
 
 
 def test_a_raising_sentence_query_does_not_cost_the_chunk_its_rise(tmp_path: Path) -> None:
-    """The sentences are asked eagerly; only the split fallback ever uses them.
+    """A policy that raises reads as "no preference", never as a failed render.
 
-    Discarding the chunk's own answer because a sentence query raised would drop
-    a rise the ladder honoured before the cache decision existed.
+    And it costs only the answer it was asked for: the chunk's own preference
+    stands, while a policy that could not be asked leaves nothing cacheable.
     """
     from narrator.synth import resolve_rise_intent
 
-    def policy(text: str, lang: str) -> bool:
-        if text != "Máš teď chvilku? Tohle je důležité.":
-            raise RuntimeError("only the whole chunk is answerable")
-        return True
+    voice = Voice(tmp_path / "v.wav", "r", "cs")
+    cfg = SynthConfig(wants_rise=lambda text, lang: text.endswith("?"))
+    intent = resolve_rise_intent("Máš teď chvilku?", voice, cfg)
+    assert intent.chunk is True
+    assert not intent.cacheable
 
-    intent = resolve_rise_intent("Máš teď chvilku? Tohle je důležité.",
-                                 Voice(tmp_path / "v.wav", "r", "cs"),
-                                 SynthConfig(wants_rise=policy))
-    assert intent.chunk is True          # the ladder still gets its preference
-    assert not intent.cacheable          # but nothing is stored on a policy that raised
+    def exploding(text: str, lang: str) -> bool:
+        raise RuntimeError("unanswerable")
+
+    chunk_intent = resolve_rise_intent("Tohle je důležité.", voice,
+                                       SynthConfig(wants_rise=lambda t, lang: False))
+    assert chunk_intent.cacheable
+    # A sentence query that raises during the fallback: no preference for that
+    # sentence, and the chunk stops being cacheable.
+    assert chunk_intent.wants("Tohle je důležité.", voice,
+                              SynthConfig(wants_rise=exploding)) is False
+    assert not chunk_intent.cacheable
 
 
 def test_reroll_past_the_end_of_the_render_is_refused(tmp_path: Path) -> None:
@@ -528,7 +564,7 @@ def test_reroll_past_the_end_of_the_render_is_refused(tmp_path: Path) -> None:
 
 
 def test_a_single_sentence_chunk_asks_the_intent_policy_once(tmp_path: Path) -> None:
-    """The split fallback gives up below two sentences, so there is nothing to ask."""
+    """One question about the chunk, and no speculation about its sentences."""
     from narrator.synth import resolve_rise_intent
 
     asked: list[str] = []
@@ -554,3 +590,59 @@ def test_a_sidecar_field_of_the_wrong_type_is_a_miss(tmp_path: Path) -> None:
     backend, report = render_with(tmp_path, takes, out="b.wav")
     assert backend.calls == 2
     assert report.clean
+
+
+def test_a_take_copied_under_another_key_is_not_served(tmp_path: Path) -> None:
+    """The entry names the key it was filed under, so the filename is not the claim.
+
+    A directory merged from another machine, or a file copied by hand, would
+    otherwise hand one chunk's audio to a chunk it was never made for — with a
+    verdict, so the report would call it clean.
+    """
+    takes = tmp_path / "takes"
+    render_with(tmp_path, takes, out="a.wav")
+    sidecar = sorted(takes.glob("*.json"))[0]
+    stolen = "0" * len(sidecar.stem)
+    (takes / f"{stolen}.json").write_text(sidecar.read_text())
+    (takes / f"{stolen}.wav").write_bytes((takes / f"{sidecar.stem}.wav").read_bytes())
+
+    store = TakeStore(takes)
+    assert store.get(stolen, 24000, 0, "whatever") is None
+    assert store.get(sidecar.stem, 24000, 0, "whatever") is not None
+
+
+def test_an_override_that_changes_the_rules_changes_the_identity() -> None:
+    """A subclass inherits every field the identity is built from, so the class
+    name is part of it — otherwise a stricter verifier reuses what a laxer one
+    accepted."""
+    backend = FakeBackend()
+
+    class Stricter(CoverageVerifier):
+        def verify(self, audio, text, lang):
+            return replace(super().verify(audio, text, lang), ok=False)
+
+    assert identity_of(Stricter(FakeASR(backend))) != identity_of(CoverageVerifier(
+        FakeASR(backend)))
+
+
+def test_an_identity_that_raises_disables_the_store_and_not_the_render(
+    tmp_path: Path,
+) -> None:
+    """`getattr`'s default only covers AttributeError."""
+
+    class Broken:
+        def verify(self, audio, text, lang):
+            from narrator.types import Verdict
+            return Verdict(ok=True, coverage=1.0)
+
+        @property
+        def identity(self) -> str:
+            raise RuntimeError("no idea who I am")
+
+    assert identity_of(Broken()) is None
+    takes = tmp_path / "takes"
+    backend = FakeBackend()
+    report = render(SEGMENTS, voice_at(tmp_path), backend, tmp_path / "a.wav", Broken(),
+                    RenderConfig(takes=takes))
+    assert report.clean
+    assert not list(takes.glob("*.json"))

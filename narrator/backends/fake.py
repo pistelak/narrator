@@ -44,6 +44,11 @@ class FakeBackend:
     `script` maps a 0-based call index to the failure it should exhibit, so a test
     can say "fail the first two attempts, then succeed" and exercise the retry
     ladder exactly.
+
+    Call indices, not chunk indices — which matters once a take store is in play:
+    a reused chunk makes no call, so every later index shifts. A test that renders
+    twice against one script is scripting two different things. Give each render
+    its own backend, or script a range rather than a position.
     """
 
     sample_rate: int = 24000
@@ -89,6 +94,7 @@ class FakeBackend:
         never hits.
         """
         return "fake/" + json.dumps([
+            type(self).__qualname__,
             self.sample_rate, self.fps, self.words_per_second, self.honours_frame_cap,
             str(self.default),
             sorted((i, str(m)) for i, m in self.script.items()),
@@ -187,7 +193,8 @@ class FakeASR:
         """Composed from the backend's, since this fake hears only what that fake
         said — the same recursion a real CoverageVerifier does over its ASR."""
         return "fake-asr/" + json.dumps(
-            [self.backend.identity, self.perfect, sorted(self.orthography.items())])
+            [type(self).__qualname__, self.backend.identity, self.perfect,
+             sorted(self.orthography.items())])
 
     def transcribe(self, audio: Audio, lang: str) -> str:
         spoken = self.backend.heard(audio)

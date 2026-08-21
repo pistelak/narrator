@@ -35,7 +35,7 @@ import numpy as np
 
 from narrator.types import ChunkResult, Voice
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 """Bumped when the stored layout or the key's composition changes, which
 invalidates every existing entry rather than reinterpreting it."""
 
@@ -101,7 +101,13 @@ def identity_of(obj: Any) -> str | None:
     REQUIRED, and every third-party implementation — the ones this fallback exists
     to keep working — would stop being one. See `types.Identified`.
     """
-    value = getattr(obj, "identity", None)
+    try:
+        value = getattr(obj, "identity", None)
+    except Exception:
+        # A property that raises is not an identity. `getattr`'s default only
+        # covers AttributeError, so without this a caller's broken accessor
+        # takes down a render the store was only supposed to speed up.
+        return None
     return value if isinstance(value, str) and value else None
 
 
@@ -210,6 +216,12 @@ class TakeStore:
             meta = json.loads(sidecar.read_text(encoding="utf-8"))
             if meta.get("format") != FORMAT_VERSION or meta.get("sample_rate") != sample_rate:
                 return None
+            if meta.get("key") != key:
+                # The entry names the key it was filed under, so a take that was
+                # copied — or a directory merged from another machine — cannot be
+                # served for a chunk it was never made for. The filename alone is
+                # a claim by whoever wrote it; this is the take's own.
+                return None
 
             import soundfile as sf
 
@@ -270,6 +282,7 @@ class TakeStore:
         audio = np.ascontiguousarray(result.audio, dtype=np.float32)
         meta = {
             "format": FORMAT_VERSION,
+            "key": key,
             "sample_rate": sample_rate,
             "digest": hashlib.blake2b(audio.tobytes(), digest_size=16).hexdigest(),
             "text": result.text,
