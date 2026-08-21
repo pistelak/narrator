@@ -39,6 +39,7 @@ TRIM_GUARD_MS = 30
 
 FADE_MS = 8
 HPF_HZ = 75.0
+
 TARGET_LUFS = -16.0
 PEAK_CEILING_DB = -1.0
 
@@ -65,6 +66,7 @@ class MasterConfig:
     Set channels=1 to match an existing mono back-catalogue — mixing the two in
     one series produces an audible 3 dB step between episodes.
     """
+
 
 
 def resample_to_16k(audio: Audio, source_rate: int) -> Audio:
@@ -110,6 +112,19 @@ def declick(audio: Audio, sample_rate: int) -> Audio:
     out[:n] *= np.linspace(0, 1, n, dtype=out.dtype)
     out[-n:] *= np.linspace(1, 0, n, dtype=out.dtype)
     return out
+
+
+def apply_gain(audio: Audio, gain_db: float) -> Audio:
+    """Static level correction, as declared on a `Voice`. Identity at 0 dB.
+
+    Static, never dynamic, and never inferred: this is a caller's stated offset
+    between reference clips, so it applies equally to every chunk that voice
+    speaks and leaves the performance inside a chunk exactly as synthesised.
+    See `Voice.gain_db` for why the library refuses to work this out itself.
+    """
+    if gain_db == 0.0:
+        return audio
+    return (audio * 10 ** (gain_db / 20)).astype(np.float32)
 
 
 def concatenate(pieces: list[Audio]) -> Audio:

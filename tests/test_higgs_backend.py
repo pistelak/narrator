@@ -29,7 +29,10 @@ class FakeModel:
 
     def encode_reference_audio(self, path: str):
         self.encode_calls.append(path)
-        return f"codes::{path}"
+        # Numbered, so a test can tell *which* encode's codes were used. Codes
+        # derived from the path alone cannot distinguish "re-encoded the edited
+        # clip" from "re-encoded it and then generated from the stale ones".
+        return f"codes::{path}::{len(self.encode_calls)}"
 
     def generate(self, **kwargs):
         self.generate_calls.append(kwargs)
@@ -82,7 +85,7 @@ def test_reference_is_encoded_once_and_reused(backend: HiggsBackend, voice: Voic
     for _ in range(5):
         backend.synthesize("Hello.", voice, max_frames=250, temperature=0.4)
     assert len(backend._model.encode_calls) == 1
-    assert all(c["ref_audio_codes"] == "codes::" + str(voice.audio_path)
+    assert all(c["ref_audio_codes"] == f"codes::{voice.audio_path}::1"
                for c in backend._model.generate_calls)
 
 
@@ -92,6 +95,69 @@ def test_switching_voice_re_encodes(backend: HiggsBackend, voice: Voice, tmp_pat
     backend.synthesize("Hello.", voice, max_frames=250, temperature=0.4)
     backend.synthesize("Hello.", Voice(other, "other", "cs"), max_frames=250, temperature=0.4)
     assert len(backend._model.encode_calls) == 2
+
+
+def test_alternating_voices_encode_once_each(
+    backend: HiggsBackend, voice: Voice, tmp_path: Path
+) -> None:
+    """A dialogue alternates speakers every chunk; the cache must survive that.
+
+    The one-slot cache this replaced re-encoded on every speaker change — about
+    a hundred encodes across a render instead of two.
+    """
+    other = tmp_path / "other.wav"
+    other.write_bytes(b"RIFF-other")
+    second = Voice(other, "other", "en")
+    for _ in range(10):
+        backend.synthesize("Hello.", voice, max_frames=250, temperature=0.4)
+        backend.synthesize("Hello.", second, max_frames=250, temperature=0.4)
+    assert len(backend._model.encode_calls) == 2
+
+
+def test_editing_a_reference_in_place_serves_the_new_speaker(
+    backend: HiggsBackend, voice: Voice
+) -> None:
+    """A replaced clip must not keep serving the old speaker.
+
+    The original size and mtime are both restored, because that is exactly the
+    case a (path, size, mtime) key cannot catch: it would hand back the previous
+    speaker's codes, and nothing downstream would notice — ASR verifies the
+    words, not who spoke them. The assertion is on the codes that reached
+    `generate`, not merely on the encode count, so re-encoding and then
+    generating from the stale codes fails too.
+    """
+    import os
+    before = voice.audio_path.stat()
+    backend.synthesize("Hello.", voice, max_frames=250, temperature=0.4)
+
+    voice.audio_path.write_bytes(b"X" * before.st_size)   # same size, new speaker
+    os.utime(voice.audio_path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    after = voice.audio_path.stat()
+    assert (after.st_size, after.st_mtime_ns) == (before.st_size, before.st_mtime_ns)
+
+    backend.synthesize("Hello.", voice, max_frames=250, temperature=0.4)
+    assert len(backend._model.encode_calls) == 2
+    assert backend._model.generate_calls[-1]["ref_audio_codes"].endswith("::2")
+
+
+def test_the_reference_cache_is_bounded(backend: HiggsBackend, tmp_path: Path) -> None:
+    """A long-lived backend handed many references must not grow without bound.
+
+    The re-use check at the end is the other half: a cache that evicted every
+    entry the moment it landed would also stay under the cap, while re-encoding
+    on every single call.
+    """
+    from narrator.backends.higgs import REF_CACHE_MAX
+    for index in range(REF_CACHE_MAX + 4):
+        clip = tmp_path / f"v{index}.wav"
+        clip.write_bytes(f"RIFF{index}".encode())
+        backend.synthesize("Hello.", Voice(clip, "t", "en"), max_frames=250, temperature=0.4)
+    assert len(backend._ref_codes) == REF_CACHE_MAX
+
+    encodes = len(backend._model.encode_calls)
+    newest = Voice(tmp_path / f"v{REF_CACHE_MAX + 3}.wav", "t", "en")
+    backend.synthesize("Hello.", newest, max_frames=250, temperature=0.4)
+    assert len(backend._model.encode_calls) == encodes  # still cached
 
 
 def test_missing_reference_fails_with_an_actionable_message(

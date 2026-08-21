@@ -43,6 +43,62 @@ print(report.summary())
 Verification is on by default and needs no setup: narrator picks its own
 recogniser stack, matched to the engine's sample rate.
 
+### Dialogue
+
+A `Text` may pin its own `voice`, overriding the render's default for that
+segment. Narrator still learns no markup: a caller resolves its own speaker
+convention into per-segment voices.
+
+```python
+narrator = Voice(Path("voice.wav"), "transcript of the clip")
+questioner = Voice(Path("questioner.wav"), "transcript of the other clip")
+
+render(
+    [Text("Why would anyone burn money on purpose?", voice=questioner),
+     Text("Nobody burns it on purpose. The typo does.")],
+    voice=narrator, backend=HiggsBackend(), out=Path("episode.wav"),
+)
+```
+
+Chunking never crosses a segment, so a voice cannot bleed into another
+speaker's turn.
+
+Two voices can arrive at different levels, and mastering cannot repair it —
+loudness normalisation moves both speakers by the same amount, so the file gets
+no closer to balanced. `Voice.gain_db` is where you state the correction:
+
+```python
+questioner = Voice(Path("questioner.wav"), "transcript of the clip", gain_db=-4.0)
+```
+
+It is one constant gain applied to every chunk that voice speaks, so a whisper
+stays a whisper — only the speaker moves, never the performance.
+
+**Getting the number.** Render every voice speaking a few ordinary, comparable
+lines in **one** file with no gains set, then compare their levels and turn the
+louder ones down by the difference. It has to be one file: each render is
+mastered to the same loudness target on its own, so two separately rendered
+files are normalised to the same level by construction and the imbalance you
+are trying to measure is gone before you can look at it.
+
+If your voices are cloned from reference clips, loudness-normalising those clips
+first (`ffmpeg -af loudnorm`, two-pass linear) is reasonable hygiene and may be
+all you need — R128 gates out pauses and room tone properly, which is the part
+that is hard to do by hand. It is not a guaranteed substitute: matched reference
+loudness need not mean matched output, and preset voices have no clip to
+normalise at all. Calibrate as above either way.
+
+Narrator will not work the number out for you, and that is deliberate. Three
+designs that inferred it from the rendered audio were built and measured, and
+each confused a quiet *delivery* with a quiet *reference* — boosting a
+deliberate whisper, or turning a whole narrator down because another speaker's
+one aside was hushed. Measuring the reference clips instead fails one level
+deeper: telling a voice from the room it was recorded in needs voice-activity
+detection, and a threshold that is not one reads two seconds of room tone as
+3 dB of level difference. Use a level meter or a calibration render, or
+normalise the clips before you pass them in; narrator applies exactly what you
+declare and never invents a level.
+
 ### Casting: match the reference's register to the script's
 
 A reference clip is **behavioural conditioning, not merely a timbre sample**.

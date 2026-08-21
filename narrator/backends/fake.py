@@ -56,6 +56,19 @@ class FakeBackend:
     requests: list[str] = field(default_factory=list)
     max_frames_seen: list[int] = field(default_factory=list)
     _spoken: dict[int, str] = field(default_factory=dict)
+    # New fields go AFTER the pre-existing ones, private included: this is a
+    # dataclass, so inserting mid-list silently rebinds positional constructor
+    # calls.
+    voices_seen: list[Voice] = field(default_factory=list)
+    amplitude: float = 0.1
+    voice_amplitude: dict[Voice, float] = field(default_factory=dict)
+    """Per-voice tone amplitude, so a test can stage the lopsided dialogue that
+    `Voice.gain_db` exists for. Without it every voice speaks at one level and
+    no test can tell a level correction from a no-op."""
+    amplitude_script: dict[int, float] = field(default_factory=dict)
+    """Call index -> amplitude, overriding `voice_amplitude`. Models one voice
+    delivering one turn quietly — the whisper that three inference designs kept
+    mistaking for a quiet reference clip."""
 
     def frames_per_second(self) -> int:
         return self.fps
@@ -64,6 +77,7 @@ class FakeBackend:
         index = self.calls
         self.calls += 1
         self.requests.append(text)
+        self.voices_seen.append(voice)
         self.max_frames_seen.append(max_frames)
 
         mode = self.script.get(index, self.default)
@@ -86,7 +100,8 @@ class FakeBackend:
         # analysis block. A fake that does not survive the real pipeline tests
         # nothing downstream of itself.
         t = np.arange(samples, dtype=np.float32) / self.sample_rate
-        audio = (0.1 * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
+        level = self.amplitude_script.get(index, self.voice_amplitude.get(voice, self.amplitude))
+        audio = (level * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
         audio[0] = self._stamp(index)
         self._spoken[index] = spoken
         return audio

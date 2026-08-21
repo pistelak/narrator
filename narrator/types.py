@@ -10,6 +10,7 @@ error instead of a runtime surprise.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -19,6 +20,11 @@ import numpy as np
 # Mono float32 PCM. Every audio value in this library is this and nothing else.
 Audio = np.ndarray
 
+MAX_GAIN_DB = 60.0
+"""Bound on `Voice.gain_db`. Two reference clips are worth a few dB of each
+other; sixty is already absurd, and the values that do real damage are far
+past it."""
+
 
 # --------------------------------------------------------------------------
 # Input
@@ -26,8 +32,17 @@ Audio = np.ndarray
 
 @dataclass(frozen=True)
 class Text:
-    """Something to be spoken."""
+    """Something to be spoken.
+
+    `voice` optionally pins this segment to a specific narrator, overriding the
+    render's default voice. This is how a caller renders dialogue: it resolves
+    its own speaker markup into per-segment voices, narrator only ever sees a
+    different pinned reference. Chunking never crosses a segment, so a voice
+    can never bleed into another speaker's turn by construction. None means
+    "the render's default voice" — the single-narrator case is unchanged.
+    """
     text: str
+    voice: Voice | None = None
 
     def __post_init__(self) -> None:
         if not self.text.strip():
@@ -88,10 +103,57 @@ class Voice:
     transcript: str = ""
     lang: str = "en"
     preset: str | None = None
+    gain_db: float = 0.0
+    """Level correction for this voice, applied to every chunk it speaks.
+
+    Two voices can arrive at different baseline levels, and mastering cannot
+    repair it: loudness normalisation moves both speakers by the same amount,
+    so the file gets no closer to balanced. This is where a caller states the
+    offset.
+
+    Deliberately cause-agnostic. Whether the difference came from recording gain
+    in a reference clip, from how loudly someone performed, or from the engine's
+    own behaviour on a given voice, it lands in the file the same way and this
+    corrects it the same way. Narrator does not need to know which — and does
+    not claim to: that a cloning engine carries its reference's level into its
+    output is plausible and unmeasured here, so no rule rests on it.
+
+    Declared, never inferred, and that boundary was expensive to find. Three
+    designs that derived it from the rendered audio were built and measured, and
+    each confused a quiet *delivery* with a quiet *reference*: pulling chunks
+    toward the batch median boosted a deliberate whisper by 6 dB purely because
+    a second speaker existed; a per-voice median then let one whispered aside
+    cut a twenty-turn narrator by 6 dB; and guarding that with "a voice needs
+    two chunks to count" only moved the failure to a cliff, where splitting the
+    same aside in two flipped the outcome.
+
+    Measuring the *reference clips* instead was tried too, and abandoned for the
+    same reason one level deeper: separating a voice from the room it was
+    recorded in needs voice-activity detection, and a threshold that is not one
+    reads two seconds of room tone as 3 dB of level difference. So narrator does
+    not estimate this. Get the number the way audio people already do — a level
+    meter, or a calibration render compared against a reference — and state it
+    here, and narrator will apply exactly that.
+
+    Positive values are allowed but rarely wanted: prefer turning the loud
+    voice down, so nothing new is pushed into the limiter.
+    """
 
     def __post_init__(self) -> None:
         if self.audio_path is None and not self.preset:
             raise ValueError("A Voice needs either audio_path or preset — see the class docstring")
+        if not math.isfinite(self.gain_db) or abs(self.gain_db) > MAX_GAIN_DB:
+            # Anything unreasonable here is silent: it multiplies the audio
+            # after verification has already passed, so the render still reports
+            # clean. NaN or inf comes free from arithmetic on two unmeasurable
+            # clips (-inf minus -inf); a wild finite value underflows to a file
+            # of silence (-1e308) or overflows outright (+1e308). No real
+            # correction between two reference clips is anywhere near this
+            # bound, so refusing is never the wrong call.
+            raise ValueError(
+                f"Voice.gain_db must be finite and within ±{MAX_GAIN_DB:.0f} dB, "
+                f"got {self.gain_db}"
+            )
 
 
 # --------------------------------------------------------------------------

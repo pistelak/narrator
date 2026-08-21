@@ -312,6 +312,14 @@ from a pathological passage or a bad voice reference.
    exceeding the clamp is a re-render candidate, not a gain problem — log it.
    MagpieTTS specifically calls out XTTS for "severe loudness inconsistency due to
    independent per-chunk gain normalization."
+
+   **[not implemented — 2026-08-18]** Never shipped, and do not reach for it to
+   balance *speakers*: this measurement is about drift within one narrator. Built
+   across two voices it read a deliberate whisper as an error and boosted it by
+   the full clamp, because a chunk's level confounds the speaker with the
+   performance. Level between voices is declared on `Voice.gain_db` instead — see
+   AGENTS.md, "Load-bearing rules". Chunk drift within one narrator remains
+   unaddressed and is still a fair thing to measure on its own terms.
 4. **Insert deterministic silence by boundary type** — phrase 0.3 s, sentence 0.6 s,
    paragraph 0.9 s, section 2.0 s. **[shipping]** Note `synthesize.py`'s current
    `SENTENCE_GAP = 0.12` is well below this and is flagged elsewhere as the biggest
