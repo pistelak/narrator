@@ -777,3 +777,19 @@ def test_a_backend_identity_names_the_model_it_actually_loaded() -> None:
     before = identity_of(backend)
     backend.model_id = "someone/else-v9"
     assert identity_of(backend) == before
+
+
+def test_a_subclass_strictness_knob_is_part_of_the_verifier(tmp_path: Path) -> None:
+    """The base class cannot list a field it has never heard of, so it walks the
+    dataclass instead — the same way the key covers SynthConfig fields added
+    after it was written."""
+    from dataclasses import dataclass as dc
+
+    backend = FakeBackend()
+
+    @dc
+    class Pickier(CoverageVerifier):
+        strictness: float = 1.0
+
+    assert identity_of(Pickier(FakeASR(backend), strictness=1.0)) != identity_of(
+        Pickier(FakeASR(backend), strictness=2.0))

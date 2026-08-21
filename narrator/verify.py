@@ -33,7 +33,7 @@ import difflib
 import json
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 
 from narrator.chunking import split_sentences
 from narrator.takes import _class_id, identity_of
@@ -1208,24 +1208,31 @@ class CoverageVerifier:
 
         This class contributes the policy; every word it scores comes from
         `self.asr.transcribe`, so an unidentifiable ASR makes an unidentifiable
-        verifier. `min_coverage` is read off the instance, not from the module
-        constant, because a caller may have set its own gate.
+        verifier.
         """
-        from narrator.takes import _class_id, identity_of
-
         asr_id = identity_of(self.asr)
         if asr_id is None:
             return None
+        # The class name is in it, because a subclass that overrides `verify`
+        # scores by different rules while inheriting every field this is built
+        # from. So are the fields themselves, read off the dataclass rather than
+        # listed here: `min_coverage` comes from the instance because a caller
+        # may have set its own gate, and a subclass that adds a strictness knob
+        # of its own is covered the day it is written rather than the day
+        # someone remembers this method. A subclass that is not a dataclass
+        # cannot be walked, and is therefore not identifiable — the same refusal
+        # to guess as everywhere else.
+        #
         # Encoded, not joined: sound-alike pairs are caller vocabulary and may
         # contain any character a separator could use, and two policies sharing
         # one identity means a take accepted under one is reported clean under
         # the other.
-        # The class name is in it: a subclass that overrides `verify` scores by
-        # different rules while inheriting every field this identity is built
-        # from, and would otherwise reuse takes the base class accepted.
-        return "coverage/" + json.dumps(
-            [_class_id(self), SEMANTICS, self.min_coverage,
-             [list(p) for p in self.sound_alikes], asr_id])
+        try:
+            declared = sorted((f.name, repr(getattr(self, f.name)))
+                              for f in fields(self) if f.name != "asr")
+        except TypeError:  # pragma: no cover - a subclass that is not a dataclass
+            return None
+        return "coverage/" + json.dumps([_class_id(self), SEMANTICS, declared, asr_id])
 
     def verify(self, audio: Audio, text: str, lang: str) -> Verdict:
         transcript = self.asr.transcribe(audio, lang)
