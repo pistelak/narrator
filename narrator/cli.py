@@ -115,6 +115,11 @@ def main(argv: list[str] | None = None) -> int:
     except RenderFailed as exc:
         print(f"\n{exc}", file=sys.stderr)
         return 1
+    except ValueError as exc:
+        # A configuration the library refuses — a reroll naming chunks this
+        # script does not have is the one a user can trip from the command line.
+        print(f"{exc}", file=sys.stderr)
+        return 2
 
     print(f"\n{report.summary()}")
     if not report.clean:

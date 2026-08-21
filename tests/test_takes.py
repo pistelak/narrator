@@ -525,3 +525,32 @@ def test_reroll_past_the_end_of_the_render_is_refused(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="outside this render"):
         render(SEGMENTS, voice_at(tmp_path), backend, tmp_path / "a.wav", verifier,
                RenderConfig(reroll=frozenset({999})))
+
+
+def test_a_single_sentence_chunk_asks_the_intent_policy_once(tmp_path: Path) -> None:
+    """The split fallback gives up below two sentences, so there is nothing to ask."""
+    from narrator.synth import resolve_rise_intent
+
+    asked: list[str] = []
+
+    def policy(text: str, lang: str) -> bool:
+        asked.append(text)
+        return True
+
+    resolve_rise_intent("Máš teď chvilku?", Voice(tmp_path / "v.wav", "r", "cs"),
+                        SynthConfig(wants_rise=policy))
+    assert asked == ["Máš teď chvilku?"]
+
+
+def test_a_sidecar_field_of_the_wrong_type_is_a_miss(tmp_path: Path) -> None:
+    """It parses and the audio is intact, so only a coercion catches it."""
+    takes = tmp_path / "takes"
+    render_with(tmp_path, takes, out="a.wav")
+    for sidecar in takes.glob("*.json"):
+        meta = json.loads(sidecar.read_text())
+        meta["duration_s"] = "bad"
+        sidecar.write_text(json.dumps(meta))
+
+    backend, report = render_with(tmp_path, takes, out="b.wav")
+    assert backend.calls == 2
+    assert report.clean

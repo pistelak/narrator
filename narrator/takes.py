@@ -228,19 +228,23 @@ class TakeStore:
                 index=index,
                 text=text,
                 audio=audio,
-                duration_s=meta["duration_s"],
+                # Coerced, not just fetched: a sidecar carrying "bad" where a
+                # number belongs parses as JSON and matches the digest, and would
+                # otherwise return a hit that crashes a progress line instead of
+                # reading as the corruption it is.
+                duration_s=float(meta["duration_s"]),
                 # Zero, not the stored count: `attempts` is what this run spent,
                 # and this run spent nothing. What the original render paid stays
                 # in the sidecar, under `synthesized_attempts`.
                 attempts=0,
                 ok=True,
-                coverage=meta["coverage"],
-                dropped_sentence=meta.get("dropped_sentence", ""),
-                transcript=meta.get("transcript", ""),
+                coverage=float(meta["coverage"]),
+                dropped_sentence=str(meta.get("dropped_sentence", "")),
+                transcript=str(meta.get("transcript", "")),
                 # Kept as stored: it describes how THIS AUDIO was made, which is
                 # still true. `reused` says what the run did.
-                recovered_by=meta.get("recovered_by", ""),
-                word_diagnostics=tuple(meta.get("word_diagnostics", ())),
+                recovered_by=str(meta.get("recovered_by", "")),
+                word_diagnostics=tuple(str(c) for c in meta.get("word_diagnostics", ())),
                 reused=True,
             )
         except Exception:
@@ -254,6 +258,14 @@ class TakeStore:
         then does the sidecar appear. A process killed anywhere in between leaves a
         stray wav that no lookup can reach, rather than an entry whose verdict
         describes audio that was never finished.
+
+        Two renders filing the SAME key at the same time can still interleave
+        their commits and leave a sidecar describing the other one's audio. That
+        is a digest mismatch, which is a miss, and the next successful write for
+        that key repairs it — a bounded loss of one take. Making it airtight
+        means naming files by content and keeping a superseded copy of every
+        take on disk, which is a worse trade than one re-synthesis in a race
+        nobody has hit.
         """
         audio = np.ascontiguousarray(result.audio, dtype=np.float32)
         meta = {

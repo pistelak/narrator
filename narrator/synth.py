@@ -318,7 +318,12 @@ def resolve_rise_intent(text: str, voice: Voice, cfg: SynthConfig) -> _RiseInten
             return False, False
 
     chunk, chunk_ok = ask(text)
-    answers = [ask(sentence) for sentence in split_sentences(text)]
+    # Only when the fallback could actually render them alone. `_sentence_split`
+    # gives up below two sentences, so a single-sentence chunk would otherwise be
+    # asked twice about the same string — which for a STATEFUL policy (an
+    # alternating one, say) consumes two answers where the ladder consumes one.
+    sentences = split_sentences(text)
+    answers = [ask(sentence) for sentence in sentences] if len(sentences) > 1 else []
     return _RiseIntent(
         chunk=chunk,
         sentences=tuple(answer for answer, _ in answers),
