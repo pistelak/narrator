@@ -733,3 +733,34 @@ def test_two_subclasses_sharing_a_name_are_not_one_verifier() -> None:
 
     backend = FakeBackend()
     assert _class_id(here(FakeASR(backend))) != _class_id(elsewhere(FakeASR(backend)))
+
+
+def test_a_split_take_is_not_reused_once_a_prosody_policy_exists(tmp_path: Path) -> None:
+    """`wants_rise` cannot be in the key, so a policy change is invisible to it.
+
+    A take assembled sentence by sentence was made under whatever policy existed
+    then; a policy that now wants a rise for one of those sentences would never
+    get to say so, and flat audio would ship as if it had been chosen.
+    """
+    takes = tmp_path / "takes"
+    voice = voice_at(tmp_path)
+    chunk = [Text("Tohle je důležité. Máš teď chvilku?")]
+    script = dict.fromkeys(range(3), Failure.DROP_SENTENCE)   # force the fallback
+
+    _, first = render_with(tmp_path, takes, segments=chunk, voice=voice, out="a.wav",
+                           script=script)
+    assert first.chunks[0].recovered_by == "sentence-split"
+    assert len(list(takes.glob("*.json"))) == 1
+
+    # No policy: the stored split take is reused.
+    backend, report = render_with(tmp_path, takes, segments=chunk, voice=voice,
+                                  out="b.wav", script=script)
+    assert backend.calls == 0
+    assert report.chunks[0].reused
+
+    # A policy exists now, so the split take is not answerable and is re-made.
+    fresh, report = render_with(tmp_path, takes, segments=chunk, voice=voice, out="c.wav",
+                                script=script,
+                                synth=SynthConfig(wants_rise=lambda t, lang: t.endswith("?")))
+    assert fresh.calls > 0
+    assert not report.chunks[0].reused

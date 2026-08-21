@@ -115,7 +115,12 @@ class RenderConfig:
 
     An index past the end of the render is refused rather than ignored: it is
     almost always a stale number from a previous script, and silently reusing
-    everything looks exactly like a reroll that produced the same take again."""
+    everything looks exactly like a reroll that produced the same take again.
+
+    One corner where a reroll does not propagate: chunk 0 under the default
+    verifier has no key at all (see `_DeferredDefaultVerifier.identity`), so
+    rerolling it cannot replace a stored entry, and a later identical chunk goes
+    on serving the take a previous run filed."""
 
 
 def render(

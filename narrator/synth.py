@@ -233,18 +233,40 @@ def synthesize_chunk(
     intent = resolve_rise_intent(text, voice, cfg)
     key = (_take_key(text, backend, verifier, voice, cfg)
            if store is not None and intent.cacheable else None)
+    keyed_rate = backend.sample_rate
     if key is not None and reuse:
-        cached = store.get(key, backend.sample_rate, index, text)
-        if cached is not None:
+        cached = store.get(key, keyed_rate, index, text)
+        if cached is not None and _usable_under(cached, cfg):
             return cached
 
     result = _synthesize(text, index, backend, verifier, voice, cfg, intent)
 
-    # Checked again, because the split fallback may have applied rise selection
-    # to a sentence since the key was computed.
-    if key is not None and result.ok and intent.cacheable:
-        store.put(key, result, backend.sample_rate)
+    # Three things must still hold to file it. The split fallback may have
+    # applied rise selection to a sentence since the key was computed; and a
+    # backend that only settles its true rate during its first synthesis (a
+    # Supertonic-style one) has just invalidated the identity the key was built
+    # from, so storing would leave an entry no lookup can ever read.
+    if (key is not None and result.ok and intent.cacheable
+            and backend.sample_rate == keyed_rate):
+        store.put(key, result, keyed_rate)
     return result
+
+
+def _usable_under(cached: ChunkResult, cfg: SynthConfig) -> bool:
+    """Whether a stored take is answerable by the CURRENT prosody policy.
+
+    `wants_rise` is a caller callable and cannot be in the key, so a policy
+    change is invisible to it. The chunk-level case is still covered — a chunk
+    that wants a rise is never looked up at all — but a take assembled by the
+    sentence-split fallback was made one sentence at a time, and a policy that
+    now wants a rise for one of those sentences would never get to say so.
+
+    Those takes are the failure path and therefore rare, so refusing to reuse
+    them whenever a policy exists costs almost nothing, and asking the policy
+    here instead would spend a stateful one's answers on a chunk that is not
+    being rendered.
+    """
+    return not (cfg.wants_rise is not None and cached.recovered_by == "sentence-split")
 
 
 def _take_key(
