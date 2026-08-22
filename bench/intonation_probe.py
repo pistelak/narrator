@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from dataclasses import dataclass
@@ -238,6 +239,136 @@ def _synth_config(ranked: bool):
     return SynthConfig(wants_rise=yes_no_question) if ranked else SynthConfig()
 
 
+def _component(distribution: str, module: str) -> str | None:
+    """A dependency's version, "absent", or None for genuinely unknown.
+
+    `package_version` collapses two different states into None: not installed,
+    and installed without resolvable metadata. That distinction matters here.
+    An ABSENT optional extra is a fact — the [parakeet] extra changes the
+    verifier's topology, so running without it is a real, comparable
+    configuration — while unresolvable metadata is an unknown, and
+    `narrator.takes` explains why two unknowns must never compare equal.
+
+    Collapsing both to JSON null let unknown == unknown and resumed anyway;
+    refusing both would have made the probe unresumable on every machine that
+    simply lacks an optional extra. So they are told apart.
+    """
+    from importlib.util import find_spec
+
+    from narrator.takes import package_version
+
+    # Module presence FIRST, because that is the decision `default_verifier`
+    # actually makes: it selects Whisper-only versus the Parakeet cascade on
+    # find_spec alone. Reading distribution metadata first recorded a healthy
+    # version for an installed-but-unimportable package while the verifier had
+    # silently taken the other branch — two topologies under one identity.
+    try:
+        present = find_spec(module) is not None
+    except (ImportError, ValueError):     # broken or namespace-shadowed
+        return None
+    if not present:
+        return "absent"
+    resolved = package_version(distribution)
+    return resolved if resolved is not None else None
+
+
+def _execution_identity() -> str:
+    """Everything about THIS build that can change a verdict.
+
+    Not `narrator.__version__` — it has been 0.1.0 throughout, so it identifies
+    nothing. The semantics constants are the honest signal: they exist precisely
+    to say "what "correct" means changed here", and the take store already
+    refuses to reuse across them for the same reason a benchmark must refuse to
+    resume across them.
+    """
+    from narrator import prosody, synth, verify
+    from narrator.asr import ParakeetASR, WhisperASR
+    from narrator.backends.higgs import MODEL
+
+    return json.dumps({
+        "verify": verify.SEMANTICS,
+        "synth": synth.SEMANTICS,
+        "coverage_gate": verify.MIN_COVERAGE,
+        # The actual stack, not just the policy. A tag resumed across an engine
+        # or recogniser change pools rows the two produced differently, and
+        # installing the [parakeet] extra changes the verifier's topology
+        # without touching a single constant above.
+        "model": MODEL,
+        "mlx_audio": _component("mlx-audio", "mlx_audio"),
+        "mlx_whisper": _component("mlx-whisper", "mlx_whisper"),
+        "parakeet": _component("parakeet-mlx", "parakeet_mlx"),
+        # The recognisers' MODEL ids, not just their package versions. A
+        # different Whisper checkpoint returns different transcripts from the
+        # same audio, which is the probe's input, so it is verdict-bearing.
+        "asr_models": [WhisperASR.repo, ParakeetASR.repo],
+        # The probe's OWN verdict — contour — is measured by librosa's pyin
+        # through prosody.voiced_f0, so its version and the window constants are
+        # every bit as verdict-bearing as the coverage policy. A tag resumed
+        # across a librosa upgrade would pool two different F0 estimators.
+        "librosa": _component("librosa", "librosa"),
+        "f0": [prosody.FMIN_HZ, prosody.FMAX_HZ, prosody.FRAME_S, prosody.HOP_S,
+               prosody.MIN_VOICED_FRAMES, prosody.TAIL_FRAMES, prosody.HEAD_FRAMES,
+               prosody.OCTAVE_GUARD_ST],
+    }, sort_keys=True)
+
+
+def _identity_is_known(identity: str) -> bool:
+    """Every component of an execution identity is actually established.
+
+    `package_version` returns None for a package it cannot resolve, and
+    `narrator.takes` documents why that must DISABLE reuse: two unknowns are not
+    evidence of sameness. Serialising it as JSON null quietly made
+    unknown == unknown and resumed anyway — the helper's contract used without
+    its reasoning, which is how the rest of this file's defects happened too.
+    """
+    def known(value: object) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, dict):
+            return all(known(v) for v in value.values())
+        if isinstance(value, list):
+            return all(known(v) for v in value)
+        return True
+
+    return known(json.loads(identity))
+
+
+def _snapshot_reference(voice_path: Path, out_dir: Path) -> Path:
+    """Copy the reference into the run directory, once, and render from THAT.
+
+    The digest was taken when the header was written and the clip was read
+    minutes later, per case — so replacing the file mid-run appended a second
+    speaker's rows under the first speaker's digest, which is the very outcome
+    the digest was added to prevent, moved from between runs to inside one. A
+    run-owned copy cannot be edited out from under the rows it produced.
+    """
+    snapshot = out_dir / "reference.wav"
+    if snapshot.is_file():
+        # Validated against the live source, not just reused. Returning the
+        # stale copy silently rendered the PREVIOUS speaker while the caller was
+        # pointing at a new clip — worse than the path-only guard this replaced,
+        # because it ignored the input rather than merely failing to notice it.
+        if content_digest(snapshot) != content_digest(voice_path):
+            sys.exit(
+                f"{snapshot} holds a different clip from {voice_path}. This tag's "
+                "rows were measured on the snapshot; start a fresh --tag rather "
+                "than mixing two speakers under one."
+            )
+        return snapshot
+    # Published atomically. A direct write interrupted midway left a partial
+    # file that the next run read as a deliberately conflicting snapshot and
+    # refused — turning a killed run into a tag that can never be resumed.
+    # Process-unique, so this does not add a race of its own. Concurrent runs of
+    # ONE tag remain unsupported regardless — `_checkpoint` rewrites the shared
+    # results.json wholesale and both runs would use the same take filenames, so
+    # the directory was never safe to share and locking it is not this script's
+    # job.
+    staged = snapshot.with_suffix(f".wav.partial.{os.getpid()}")
+    staged.write_bytes(voice_path.read_bytes())
+    os.replace(staged, snapshot)
+    return snapshot
+
+
 def _load_existing(results_path: Path, header: dict) -> list[dict]:
     """Records from a prior run of this tag, for idempotent resume.
 
@@ -252,7 +383,20 @@ def _load_existing(results_path: Path, header: dict) -> list[dict]:
     if not results_path.is_file():
         return []
     stored = json.loads(results_path.read_text(encoding="utf-8"))
-    for key in ("params", "voice_path", "voice_digest", "voice_transcript", "takes"):
+    stored_engine = stored["header"].get("engine")
+    if stored_engine is None or not _identity_is_known(stored_engine):
+        sys.exit(
+            f"{results_path} cannot establish which build produced it "
+            "(missing or unresolved component versions); start a fresh --tag."
+        )
+    if not _identity_is_known(header["engine"]):
+        sys.exit(
+            "this run cannot establish its own component versions, so its rows "
+            "could not be compared with anything later; start a fresh --tag "
+            "once the environment resolves."
+        )
+    for key in ("params", "voice_path", "voice_digest", "voice_transcript",
+                "takes", "engine"):
         if stored["header"].get(key) != header.get(key):
             sys.exit(
                 f"{results_path} was produced with a different {key}; "
@@ -401,6 +545,9 @@ def run(args: argparse.Namespace) -> int:
     out_dir = OUT_BASE / args.tag
     out_dir.mkdir(parents=True, exist_ok=True)
     results_path = out_dir / "results.json"
+    # Snapshot first, then digest the SNAPSHOT: the bytes named in the header are
+    # then exactly the bytes every take is rendered from.
+    reference = _snapshot_reference(voice_path, out_dir)
     header = {
         "tag": args.tag,
         "voice_path": str(voice_path),
@@ -412,7 +559,14 @@ def run(args: argparse.Namespace) -> int:
         # prosody.py exists), so a confounded tag produces a wrong CONCLUSION
         # that nobody re-checks. Digested once per run, against a probe measured
         # in minutes.
-        "voice_digest": content_digest(voice_path),
+        "voice_digest": content_digest(reference),
+        # What was actually RUN, not just what the library is called. A resume
+        # guard that ignores this mixes verdict-bearing rows from different
+        # verification policies into one clean report — and these constants do
+        # move: verify.SEMANTICS went 1 -> 4 in a single afternoon. Recorded as
+        # an opaque identity so adding a component cannot silently keep old
+        # rows resumable.
+        "engine": _execution_identity(),
         "voice_transcript": transcript,
         "takes": args.takes,
         "date": time.strftime("%Y-%m-%d"),
@@ -446,7 +600,7 @@ def run(args: argparse.Namespace) -> int:
     for case in cases:
         # Fresh Voice per case so verification runs the case's language;
         # the backend's reference cache is keyed by path, so no re-encoding.
-        voice = Voice(voice_path, transcript, case.lang)
+        voice = Voice(reference, transcript, case.lang)
         for take in range(1, args.takes + 1):
             if (case.id, take) in done:
                 continue
