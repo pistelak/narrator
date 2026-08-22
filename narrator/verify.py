@@ -99,7 +99,7 @@ _NUMBER_WORDS_CS = _NUMBER_WORDS_EN | set(
     sto stě sta set tisíc tisíce milion miliony milionů miliarda miliard miliardy
     milión milióny miliónů miliónu
     tisícem tisícům tisících stům stech sty
-    milionem milionům milionech miliónem miliónům
+    milionem milionům milionech miliónem miliónům miliónech
     miliardu miliardou miliardám miliardách miliardě
     jedné jednoho jednomu jedním jednou dvou dvěma tří třech třem třemi
     čtyř čtyřech čtyřem čtyřmi pěti šesti sedmi osmi devíti deseti
@@ -324,41 +324,21 @@ _NUMBER_WORDS_CS.update(_CS_FUSED)
 # actually produces, so the sentinel is per spoken form.
 
 
-# Coefficients a Czech compound may carry: 1-99, as one token. Deliberately not
-# "any valued token" — see _compose_cs.
-# Large units, with the coefficients Czech actually pairs each with. The
-# hundreds are not one slot but four: dvě STĚ, tři/čtyři STA, pět..devět SET.
-# A single 1-99 bound over "sto"/"stě" blessed "devět stě" and "tři stě" —
-# phrases no Czech speaker produces — while the real 300-900 forms stayed
-# invisible, so the fix and the gap were the same mistake seen from two sides.
-#
-# "sta" and "set" carry no standalone value on purpose (see the note below the
-# value table: "na sta hostů" is "hundreds of guests", not 100). Composition
-# cannot reach that reading, because the indeterminate plural never takes a
-# numeric coefficient — "tři sta" is unambiguously 300.
 def numeral_multiset(
     sentences: list[list[str]], lang: str = "en", quote_foreign: bool = False,
 ) -> list[int | str] | None:
-    """Every numeral value in `sentences`, adjacent runs composed — or None.
+    """Every isolated numeral's value in `sentences`, or None if any compound.
 
-    None means "some run here is not a number I can read", and the caller then
-    compares nothing on either side: the suppression this replaced, reproduced
-    rather than approximated.
+    None means "a run of adjacent numerals is present", and the caller then
+    compares nothing on either side. That is the suppression `isolated_numerals`
+    documents: "two fifty six" and "256" denote one quantity but tokenize as
+    [2, 50, 6] versus [256], so comparing them manufactures the false failures
+    number-blinding exists to prevent.
 
-    Sentence-grouped on purpose. A compound never spans a sentence, and the old
-    suppression relied on that — `_numeral_tokens` concatenates, so two bare
-    numerals in adjacent sentences land adjacent and were REFUSED, which its
-    docstring names as the fail-closed direction. Composing a flat token list
-    instead read "Dvacet. Pět." as 25.
-
-    Why compose at all, when `isolated_numerals` documents skipping compounds as
-    deliberate: that reasoning is about ENGLISH. "two fifty six" really is
-    ambiguous — 256, or 2-50-6 — so comparing it manufactures false failures.
-    Czech `dvacet tisíc` is 20x1000 and nothing else, and skipping it certified a
-    transcript's "30000" against audio that said twenty thousand (issue #23).
-
-    English keeps the skip: a multi-token run is never composable there, so this
-    returns None the moment one appears.
+    Composing those runs was implemented and abandoned; the reasoning is at the
+    suppression below and in issue #23. Sentence grouping survives it, because
+    a compound never spans a sentence and reading a flat token list is how
+    "Dvacet. Pět." became 25.
 
     KNOWN HOLE, and it is the cost of refusing to guess. None erases BOTH sides,
     so an unreadable run also stops any UNRELATED numeral in that sentence being
