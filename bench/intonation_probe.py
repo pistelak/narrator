@@ -247,9 +247,22 @@ def _execution_identity() -> str:
     refuses to reuse across them for the same reason a benchmark must refuse to
     resume across them.
     """
-    from narrator import synth, verify
+    from narrator import prosody, synth, verify
+    from narrator.takes import package_version
 
-    return json.dumps({"verify": verify.SEMANTICS, "synth": synth.SEMANTICS})
+    return json.dumps({
+        "verify": verify.SEMANTICS,
+        "synth": synth.SEMANTICS,
+        "coverage_gate": verify.MIN_COVERAGE,
+        # The probe's OWN verdict — contour — is measured by librosa's pyin
+        # through prosody.voiced_f0, so its version and the window constants are
+        # every bit as verdict-bearing as the coverage policy. A tag resumed
+        # across a librosa upgrade would pool two different F0 estimators.
+        "librosa": package_version("librosa"),
+        "f0": [prosody.FMIN_HZ, prosody.FMAX_HZ, prosody.FRAME_S, prosody.HOP_S,
+               prosody.MIN_VOICED_FRAMES, prosody.TAIL_FRAMES, prosody.HEAD_FRAMES,
+               prosody.OCTAVE_GUARD_ST],
+    }, sort_keys=True)
 
 
 def _snapshot_reference(voice_path: Path, out_dir: Path) -> Path:
@@ -262,8 +275,19 @@ def _snapshot_reference(voice_path: Path, out_dir: Path) -> Path:
     run-owned copy cannot be edited out from under the rows it produced.
     """
     snapshot = out_dir / "reference.wav"
-    if not snapshot.is_file():
-        snapshot.write_bytes(voice_path.read_bytes())
+    if snapshot.is_file():
+        # Validated against the live source, not just reused. Returning the
+        # stale copy silently rendered the PREVIOUS speaker while the caller was
+        # pointing at a new clip — worse than the path-only guard this replaced,
+        # because it ignored the input rather than merely failing to notice it.
+        if content_digest(snapshot) != content_digest(voice_path):
+            sys.exit(
+                f"{snapshot} holds a different clip from {voice_path}. This tag's "
+                "rows were measured on the snapshot; start a fresh --tag rather "
+                "than mixing two speakers under one."
+            )
+        return snapshot
+    snapshot.write_bytes(voice_path.read_bytes())
     return snapshot
 
 

@@ -24,15 +24,16 @@ _SPEC = importlib.util.spec_from_file_location(
     _NAME, Path(__file__).resolve().parent.parent / "bench" / "intonation_probe.py"
 )
 probe = importlib.util.module_from_spec(_SPEC)
+_PREVIOUSLY_PRESENT = {_NAME} if _NAME in sys.modules else set()
 _PREVIOUS = sys.modules.get(_NAME)
 sys.modules[_NAME] = probe
 try:
     _SPEC.loader.exec_module(probe)
 finally:
-    if _PREVIOUS is None:
-        sys.modules.pop(_NAME, None)
+    if _NAME in _PREVIOUSLY_PRESENT:
+        sys.modules[_NAME] = _PREVIOUS      # even if that value was None
     else:
-        sys.modules[_NAME] = _PREVIOUS
+        sys.modules.pop(_NAME, None)
 
 
 def _header(voice: Path) -> dict:
@@ -137,3 +138,29 @@ def test_the_run_renders_from_its_own_snapshot(tmp_path: Path) -> None:
 
     source.write_bytes(b"RIFF-speaker-B")          # edited mid-run
     assert probe.content_digest(snapshot) == digest, "the run's own bytes are untouched"
+
+
+def test_resuming_against_a_different_clip_is_refused(tmp_path: Path) -> None:
+    """The snapshot must not silently outrank the caller's actual input.
+
+    Reusing it unconditionally was WORSE than the path-only guard it replaced:
+    that guard merely failed to notice a swap, while this rendered the previous
+    speaker and ignored the clip the caller pointed at.
+    """
+    source = tmp_path / "voice.wav"
+    source.write_bytes(b"RIFF-speaker-A")
+    out_dir = tmp_path / "run"
+    out_dir.mkdir()
+    probe._snapshot_reference(source, out_dir)
+
+    source.write_bytes(b"RIFF-speaker-B")
+    with pytest.raises(SystemExit, match="different clip"):
+        probe._snapshot_reference(source, out_dir)
+
+
+def test_the_execution_identity_moves_with_every_verdict_bearing_input() -> None:
+    """Each component is asserted, so adding one cannot silently drop another."""
+    identity = json.loads(probe._execution_identity())
+    assert set(identity) == {"verify", "synth", "coverage_gate", "librosa", "f0"}
+    # Sorted keys, so the same build always produces the same string.
+    assert probe._execution_identity() == probe._execution_identity()
