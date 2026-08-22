@@ -54,12 +54,31 @@ def _write(results: Path, header: dict) -> None:
 
 
 def test_an_unchanged_reference_resumes(tmp_path: Path) -> None:
+    """Positive control: the guard must not refuse a rerun that changed nothing."""
     voice = tmp_path / "voice.wav"
     voice.write_bytes(b"RIFF-speaker-A")
     results = tmp_path / "results.json"
     _write(results, _header(voice))
 
     assert probe._load_existing(results, _header(voice)) == [{"case": "c"}]
+
+
+def test_a_partial_snapshot_does_not_poison_the_tag(tmp_path: Path) -> None:
+    """A killed run must not leave a tag that can never be resumed.
+
+    The snapshot was written directly, so an interruption left a partial file
+    that the next run read as a deliberately conflicting clip and refused —
+    permanently, for a tag whose rows were fine. It is published atomically now,
+    so the file is either absent or complete.
+    """
+    source = tmp_path / "voice.wav"
+    source.write_bytes(b"RIFF-speaker-A")
+    out_dir = tmp_path / "run"
+    out_dir.mkdir()
+    (out_dir / "reference.wav.partial").write_bytes(b"RIFF-half")
+
+    snapshot = probe._snapshot_reference(source, out_dir)
+    assert probe.content_digest(snapshot) == probe.content_digest(source)
 
 
 def test_a_reference_replaced_in_place_refuses_to_resume(tmp_path: Path) -> None:
@@ -158,9 +177,46 @@ def test_resuming_against_a_different_clip_is_refused(tmp_path: Path) -> None:
         probe._snapshot_reference(source, out_dir)
 
 
-def test_the_execution_identity_moves_with_every_verdict_bearing_input() -> None:
-    """Each component is asserted, so adding one cannot silently drop another."""
-    identity = json.loads(probe._execution_identity())
-    assert set(identity) == {"verify", "synth", "coverage_gate", "librosa", "f0"}
-    # Sorted keys, so the same build always produces the same string.
+@pytest.mark.parametrize(
+    ("module", "attribute", "value"),
+    [
+        ("narrator.verify", "SEMANTICS", 99),
+        ("narrator.verify", "MIN_COVERAGE", 0.5),
+        ("narrator.synth", "SEMANTICS", 99),
+        ("narrator.prosody", "FMIN_HZ", 1.0),
+        ("narrator.prosody", "MIN_VOICED_FRAMES", 1),
+    ],
+)
+def test_every_verdict_bearing_constant_moves_the_identity(
+    monkeypatch: pytest.MonkeyPatch, module: str, attribute: str, value: object
+) -> None:
+    """Each component is perturbed and the identity must MOVE.
+
+    Asserting the key set only proved the keys existed — it passed with wrong
+    values, an empty F0 list, and without sorted keys. A constant that is in the
+    identity but does not change it is the same as not being there.
+    """
+    import importlib
+
+    before = probe._execution_identity()
+    monkeypatch.setattr(importlib.import_module(module), attribute, value)
+    assert probe._execution_identity() != before, f"{module}.{attribute}"
+
+
+def test_an_unresolvable_component_refuses_rather_than_comparing_equal() -> None:
+    """Two unknowns are not evidence of sameness.
+
+    `narrator.takes.package_version` returns None when a version cannot be
+    established and documents why that must disable reuse: "one shared spelling
+    of unknown would make two different unknowns look like the same dependency."
+    Serialising it as JSON null did exactly that.
+
+    An ABSENT optional extra is a different thing — a fact, and a comparable
+    configuration, since the [parakeet] extra changes the verifier's topology.
+    """
+    assert probe._identity_is_known(json.dumps({"a": "1.0", "b": "absent"}))
+    assert not probe._identity_is_known(json.dumps({"a": "1.0", "b": None}))
+
+
+def test_the_identity_is_stable_across_calls() -> None:
     assert probe._execution_identity() == probe._execution_identity()
