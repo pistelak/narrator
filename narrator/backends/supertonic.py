@@ -44,6 +44,28 @@ FPS = 25
 """Nominal. Unused for capping — see `honours_frame_cap` — but the protocol needs
 a number to turn a duration budget into a frame budget."""
 
+CLIP_CACHE_MAX = 8
+"""How many *clip* styles one backend keeps. Presets are deliberately exempt.
+
+The hazard #15 describes is a long-lived backend — a service that loads the model
+once and renders whatever arrives — accumulating one entry per uploaded
+reference, without bound. Only clip styles can do that: the voice bank is the
+closed set M1..M5 and F1..F5, and an unknown preset raises rather than caching,
+so preset entries are already bounded by the engine at ten.
+
+Capping the two together was the first attempt and it was wrong. Supertonic
+ships ten presets, so a dialogue cycling the bank would evict its own speakers
+on every turn, and clip styles would evict reusable preset styles — turning a
+retention bound into a hit-rate problem for a case this engine explicitly
+supports. Higgs needs no such split: it has no voice bank (`higgs.py:131` refuses
+a preset-only Voice), so there every entry is a clip.
+
+Eight is an operational bound, not a measured one: this tree records nothing
+about a style object's retained size, so the number is chosen to sit comfortably
+above any dialogue's *cloned*-speaker count rather than derived from bytes. If a
+style ever turns out to be large, measure it and argue the number down from
+that."""
+
 
 @dataclass
 class SupertonicBackend:
@@ -143,6 +165,17 @@ class SupertonicBackend:
                 ) from exc
 
         self._styles[key] = style
+        if key.startswith("path:"):
+            # Clips only — presets are a closed set and cannot grow without
+            # bound; see CLIP_CACHE_MAX. Oldest out, not least-recently-used:
+            # a dialogue cycles a handful of cloned speakers and never reaches
+            # the cap, so the policy only ever decides for a backend a service
+            # keeps alive across many uploaded references, where the hazard is
+            # unbounded retention rather than a miss. Insertion order is dict
+            # order, so the first clip key is the oldest one.
+            clips = [k for k in self._styles if k.startswith("path:")]
+            if len(clips) > CLIP_CACHE_MAX:
+                del self._styles[clips[0]]
         return style
 
     def synthesize(
