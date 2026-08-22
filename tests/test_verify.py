@@ -1691,3 +1691,20 @@ def test_hundreds_take_only_the_coefficients_czech_actually_uses() -> None:
     # The thousands slot is unaffected: its coefficients really do run to 99.
     assert composed("dvacet tisíc") == [20000]
     assert composed("pětadvacet tisíc") == [25000]
+
+
+def test_an_unreadable_compound_suppresses_the_sentence_and_that_is_known() -> None:
+    """A hole pinned as a hole, so it is a decision rather than a surprise.
+
+    An unreadable run erases both sides, so an unrelated numeral in the same
+    sentence stops being checked. The obvious repair — a per-run sentinel —
+    refuses CORRECT transcripts instead: the script writes a compound and the
+    recogniser writes one digit token, so the sides have no matching run
+    structure to exclude. Narrowing what is unreadable is the real fix.
+
+    This test exists to fail loudly if someone "fixes" it in the direction that
+    manufactures false failures, and to be deleted when the grammar covers
+    `sto tisíc`.
+    """
+    reference = "stálo to sto tisíc korun a mám pět aut"
+    assert coverage(reference, "stálo to 100000 korun a mám devět aut", "cs")[0] == 1.0

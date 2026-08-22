@@ -39,7 +39,7 @@ from narrator.chunking import split_sentences
 from narrator.takes import _class_id, identity_of
 from narrator.types import ASR, Audio, Verdict, Verifier
 
-SEMANTICS = 3
+SEMANTICS = 4
 """Version of what "correct" means here, for the take store's key.
 
 Bump it on ANY behavioural change to scoring: a new fold, a hard-fail rule, the
@@ -396,6 +396,15 @@ def numeral_multiset(
 
     English keeps the skip: a multi-token run is never composable there, so this
     returns None the moment one appears.
+
+    KNOWN HOLE, and it is the cost of refusing to guess. None erases BOTH sides,
+    so an unreadable run also stops any UNRELATED numeral in that sentence being
+    checked: "sto tisíc korun a pět aut" against "...a devět aut" passes. The
+    obvious repair does not work — emitting a per-run sentinel instead would
+    refuse a CORRECT transcript, because the script writes a compound and the ASR
+    writes one digit token, so the two sides do not have matching run structure
+    to exclude. Narrowing the unreadable set is the real fix, i.e. a full Czech
+    number grammar; filed separately rather than half-built here.
     """
     def numberish(word: str) -> bool:
         if is_numberish(word, lang):
