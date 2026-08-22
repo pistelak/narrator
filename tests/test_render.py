@@ -550,3 +550,44 @@ def test_gain_db_must_be_finite_and_sane() -> None:
         with pytest.raises(ValueError, match="finite"):
             Voice(Path("a.wav"), "t", "en", gain_db=bad)
     Voice(Path("a.wav"), "t", "en", gain_db=-60.0)   # the bound itself is allowed
+
+
+# ------------------------------------------------- unscripted silence (#18)
+
+def test_a_render_full_of_holes_is_quarantined(tmp_path: Path) -> None:
+    """The headline: dead air must not ship, however clean the transcript is."""
+    out = tmp_path / "episode.wav"
+    backend = FakeBackend(default=Failure.SILENT_HOLE)
+    verifier = CoverageVerifier(FakeASR(backend))
+    with pytest.raises(RenderFailed):
+        render(SEGMENTS, VOICE, backend, out, verifier)
+    assert not out.exists()
+
+
+def test_a_spelled_pause_under_the_gate_renders_clean(tmp_path: Path) -> None:
+    """A spelled pause is fine until it reaches the length of a defect.
+
+    `coverage` calls a punctuation-only sentence "a pause the script spells
+    rather than speech", and the gate must not contradict that for ordinary
+    pauses. It does NOT extend indefinitely: a rendered pause longer than
+    `max_silence_s` is refused, because at that length nothing distinguishes it
+    from the defect, and `Gap` is how this library takes a pause as an
+    instruction. Documented in the README.
+
+    The pause is injected, because the fake renders one uninterrupted tone — a
+    version of this test using plain text asserted nothing at all.
+    """
+    backend = FakeBackend(default=Failure.SILENT_HOLE, hole_s=2.0)
+    verifier = CoverageVerifier(FakeASR(backend))
+    segments = [Text("Alpha beta gamma delta epsilon. ...")]
+    report = render(segments, VOICE, backend, tmp_path / "p.wav", verifier)
+    assert report.clean
+    assert report.chunks[0].silence_s > 1.5, "and the pause is still reported"
+
+
+def test_silence_is_reported_on_every_chunk(tmp_path: Path) -> None:
+    """Reported, not only refused: the short band is evidence for later tuning."""
+    backend, verifier = build()
+    report = render(SEGMENTS, VOICE, backend, tmp_path / "s.wav", verifier)
+    assert report.clean
+    assert all(c.silence_s == 0.0 for c in report.chunks)

@@ -294,6 +294,10 @@ class TakeStore:
                 # Kept as stored: it describes how THIS AUDIO was made, which is
                 # still true. `reused` says what the run did.
                 recovered_by=str(meta.get("recovered_by", "")),
+                # Restored rather than left at 0.0: a reused take that reported no
+                # silence would be indistinguishable from one measured clean, and
+                # the number is evidence for tuning the threshold.
+                silence_s=float(meta.get("silence_s", 0.0)),
                 word_diagnostics=tuple(str(c) for c in meta.get("word_diagnostics", ())),
                 reused=True,
             )
@@ -341,6 +345,7 @@ class TakeStore:
             "dropped_sentence": result.dropped_sentence,
             "transcript": result.transcript,
             "recovered_by": result.recovered_by,
+            "silence_s": result.silence_s,
             "word_diagnostics": list(result.word_diagnostics),
             "synthesized_attempts": result.attempts,
         }

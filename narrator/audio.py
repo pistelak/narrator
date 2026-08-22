@@ -37,6 +37,79 @@ absolute so it self-calibrates per chunk — two independent tools converged her
 TRIM_GUARD_MS = 30
 """Kept either side of detected speech, so a plosive onset is not clipped."""
 
+SILENCE_FRAME_MS = 20
+SILENCE_DROP_DB = 35.0
+"""How far under its own speech level a stretch must sit to count as silence.
+
+Relative, never absolute, and the counterexample is in this repo: `FakeBackend`
+exposes `amplitude` (default 0.1), so `FakeBackend(amplitude=0.001)` renders
+entirely correct speech peaking at -60 dBFS. Any fixed dBFS floor near that
+number calls the whole utterance silence — and the same shape is legal for a
+natively quiet backend, a quiet reference, or the deliberate whisper this
+library protects elsewhere (see `Voice.gain_db`). An absolute floor is also
+measured in the wrong domain: this runs before `apply_gain` and before
+`master` normalises loudness, so it would not refer to the level that ships.
+
+35 dB is deliberately conservative, and the direction of the error is the whole
+argument. A review found correct low-level delivery sitting 25-30 dB under the
+louder speech in the same chunk; sustained past the threshold that would be
+refused as a hole, and a gate that rejects correct renders is worse than the
+defect it catches. 35 dB clears every such shape found.
+
+The cost is stated rather than hidden: a whispered chunk's hole shows only ~30 dB
+of contrast (-55 speech against a -85 floor), so this will NOT catch one. That is
+a fail-open, leaving today's behaviour in place, where a false refusal would
+block renders that are correct. The measured normal case is ~42 dB (-35 against
+-77) and is caught comfortably.
+
+Relative rather than absolute because scale carries no information here:
+multiplying a buffer by any constant cannot change the verdict."""
+
+
+def longest_silent_run(audio: Audio, sample_rate: int,
+                       drop_db: float = SILENCE_DROP_DB) -> float:
+    """Longest stretch BETWEEN speech that sits `drop_db` under the speech level.
+
+    Only interior runs count. Leading and trailing silence belongs to
+    `trim_silence`, and an utterance that is silent throughout is already caught
+    by the duration bounds and by coverage — this measures the hole a render can
+    otherwise ship with every word present and a clean report (issue #18: 18.5 s
+    of dead air at `failed=0`, `min coverage 1.0`).
+
+    The speech level is a high percentile rather than the maximum, so one loud
+    plosive cannot raise the bar, and the hole itself cannot lower it. Measured
+    boundaries of that choice, both checked:
+
+    - Speech that merely varies stays safe. A 4 s passage 30 dB under the rest of
+      its own chunk does not register at the default drop. Using the maximum
+      instead of a percentile would move this the wrong way, since quiet frames
+      sit well under a plosive peak.
+    - Past ~96% dead air the percentile lands *inside* the hole and this returns
+      0.0, failing open. Deliberately not hardened: audio that silent cannot
+      have said its words, so the frame cap and the duration ceiling reject it
+      first — a 60 s hole on a 12-word chunk is refused by those, and the case
+      is pinned by test.
+    """
+    frame = int(SILENCE_FRAME_MS / 1000 * sample_rate)
+    if frame <= 0 or audio.size < frame * 2:
+        return 0.0
+
+    count = audio.size // frame
+    rms = np.sqrt((audio[: count * frame].reshape(count, frame) ** 2).mean(axis=1) + 1e-20)
+    speech_level = float(np.percentile(rms, 95))
+    if speech_level <= 0.0:
+        return 0.0
+
+    loud = rms > speech_level * (10 ** (-drop_db / 20))
+    voiced = np.nonzero(loud)[0]
+    if voiced.size < 2:
+        return 0.0
+
+    # Interior only: measure between the first and last voiced frames.
+    gaps = np.diff(voiced) - 1
+    return float(gaps.max() * frame / sample_rate) if gaps.size else 0.0
+
+
 FADE_MS = 8
 HPF_HZ = 75.0
 

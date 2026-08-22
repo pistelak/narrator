@@ -866,3 +866,25 @@ def test_reroll_that_names_nothing_is_refused(tmp_path: Path) -> None:
 
     assert main([str(tmp_path / "a.txt"), str(tmp_path / "o.wav"), "--voice", "v.wav",
                  "--voice-text", "x", "--reroll", ","]) == 2
+
+
+def test_silence_is_carried_through_the_store(tmp_path: Path) -> None:
+    """A reused take must not report a clean 0.0 it never measured.
+
+    `silence_s` is telemetry for tuning the refusal threshold, so a stored take
+    reporting no silence would be indistinguishable from one measured clean and
+    would quietly bias the evidence.
+    """
+    backend = FakeBackend(script={0: Failure.SILENT_HOLE}, hole_s=2.0)
+    verifier = CoverageVerifier(FakeASR(backend))
+    store = TakeStore(tmp_path / "takes")
+    voice = voice_at(tmp_path)
+    text = SEGMENTS[0].text
+    cfg = SynthConfig(max_attempts=1, allow_sentence_split=False)
+
+    fresh = synthesize_chunk(text, 0, backend, verifier, voice, cfg, store=store)
+    assert fresh.ok and fresh.silence_s > 1.5
+
+    reused = synthesize_chunk(text, 0, backend, verifier, voice, cfg, store=store)
+    assert reused.reused
+    assert reused.silence_s == pytest.approx(fresh.silence_s), "the measurement survives reuse"
