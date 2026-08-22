@@ -220,3 +220,32 @@ def test_an_unresolvable_component_refuses_rather_than_comparing_equal() -> None
 
 def test_the_identity_is_stable_across_calls() -> None:
     assert probe._execution_identity() == probe._execution_identity()
+
+
+def test_the_identity_covers_the_stack_not_only_the_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Engine and recogniser identities must move it too.
+
+    The parametrised constants above cover policy. Rows produced by a different
+    TTS build or a different Whisper checkpoint are just as incomparable, and an
+    earlier identity carried neither.
+    """
+    import narrator.asr
+
+    identity = json.loads(probe._execution_identity())
+    assert identity["model"], "the TTS model id"
+    assert len(identity["asr_models"]) == 2, "both recogniser checkpoints"
+
+    before = probe._execution_identity()
+    monkeypatch.setattr(narrator.asr.WhisperASR, "repo", "mlx-community/whisper-tiny")
+    assert probe._execution_identity() != before
+
+
+def test_a_nested_unknown_is_not_mistaken_for_a_known_identity() -> None:
+    """Knownness is recursive.
+
+    Walking only top-level values passed an identity whose nested list held a
+    None — which is the shape the F0 constants and recogniser ids already use.
+    """
+    assert probe._identity_is_known(json.dumps({"a": "1.0", "f0": [1.0, 2.0]}))
+    assert not probe._identity_is_known(json.dumps({"a": "1.0", "f0": [1.0, None]}))
+    assert not probe._identity_is_known(json.dumps({"a": {"nested": None}}))

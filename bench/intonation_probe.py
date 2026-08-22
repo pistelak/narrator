@@ -257,13 +257,19 @@ def _component(distribution: str, module: str) -> str | None:
 
     from narrator.takes import package_version
 
-    resolved = package_version(distribution)
-    if resolved is not None:
-        return resolved
+    # Module presence FIRST, because that is the decision `default_verifier`
+    # actually makes: it selects Whisper-only versus the Parakeet cascade on
+    # find_spec alone. Reading distribution metadata first recorded a healthy
+    # version for an installed-but-unimportable package while the verifier had
+    # silently taken the other branch — two topologies under one identity.
     try:
-        return "absent" if find_spec(module) is None else None
-    except (ImportError, ValueError):     # a broken or namespace-shadowed package
+        present = find_spec(module) is not None
+    except (ImportError, ValueError):     # broken or namespace-shadowed
         return None
+    if not present:
+        return "absent"
+    resolved = package_version(distribution)
+    return resolved if resolved is not None else None
 
 
 def _execution_identity() -> str:
@@ -276,6 +282,7 @@ def _execution_identity() -> str:
     resume across them.
     """
     from narrator import prosody, synth, verify
+    from narrator.asr import ParakeetASR, WhisperASR
     from narrator.backends.higgs import MODEL
 
     return json.dumps({
@@ -290,6 +297,10 @@ def _execution_identity() -> str:
         "mlx_audio": _component("mlx-audio", "mlx_audio"),
         "mlx_whisper": _component("mlx-whisper", "mlx_whisper"),
         "parakeet": _component("parakeet-mlx", "parakeet_mlx"),
+        # The recognisers' MODEL ids, not just their package versions. A
+        # different Whisper checkpoint returns different transcripts from the
+        # same audio, which is the probe's input, so it is verdict-bearing.
+        "asr_models": [WhisperASR.repo, ParakeetASR.repo],
         # The probe's OWN verdict — contour — is measured by librosa's pyin
         # through prosody.voiced_f0, so its version and the window constants are
         # every bit as verdict-bearing as the coverage policy. A tag resumed
@@ -310,7 +321,16 @@ def _identity_is_known(identity: str) -> bool:
     unknown == unknown and resumed anyway — the helper's contract used without
     its reasoning, which is how the rest of this file's defects happened too.
     """
-    return all(value is not None for value in json.loads(identity).values())
+    def known(value: object) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, dict):
+            return all(known(v) for v in value.values())
+        if isinstance(value, list):
+            return all(known(v) for v in value)
+        return True
+
+    return known(json.loads(identity))
 
 
 def _snapshot_reference(voice_path: Path, out_dir: Path) -> Path:
@@ -338,7 +358,12 @@ def _snapshot_reference(voice_path: Path, out_dir: Path) -> Path:
     # Published atomically. A direct write interrupted midway left a partial
     # file that the next run read as a deliberately conflicting snapshot and
     # refused — turning a killed run into a tag that can never be resumed.
-    staged = snapshot.with_suffix(".wav.partial")
+    # Process-unique, so this does not add a race of its own. Concurrent runs of
+    # ONE tag remain unsupported regardless — `_checkpoint` rewrites the shared
+    # results.json wholesale and both runs would use the same take filenames, so
+    # the directory was never safe to share and locking it is not this script's
+    # job.
+    staged = snapshot.with_suffix(f".wav.partial.{os.getpid()}")
     staged.write_bytes(voice_path.read_bytes())
     os.replace(staged, snapshot)
     return snapshot
