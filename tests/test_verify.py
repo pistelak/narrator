@@ -1654,12 +1654,17 @@ def test_an_all_numeral_compound_sentence_is_compared_not_refused() -> None:
 def test_a_run_that_cannot_be_read_keeps_the_old_suppression() -> None:
     """Fail back, not forward.
 
-    An indeterminate plural deliberately has no value ("Byly jich miliony." is
-    not 1000000), so a run containing one is not a number this can read. It
-    falls back to comparing nothing, which is exactly the previous behaviour —
-    the change can only add a refusal where it can also compute the value.
+    Hundreds-as-coefficient ("sto tisíc" = 100 x 1000) is outside the two
+    validated shapes, so the run is not a number this can read and it falls back
+    to comparing nothing — exactly the previous behaviour. The change can only
+    add a refusal where it can also compute the value.
+
+    Note what is NO LONGER here: "dva miliony" used to be the example, and it
+    now composes to 2000000 and correctly refuses a transcript's "3000000",
+    which it previously passed at 1.0.
     """
-    assert coverage("byly jich dva miliony", "byly jich 3000000", "cs")[0] == 1.0
+    assert coverage("stálo to sto tisíc korun", "stálo to 999 korun", "cs")[0] == 1.0
+    assert coverage("byly jich dva miliony", "byly jich 3000000", "cs")[0] == 0.0
 
 
 def test_english_compounds_are_still_suppressed() -> None:
@@ -1685,12 +1690,43 @@ def test_hundreds_take_only_the_coefficients_czech_actually_uses() -> None:
     def composed(text: str):
         return numeral_multiset(_numeral_tokens_by_sentence(text, "cs"), "cs")
 
+    # The hundreds are four slots, not one: dvě STĚ, tři/čtyři STA, pět..devět
+    # SET. A single 1-99 bound over sto/stě blessed "devět stě" and "tři stě",
+    # which no Czech speaker says, while the real 300-900 forms stayed invisible.
     assert composed("dvě stě") == [200]
-    assert composed("devět stě") == [900]
-    assert composed("dvacet sto") is None
+    assert composed("tři sta") == [300]
+    assert composed("pět set") == [500]
+    assert composed("devět set") == [900]
+    for not_czech in ("devět stě", "tři stě", "dva sto", "dvacet sto"):
+        assert composed(not_czech) is None, not_czech
     # The thousands slot is unaffected: its coefficients really do run to 99.
     assert composed("dvacet tisíc") == [20000]
     assert composed("pětadvacet tisíc") == [25000]
+
+
+def test_oblique_large_units_do_not_produce_a_confident_wrong_integer() -> None:
+    """The worst shape this table had, and it refused correct renders.
+
+    The oblique forms of sto/tisíc/milion/miliarda were absent, so a coefficient
+    beside one was read as an isolated small number: "deseti tisícům" (10 000,
+    dative) became [10], and a correct transcript's "10000" hard-failed at 0.00
+    with "numeral changed: [10] became [10000]". Exactly the failure the oblique
+    block for the small numerals was written to kill, one case further down the
+    paradigm.
+    """
+    from narrator.verify import _numeral_tokens_by_sentence, numeral_multiset
+
+    def composed(text: str):
+        return numeral_multiset(_numeral_tokens_by_sentence(text, "cs"), "cs")
+
+    assert composed("deseti tisícům") == [10000]
+    assert composed("dvěma sty") == [200]
+    assert composed("pěti milionům") == [5 * 10**6]
+    assert composed("jedním milionem") == [10**6]
+
+    reference = "vyhověl deseti tisícům žádostí"
+    assert coverage(reference, "vyhověl 10000 žádostí", "cs")[0] == 1.0
+    assert coverage(reference, "vyhověl 20000 žádostí", "cs")[0] == 0.0
 
 
 def test_an_unreadable_compound_suppresses_the_sentence_and_that_is_known() -> None:
