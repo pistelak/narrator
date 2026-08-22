@@ -1699,6 +1699,25 @@ def test_hundreds_take_only_the_coefficients_czech_actually_uses() -> None:
     assert composed("devět set") == [900]
     for not_czech in ("devět stě", "tři stě", "dva sto", "dvacet sto"):
         assert composed(not_czech) is None, not_czech
+
+
+def test_agreement_is_tolerated_because_the_value_is_unchanged() -> None:
+    """Deliberate, and worth stating so nobody "fixes" it into false failures.
+
+    "dva tisíc" is ungrammatical — Czech wants "dva tisíce" — but both denote
+    2000, so composing either to 2000 is tolerant rather than wrong. The defects
+    this grammar exists to stop are sequences whose plain reading is NOT the
+    value assigned ("dvacet sto" is not 2000; "nula tisíc" is not 1000). Full
+    morphological agreement is a much larger project and would buy no
+    correctness here.
+    """
+    from narrator.verify import _numeral_tokens_by_sentence, numeral_multiset
+
+    def composed(text: str):
+        return numeral_multiset(_numeral_tokens_by_sentence(text, "cs"), "cs")
+
+    assert composed("dva tisíce") == composed("dva tisíc") == [2000]
+    assert composed("pět tisíc") == composed("pět tisíce") == [5000]
     # The thousands slot is unaffected: its coefficients really do run to 99.
     assert composed("dvacet tisíc") == [20000]
     assert composed("pětadvacet tisíc") == [25000]
@@ -1720,7 +1739,14 @@ def test_oblique_large_units_do_not_produce_a_confident_wrong_integer() -> None:
         return numeral_multiset(_numeral_tokens_by_sentence(text, "cs"), "cs")
 
     assert composed("deseti tisícům") == [10000]
+    # The oblique hundreds take the same 2-9 coefficients as the nominative
+    # ones. Left unbounded they inherited the thousands' 1-99 range and
+    # fabricated "dvacet stech" = 2000 — the "dvacet sto" defect, one case over.
     assert composed("dvěma sty") == [200]
+    assert composed("třemi sty") == [300]
+    assert composed("devíti sty") == [900]
+    for not_czech in ("dvacet stech", "devadesát stům", "99 stech"):
+        assert composed(not_czech) is None, not_czech
     assert composed("pěti milionům") == [5 * 10**6]
     assert composed("jedním milionem") == [10**6]
 

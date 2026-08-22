@@ -337,6 +337,7 @@ _NUMBER_WORDS_CS.update(_CS_FUSED)
 # value table: "na sta hostů" is "hundreds of guests", not 100). Composition
 # cannot reach that reading, because the indeterminate plural never takes a
 # numeric coefficient — "tři sta" is unambiguously 300.
+_HUNDREDS = frozenset(range(2, 10))
 _CS_LARGE = {
     "sto": (100, {1}), "stě": (100, {2}), "sta": (100, {3, 4}),
     "set": (100, {5, 6, 7, 8, 9}),
@@ -347,7 +348,12 @@ _CS_LARGE = {
     "miliony": (10**6, None), "milióny": (10**6, None), "miliónů": (10**6, None),
     "miliarda": (10**9, None), "miliardy": (10**9, None),
     "miliard": (10**9, None), "miliardám": (10**9, None), "miliardou": (10**9, None),
-    "sty": (100, {2}), "stům": (100, None), "stech": (100, None),
+    # The oblique hundreds take the SAME 2-9 coefficients as the nominative
+    # ones — "dvěma sty", "třemi sty", "pěti sty" — so they are bounded too.
+    # Left unbounded they inherited the 1-99 thousands range and fabricated
+    # "dvacet stech" = 2000 and "99 stech" = 9900, which is precisely the
+    # "dvacet sto" defect this block was written to close, one case over.
+    "sty": (100, _HUNDREDS), "stům": (100, _HUNDREDS), "stech": (100, _HUNDREDS),
 }
 
 
