@@ -104,6 +104,27 @@ class SynthConfig:
     verifies against the caller's original text. Chunking also runs on the
     original, so chunk boundaries do not shift when the lexicon changes."""
 
+    non_speech: tuple[str, ...] = ()
+    """Exact spans that are NOT speech, declared by the caller.
+
+    Higgs v3 ships non-speech control tokens — 84 added tokens, `<|emotion:*|>`,
+    `<|sfx:*|>`, `<|style:*|>`. Each is one token, the model acts on it, and it
+    is never spoken. But it is also part of the text the round-trip compares
+    against the transcript, so every tagged chunk failed by construction:
+    measured on an 8.5-minute episode, 73 chunks, 11 tagged, exactly those 11
+    failed with the audio fine (issue #17). Forcing `quarantine=False` to use
+    them switches off the primary guard for 15% of the render.
+
+    LITERAL atoms, not a pattern. A regex was tried and abandoned: two patterns
+    agreeing on a chunk's whole reference disagreed on its sentences, so a take
+    stored under one was served under the other — and a shape like
+    `<|[a-z_]+:[a-z_]+|>`-style shapes grant blanket "not spoken" status to every
+    syntactically-shaped typo and every future token. A literal cannot bless
+    what the caller did not name.
+
+    Narrator learns no engine syntax: the caller names the spans, exactly as it
+    resolves its own markup into segments elsewhere."""
+
     max_silence_s: float = 4.0
     """Longest interior silence a chunk may contain before it is a defect.
 
@@ -126,6 +147,27 @@ class SynthConfig:
     never absolute — see `audio.SILENCE_DROP_DB` for the counterexample."""
 
     def __post_init__(self) -> None:
+        for atom in self.non_speech:
+            if not atom.strip():
+                raise ValueError("a non_speech atom cannot be empty")
+            if any(c.isspace() for c in atom):
+                # Whitespace-free is what makes removal commute with sentence
+                # splitting: a boundary is a terminator plus whitespace, so an
+                # atom can never span one, and stripping the whole chunk gives
+                # the same words as stripping each sentence.
+                raise ValueError(
+                    f"non_speech atom {atom!r} contains whitespace; removal must "
+                    "commute with sentence splitting, which whitespace breaks"
+                )
+            if any(c in ".!?" for c in atom):
+                # An atom carrying a terminator deletes a sentence boundary from
+                # the reference, so `coverage_detail` scores two sentences as
+                # one — eroding the per-sentence granularity that exists to stop
+                # a dropped sentence hiding in an aggregate.
+                raise ValueError(
+                    f"non_speech atom {atom!r} contains a sentence terminator; "
+                    "that would merge two scored sentences into one"
+                )
         # A NaN compares False against every bound, so the gate would be off
         # while the config still claimed to have one — the silent-disable this
         # library refuses everywhere else.
@@ -235,8 +277,62 @@ def resolve_spoken(text: str, lang: str, cfg: SynthConfig) -> str:
     keeps a pronunciation entry local — adding a respelling for a name that
     appears in three chunks leaves the other eighty-five addressable.
     """
-    spoken = apply_pronunciation(text, cfg.pronunciation) if cfg.pronunciation else text
-    return spell_acronyms(spoken, lang) if cfg.spell_acronyms else spoken
+    def speech(part: str) -> str:
+        spoken = apply_pronunciation(part, cfg.pronunciation) if cfg.pronunciation else part
+        return spell_acronyms(spoken, lang) if cfg.spell_acronyms else spoken
+
+    if not cfg.non_speech:
+        return speech(text)
+    # Atoms are OPAQUE to both transforms. Measured: a lexicon pair ("joy",
+    # "radost") rewrote `<|emotion:joy|>` into `<|emotion:radost|>` — the token
+    # NAME — handing the engine a control token that does not exist, silently,
+    # because the tag never reaches verification either way. `spell_acronyms`
+    # would do the same to an upper-case atom. Declared-not-speech means not
+    # compared, not counted, and not respelled.
+    return "".join(part if is_atom else speech(part)
+                   for part, is_atom in _outside_atoms(text, cfg))
+
+
+def resolve_reference(text: str, cfg: SynthConfig) -> str:
+    """What verification compares the audio against, for this text.
+
+    Mirror of `resolve_spoken`: one home, two callers — the ladder verifies with
+    it, and the take store keys on it. Where the lexicon changes what is SPOKEN,
+    this changes what is COMPARED, and neither may weaken the round-trip.
+
+    Each atom becomes a SPACE, never the empty string. `a<atom>b` would
+    otherwise fuse into `ab` and invent a word — and the space is also what
+    keeps a whitespace join at every sentence boundary, which is what makes
+    "an atom can never span one" true after a removal as well as before it.
+
+    Returns `text` unchanged when no atom occurs, so declaring an atom cannot
+    invalidate a stored take for a chunk that does not contain it.
+    """
+    if not cfg.non_speech:
+        return text
+    stripped = text
+    for atom in cfg.non_speech:
+        stripped = stripped.replace(atom, " ")
+    return " ".join(stripped.split()) if stripped != text else text
+
+
+def _outside_atoms(text: str, cfg: SynthConfig) -> list[tuple[str, bool]]:
+    """`text` split into (span, is_atom) pieces, in order."""
+    pieces: list[tuple[str, bool]] = [(text, False)]
+    for atom in cfg.non_speech:
+        out: list[tuple[str, bool]] = []
+        for span, is_atom in pieces:
+            if is_atom or atom not in span:
+                out.append((span, is_atom))
+                continue
+            parts = span.split(atom)
+            for i, part in enumerate(parts):
+                if i:
+                    out.append((atom, True))
+                if part:
+                    out.append((part, False))
+        pieces = out
+    return pieces
 
 
 def spell_acronyms(text: str, lang: str) -> str:
@@ -321,7 +417,10 @@ def _take_key(
 ) -> str | None:
     """This chunk's address in the store, or None when it cannot be addressed."""
     return take_key(
-        text=text,
+        # The slot is documented as "what verification compared the result
+        # against", so it carries the reference. `spoken` covers the synthesis
+        # side, which still contains the atoms, so the pair identifies both.
+        text=resolve_reference(text, cfg),
         spoken=resolve_spoken(text, voice.lang, cfg),
         voice=voice,
         backend=backend,
@@ -393,7 +492,11 @@ def resolve_rise_intent(text: str, voice: Voice, cfg: SynthConfig) -> _RiseInten
     if cfg.wants_rise is None:
         return _RiseIntent(False, True)
     try:
-        return _RiseIntent(bool(cfg.wants_rise(text, voice.lang)), True)
+        # Asked about SPEECH. `prosody.yes_no_question` requires `?` at
+        # end-of-string and scans \w+ for wh-words, so a trailing atom defeats
+        # the match outright and an atom's internals enter the word scan.
+        return _RiseIntent(bool(cfg.wants_rise(resolve_reference(text, cfg),
+                                               voice.lang)), True)
     except Exception:
         return _RiseIntent(False, False)
 
@@ -459,7 +562,8 @@ def _synthesize(
         # passing one without generating any new audio. Copy the diagnostic text
         # across; keep the failure.
         try:
-            diagnostic = verifier.verify(attempt.audio, text, voice.lang)
+            diagnostic = verifier.verify(attempt.audio, resolve_reference(text, cfg),
+                                         voice.lang)
             attempt.verdict = replace(diagnostic, ok=False)
         except Exception:
             pass
@@ -498,7 +602,12 @@ def _best_attempt(
     text: str, backend: Backend, verifier: Verifier, voice: Voice, cfg: SynthConfig,
     wants_rise: bool = False,
 ) -> _Attempt | None:
-    words = len(text.split())
+    reference = resolve_reference(text, cfg)
+    # Counted from the REFERENCE, because a declared atom is not a spoken word.
+    # Two real words carrying three atoms read as five, and the duration FLOOR
+    # then demands 1.11 s of audio for ~0.8 s of correct speech — a false
+    # failure. The ceiling moves too, but only marginally; the floor is why.
+    words = len(reference.split())
     cap = frame_cap(words, backend.frames_per_second(), cfg)
     floor, ceiling = duration_bounds(words, cfg)
     best: _Attempt | None = None
@@ -560,7 +669,7 @@ def _best_attempt(
         # where verification is an ASR call, and coverage is structurally blind
         # to this defect anyway — silence between words contains no words.
         verdict = (
-            verifier.verify(audio, text, voice.lang)
+            verifier.verify(audio, reference, voice.lang)
             if duration_ok and silence_ok and not hit_cap
             else Verdict(False, 0.0)
         )
@@ -607,6 +716,40 @@ def _best_attempt(
     return chosen
 
 
+def _coalesce_atom_only(sentences: list[str], cfg: SynthConfig) -> list[str]:
+    """Fold sentences that are ONLY declared atoms into a neighbour.
+
+    `split_sentences("Je to tak? <|emotion:joy|>")` yields a trailing sentence
+    with no speech in it. Rendered alone it can never verify, so the rescue
+    aborts and a tagged chunk loses the recovery path that exists because the
+    whole-chunk failure it rescues is stochastic — 11 of 73 chunks were tagged
+    in the motivating episode.
+
+    Mirrors `_merge_orphans` in chunking, for the same measured reason: short
+    inputs are where engines are least stable. Direction is fixed rather than
+    guessed — a leading run folds FORWARD, anything else folds BACK — because an
+    interior atom has no universally correct neighbour and a coin-flip there
+    would move the atom's effect to the wrong side of a boundary.
+    """
+    if not cfg.non_speech:
+        return sentences
+
+    def speechless(sentence: str) -> bool:
+        return not resolve_reference(sentence, cfg).strip()
+
+    out: list[str] = []
+    for sentence in sentences:
+        if speechless(sentence) and out:
+            out[-1] = f"{out[-1]} {sentence}"
+        else:
+            out.append(sentence)
+    # A leading run had no predecessor to fold into; give it to what follows.
+    while len(out) > 1 and speechless(out[0]):
+        out[1] = f"{out[0]} {out[1]}"
+        out.pop(0)
+    return out
+
+
 def _sentence_split(
     text: str, backend: Backend, verifier: Verifier, voice: Voice, cfg: SynthConfig,
     intent: _RiseIntent,
@@ -624,7 +767,7 @@ def _sentence_split(
     containment a strictly per-sentence pipeline gets for free, applied only
     where it is needed so the rest keeps the prosody that chunking buys.
     """
-    sentences = split_sentences(text)
+    sentences = _coalesce_atom_only(split_sentences(text), cfg)
     if len(sentences) < 2:
         return None, 0.0, 0
 

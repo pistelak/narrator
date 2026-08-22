@@ -55,6 +55,11 @@ _EXCLUDED_SYNTH_FIELDS = frozenset({
     # already. Keying on them directly would throw away every take in the
     # episode when a lexicon entry is added for a word that appears in three
     # chunks.
+    "non_speech",
+    # Reaches a stored verdict ONLY through the reference text, which is already
+    # the key's `text` slot, and the engine only through `spoken`, which is also
+    # there. Keying it directly would discard an episode's takes because one
+    # chunk gained a tag.
     "wants_rise",
     # A caller callable, not data. Chunks it applies to are not stored at all —
     # see `synth._RiseIntent` for why a resolved boolean is not enough.

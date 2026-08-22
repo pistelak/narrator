@@ -47,12 +47,12 @@ So this finds script defects cheaply. It never certifies a script.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from narrator.chunking import MAX_CHARS, chunk, split_sentences
-from narrator.synth import SynthConfig
+from narrator.synth import SynthConfig, resolve_reference
 from narrator.types import Gap, Segment, Text
-from narrator.verify import MIN_COVERAGE, coverage_detail
+from narrator.verify import MIN_COVERAGE, coverage_detail, normalize
 
 # The render's own pacing default, so the duration estimate and the frame-cap
 # budget agree on how fast the narrator talks.
@@ -104,6 +104,7 @@ def preflight(
     max_chars: int = MAX_CHARS,
     sound_alikes: tuple[tuple[str, str], ...] = (),
     allow_sentence_split: bool = SynthConfig().allow_sentence_split,
+    non_speech: tuple[str, ...] = (),
 ) -> PreflightReport:
     """Check a script against the verifier it will face, with no model loaded.
 
@@ -133,6 +134,26 @@ def preflight(
         if not isinstance(segment, Text):  # pragma: no cover - guarded by the type union
             raise TypeError(f"Not a segment: {segment!r}")
         for piece in chunk(segment.text, max_chars):
+            # Declared atoms are removed first, exactly as the render will do.
+            # Without this, preflight round-trips the RAW text — the atom present
+            # on both sides, cancelling out — and reports clean for a chunk the
+            # render must refuse because its reference has no speech left.
+            raw = piece
+            piece = resolve_reference(piece, replace(SynthConfig(), non_speech=non_speech))
+            if raw != piece and not normalize(piece, lang).split():
+                # Every token was a declared atom, so there is no speech left to
+                # compare and `coverage("", "")` answers 1.0 — a vacuous pass
+                # that would certify whatever audio came back.
+                #
+                # It is flagged HERE and not in the verifier because only this
+                # layer can tell the two empties apart: a punctuation-only
+                # sentence the caller WROTE is a pause the script spells, which
+                # `verify` blesses on purpose, while this one lost its content
+                # to a removal. The verifier never sees the raw text.
+                findings.append(UnverifiableChunk(
+                    chunks, raw, "[no speech left after removing declared non_speech]"))
+                chunks += 1
+                continue
             detail = coverage_detail(piece, piece, lang, sound_alikes)
             # The verifier's real gate, not `< 1.0`: doomed must mean "fails
             # the exact threshold the audio will face", so preflight can never
