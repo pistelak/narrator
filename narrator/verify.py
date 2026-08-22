@@ -39,7 +39,7 @@ from narrator.chunking import split_sentences
 from narrator.takes import _class_id, identity_of
 from narrator.types import ASR, Audio, Verdict, Verifier
 
-SEMANTICS = 1
+SEMANTICS = 2
 """Version of what "correct" means here, for the take store's key.
 
 Bump it on ANY behavioural change to scoring: a new fold, a hard-fail rule, the
@@ -218,6 +218,77 @@ _NUMERAL_VALUES: dict[str, int] = {
     "milion": 10**6, "milionu": 10**6, "milión": 10**6, "miliónu": 10**6,
     "miliarda": 10**9, "miliardě": 10**9,
 }
+
+# Czech writes 21-99 as ONE word, unit first: pětadvacet is 5-and-20. It is the
+# NATURAL spelling in prose, not a variant — and a script for TTS must spell
+# numbers out, because digits are unspeakable. So every one of these reached the
+# verifier, and none of them was a numeral to it: the reference side contributed
+# nothing while the ASR wrote "25", the comparison read as a numeral appearing
+# from nowhere, and the chunk hard-failed at coverage 0.00. Measured 10/10
+# attempts across two different pinned voice references, with correct audio every
+# time (issue #8). Same class as the oblique forms above — orthography, not audio.
+#
+# GENERATED rather than matched by a suffix rule, which is the same rule applied
+# once at import. Two reasons, both structural:
+#
+#   - Every consumer already reads this table. `isolated_numeral_positions`
+#     values them, `has_compound_numeral` sees them through `is_numberish`, and
+#     the accent-variant builder walks `.items()` — so the fused forms get their
+#     diacritic-insensitive variants for free, which matters because unaccented
+#     Czech is a real input here.
+#   - An enumerated form cannot over-reach. The hazard is derived nouns that
+#     merely CONTAIN a number morpheme — stodolarovkou, pětiletka, dvojka — which
+#     are content words, and blinding those would widen the numeral-blind set
+#     into ordinary vocabulary. Exact keys can only match what they generated;
+#     a suffix rule has to be argued safe. A test pins that they stay unblinded.
+#
+# These reach ENGLISH too, which the per-language blind sets disguise. The value
+# table is shared, and the numeral hard-fail check runs quote_foreign on both
+# sides for every language, so a Czech numeral quoted in an English script is now
+# valued instead of invisible — removing a hard fail rather than adding one, the
+# same direction as the rest of this change. Pinned by test.
+#
+# One consequence to state plainly, because it looks like a loss and is not.
+# "pětadvacet tisíc" is now two adjacent numerals, so it is suppressed as a
+# COMPOUND and its value is not compared — exactly as the already-blind
+# "dvacet tisíc" has always been (isolated_numerals explains why compounds are
+# skipped). Before this change that phrase did not have a working guard either:
+# only "tisíc" was numberish, so the reference produced [1000] against a
+# transcript's [25000] and hard-failed — including when the transcript was
+# RIGHT. A comparison that refuses the correct answer is not protection, and the
+# fused forms simply join the same conservative rule the spelled-out compound
+# already followed. Evaluating Czech compounds properly (they are unambiguous,
+# unlike English "two fifty six") is filed separately.
+#
+# The PREFIXES are listed as they are actually spelled, not derived as
+# unit + "a": the connector is the conjunction "a", but it merges with a unit
+# that already ends in one, and not uniformly. "dva" keeps both (dvaadvacet)
+# while "jedna" elides to one (jednadvacet, not jednaadvacet) — deriving them
+# generated that non-word, so the attested prefix is the datum. Both
+# "jedenadvacet" and "jednadvacet" are current. Feminine "dvě" is excluded: it
+# does not appear in this construction.
+_CS_FUSED_UNITS = {
+    "jedena": 1, "jedna": 1, "dvaa": 2, "třia": 3, "čtyřia": 4,
+    "pěta": 5, "šesta": 6, "sedma": 7, "osma": 8, "devěta": 9,
+}
+_CS_FUSED_TENS = {
+    "dvacet": 20, "dvaceti": 20, "třicet": 30, "třiceti": 30,
+    "čtyřicet": 40, "čtyřiceti": 40, "padesát": 50, "padesáti": 50,
+    "šedesát": 60, "šedesáti": 60, "sedmdesát": 70, "sedmdesáti": 70,
+    "osmdesát": 80, "osmdesáti": 80, "devadesát": 90, "devadesáti": 90,
+}
+_CS_FUSED = {
+    f"{unit}{ten}": unit_value + ten_value
+    for unit, unit_value in _CS_FUSED_UNITS.items()
+    for ten, ten_value in _CS_FUSED_TENS.items()
+}
+# setdefault, not update: a hand-written entry always wins, so a generated form
+# can never silently shadow one that was reasoned about. A test asserts the two
+# sets are disjoint, so this never actually has to arbitrate — but `-O` strips
+# asserts, and the safe direction should not depend on how Python was started.
+for _form, _value in _CS_FUSED.items():
+    _NUMERAL_VALUES.setdefault(_form, _value)
+_NUMBER_WORDS_CS.update(_CS_FUSED)
 
 # Indeterminate large-unit forms (set, tisíce/tisících, miliony/milionů,
 # miliard/miliardy) deliberately have NO entry anywhere: a bare plural names

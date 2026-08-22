@@ -21,6 +21,7 @@ from narrator.verify import (
     coverage,
     coverage_detail,
     is_numberish,
+    isolated_numerals,
     normalize,
 )
 
@@ -1455,3 +1456,113 @@ def test_format_word_diagnostics_rejects_a_useless_limit() -> None:
     for limit in (0, -1):
         with pytest.raises(ValueError, match="limit"):
             format_word_diagnostics(("d:one",), limit=limit)
+
+
+# ------------------------------------------------ cs fused compound numerals
+
+def test_fused_compound_numerals_are_numerals() -> None:
+    """Czech writes 21-99 as one word, unit first: pětadvacet is 5-and-20.
+
+    The reference side contributed no numeral while the ASR wrote "25", so the
+    comparison read as a numeral appearing from nowhere and the chunk hard-failed
+    at coverage 0.00 — 10/10 attempts across two pinned voice references, with
+    correct audio every time (issue #8). Orthography, not audio, exactly like the
+    oblique-forms failure recorded in `_NUMBER_WORDS_CS`.
+    """
+    expected = {
+        "pětadvacet": 25, "jedenadvacet": 21, "jednadvacet": 21, "dvaadvacet": 22,
+        "třiadvacet": 23, "čtyřiadvacet": 24, "dvaatřicet": 32, "pětasedmdesát": 75,
+        "devětadevadesát": 99, "osmapadesát": 58, "jednatřicet": 31,
+        # Oblique tens, the inflection hole the oblique block was added for.
+        "pětadvaceti": 25, "dvaatřiceti": 32,
+    }
+    for word, value in expected.items():
+        assert is_numberish(word, "cs"), word
+        assert isolated_numerals([word], "cs") == [value], word
+
+
+def test_the_motivating_chunk_now_verifies() -> None:
+    """End to end at the scoring level, which is where the issue reproduced."""
+    assert coverage("trvalo to pětadvacet minut", "trvalo to 25 minut", "cs")[0] == 1.0
+
+
+def test_a_fused_numeral_is_compared_not_merely_blinded() -> None:
+    """Blinding alone would let pětadvacet and 35 pass as equal.
+
+    The value is derivable from the two halves, so these are COMPARED — the
+    stated preference in isolated_numeral_positions. Without this assertion the
+    fix would trade a false refusal for a false accept, which is the one
+    direction this library never trades in.
+    """
+    score, detail = coverage("trvalo to pětadvacet minut", "trvalo to 35 minut", "cs")
+    assert score == 0.0
+    assert "numeral changed" in detail
+
+
+def test_bare_numerals_are_unchanged() -> None:
+    for word, value in (("dvacet", 20), ("pět", 5), ("sedmdesát", 70)):
+        assert isolated_numerals([word], "cs") == [value]
+
+
+def test_number_morphemes_inside_content_words_stay_unblinded() -> None:
+    """The out-of-scope set from the issue, pinned.
+
+    Derived nouns merely CONTAIN a number morpheme; they are ordinary vocabulary,
+    and blinding them would widen the numeral-blind set into the language. An
+    enumerated table cannot reach them — this is the test that says so.
+    """
+    for word in ("stodolarovkou", "pětiletka", "dvojka", "dvacetiletý", "osmička"):
+        assert not is_numberish(word, "cs"), word
+
+
+def test_generated_forms_never_shadow_a_hand_written_value() -> None:
+    """The generated set must be disjoint from the entries that were reasoned
+    about one by one, so `setdefault` never has to arbitrate."""
+    from narrator.verify import _CS_FUSED, _NUMERAL_VALUES
+
+    hand_written = set(_NUMERAL_VALUES) - set(_CS_FUSED)
+    assert not (_CS_FUSED.keys() & hand_written)
+
+
+def test_fused_numerals_reach_english_only_through_the_quoted_foreign_path() -> None:
+    """"English is untouched" would have been the comfortable claim, and it is false.
+
+    The BLIND sets are per-language — `_NUMBER_WORDS_EN` is not pooled, so
+    `is_numberish` is unchanged for English. But `_NUMERAL_VALUES` is shared, and
+    the numeral hard-fail check runs `quote_foreign=True` on both sides for EVERY
+    language, so a Czech numeral quoted in an English script now carries its
+    value.
+
+    That is the right direction and the same one the fix exists for: before, the
+    reference contributed nothing against a transcript's "25" and the chunk
+    hard-failed at 0.0; now the numerals match and the score reflects word
+    coverage alone. Pinned because it is a cross-language effect that the naive
+    reading of this change would miss.
+    """
+    assert not is_numberish("pětadvacet", "en"), "the blind set stays per-language"
+    assert isolated_numerals(["said", "pětadvacet"], "en") == []
+    assert isolated_numerals(["said", "pětadvacet"], "en", quote_foreign=True) == [25]
+
+    # 0.0 before this change: a numeral appearing from nowhere.
+    assert coverage("he said pětadvacet loudly", "he said 25 loudly", "en")[0] > 0.5
+
+
+def test_a_fused_compound_behaves_like_the_spelled_out_one() -> None:
+    """Consistency, which is the honest claim here rather than "now guarded".
+
+    Making the fused form a numeral turns "pětadvacet tisíc" into a COMPOUND,
+    which `isolated_numerals` suppresses by design. That matches what the
+    already-blind "dvacet tisíc" has always done. The previous behaviour was not
+    a guard being lost: only "tisíc" was numberish, so the reference produced
+    [1000] and hard-failed every transcript including the correct one.
+    """
+    fused = "bylo tam pětadvacet tisíc lidí"
+    spelled = "bylo tam dvacet pět tisíc lidí"
+    for hypothesis in ("bylo tam 25000 lidí", "bylo tam 25 tisíc lidí"):
+        assert coverage(fused, hypothesis, "cs")[0] == coverage(spelled, hypothesis, "cs")[0]
+
+
+def test_a_fused_numeral_standing_alone_is_still_compared() -> None:
+    """The suppression above applies only to compounds; alone it is checked."""
+    assert coverage("trvalo to pětadvacet minut", "trvalo to 25 minut", "cs")[0] == 1.0
+    assert coverage("trvalo to pětadvacet minut", "trvalo to 26 minut", "cs")[0] == 0.0
