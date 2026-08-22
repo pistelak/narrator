@@ -305,50 +305,90 @@ _NUMBER_WORDS_CS.update(_CS_FUSED)
 # actually produces, so the sentinel is per spoken form.
 
 
-def _compose_cs(values: list[int]) -> int:
-    """Left-to-right accumulation of a Czech numeral run into one value.
+# Coefficients a Czech compound may carry: 1-99, as one token. Deliberately not
+# "any valued token" — see _compose_cs.
+_CS_LARGE = {"sto": 100, "stě": 100, "tisíc": 1000, "milion": 10**6,
+             "milión": 10**6, "miliarda": 10**9}
 
-    The ordinary written-numeral algorithm: units add, a multiplier scales what
-    is pending, and a large unit closes a group. It is what makes `sto tisíc`
-    (100000) and `tisíc sto` (1100) different numbers rather than the same
-    multiset, which a plain sum would have collapsed.
+
+def _cs_only(word: str) -> bool:
+    """A Czech numeral form, excluding the English words pooled into the set.
+
+    `_NUMBER_WORDS_CS` is `_NUMBER_WORDS_EN | {...}`, so "two fifty six" is three
+    numerals under `cs` too. Composing those produced 58 — neither 256 nor a
+    refusal — for a quoted English compound inside a Czech script.
     """
-    total = current = 0
-    for value in values:
-        if value >= 100:
-            current = (current or 1) * value
-            if value >= 1000:
-                total += current
-                current = 0
-        else:
-            current += value
-    return total + current
+    return word in _NUMBER_WORDS_CS and word not in _NUMBER_WORDS_EN
+
+
+def _coefficient(words: list[str], values: list[int]) -> int | None:
+    """1-99 as one or two Czech tokens, or None. Digits allowed, in range."""
+    if len(words) == 1:
+        word, value = words[0], values[0]
+        if _plain_digits(word):
+            return value if 1 <= value <= 99 else None
+        return value if _cs_only(word) and 1 <= value <= 99 else None
+    if len(words) == 2 and all(_cs_only(w) for w in words):
+        tens, unit = values
+        # Additive only, and only in the one order Czech writes: dvacet pět.
+        if 20 <= tens <= 90 and tens % 10 == 0 and 1 <= unit <= 9:
+            return tens + unit
+    return None
+
+
+def _compose_cs(words: list[str], values: list[int]) -> int | None:
+    """One Czech numeral compound's value, or None when the shape is not one.
+
+    A VALIDATED shape, not a running total. The first version accumulated any
+    adjacent valued tokens, which fabricated numbers rather than reading them:
+    `nula tisíc` became 1000 because an explicit zero was treated as an absent
+    multiplier, `dvacet dvacet` became 40, and a quoted English `two fifty six`
+    became 58 under `cs`, since the Czech word set contains the English one.
+    None of those are numbers a Czech script can express, so the honest answer
+    is "not a compound I can read" — which suppresses, exactly as before.
+
+    Two shapes only, both unambiguous:
+
+      coefficient x large unit   dvacet tisíc = 20000, pětadvacet tisíc = 25000
+      tens + unit                dvacet pět = 25, the separate-word twin of #8
+
+    Anything longer or otherwise shaped — `sto dvacet pět tisíc`, `milion dvě
+    stě tisíc` — is left to the suppression it has always had. Real Czech, and
+    the general grammar that reads it is worth having, but a half-grammar that
+    quietly returns the wrong integer is worse than a documented refusal.
+    """
+    if len(words) >= 2 and words[-1] in _CS_LARGE:
+        coefficient = _coefficient(words[:-1], values[:-1])
+        if coefficient is not None:
+            return coefficient * _CS_LARGE[words[-1]]
+        return None
+    return _coefficient(words, values)
 
 
 def numeral_multiset(
-    words: list[str], lang: str = "en", quote_foreign: bool = False,
+    sentences: list[list[str]], lang: str = "en", quote_foreign: bool = False,
 ) -> list[int | str] | None:
-    """Every numeral value in `words`, with adjacent runs composed — or None.
+    """Every numeral value in `sentences`, adjacent runs composed — or None.
 
-    None means "this side contains a run this function cannot read", and the
-    caller must then fall back to comparing nothing, which is what the whole
-    sentence did before compounds were composed at all.
+    None means "some run here is not a number I can read", and the caller then
+    compares nothing on either side: the suppression this replaced, reproduced
+    rather than approximated.
+
+    Sentence-grouped on purpose. A compound never spans a sentence, and the old
+    suppression relied on that — `_numeral_tokens` concatenates, so two bare
+    numerals in adjacent sentences land adjacent and were REFUSED, which its
+    docstring names as the fail-closed direction. Composing a flat token list
+    instead read "Dvacet. Pět." as 25.
 
     Why compose at all, when `isolated_numerals` documents skipping compounds as
     deliberate: that reasoning is about ENGLISH. "two fifty six" really is
-    ambiguous — 256, or 2-50-6 — so comparing it manufactures the false failures
-    blinding exists to prevent. Czech is not ambiguous: `dvacet tisíc` is 20x1000
-    and nothing else, so the value is computable rather than guessed, and
-    skipping it certified a transcript's "30000" against audio that said twenty
-    thousand, at coverage 1.00 (issue #23).
+    ambiguous — 256, or 2-50-6 — so comparing it manufactures false failures.
+    Czech `dvacet tisíc` is 20x1000 and nothing else, and skipping it certified a
+    transcript's "30000" against audio that said twenty thousand (issue #23).
 
-    English therefore keeps the skip exactly: a multi-token run is never
-    composable there, so this returns None the moment one appears, which is the
-    previous behaviour reproduced rather than approximated.
+    English keeps the skip: a multi-token run is never composable there, so this
+    returns None the moment one appears.
     """
-    if not words:
-        return []
-
     def numberish(word: str) -> bool:
         if is_numberish(word, lang):
             return True
@@ -360,33 +400,35 @@ def numeral_multiset(
         return _NUMERAL_VALUES.get(word)
 
     out: list[int | str] = []
-    index = 0
-    while index < len(words):
-        if not numberish(words[index]):
-            index += 1
-            continue
-        start = index
-        while index < len(words) and numberish(words[index]):
-            index += 1
-        run = words[start:index]
+    for words in sentences:
+        index = 0
+        while index < len(words):
+            if not numberish(words[index]):
+                index += 1
+                continue
+            start = index
+            while index < len(words) and numberish(words[index]):
+                index += 1
+            run = words[start:index]
 
-        if len(run) == 1:
-            # Single token: identical to isolated_numerals, sentinel included, so
-            # an unvalued form still yields exactly one element rather than
-            # vanishing from the comparison (three gate reviews on that hole).
-            value = value_of(run[0])
-            out.append(value if value is not None else "?" + fold(run[0], lang))
-            continue
+            if len(run) == 1:
+                # Identical to isolated_numerals, sentinel included, so an
+                # unvalued form still yields exactly one element rather than
+                # vanishing from the comparison (three gate reviews on that).
+                value = value_of(run[0])
+                out.append(value if value is not None else "?" + fold(run[0], lang))
+                continue
 
-        if not lang.startswith("cs"):
-            return None
-        values = [value_of(word) for word in run]
-        if any(value is None for value in values):
-            # An indeterminate plural ("miliony") deliberately has no value, and
-            # a run containing one is not a number this can read. Refusing to
-            # guess leaves exactly today's behaviour for that sentence.
-            return None
-        out.append(_compose_cs(values))
+            if not lang.startswith("cs"):
+                return None
+            values = [value_of(word) for word in run]
+            if any(value is None for value in values):
+                # An indeterminate plural ("miliony") deliberately has no value.
+                return None
+            composed = _compose_cs(run, [v for v in values if v is not None])
+            if composed is None:
+                return None
+            out.append(composed)
     return out
 
 
@@ -509,6 +551,43 @@ def _numeral_tokens(text: str, lang: str) -> list[str]:
             lambda m: re.sub(r"\D", "", m.group()), sentence)
         tokens.extend(normalize(fused, lang).split())
     return tokens
+
+
+def _regroup(tokens: list[str], text: str, lang: str) -> list[list[str]]:
+    """Split an already-canonicalised flat token list back into its sentences.
+
+    The all-numeral branch canonicalises tokens through the caller's
+    `sound_alikes` before comparing, so re-deriving groups from the raw text
+    would drop those pairs. Sentence sizes come from the text; the VALUES come
+    from the tokens that were canonicalised.
+    """
+    sizes = [len(group) for group in _numeral_tokens_by_sentence(text, lang)]
+    out: list[list[str]] = []
+    at = 0
+    for size in sizes:
+        out.append(tokens[at:at + size])
+        at += size
+    if at < len(tokens):                      # lengths disagreed; stay flat
+        return [tokens]
+    return out
+
+
+def _numeral_tokens_by_sentence(text: str, lang: str) -> list[list[str]]:
+    """`_numeral_tokens`, but keeping each sentence's tokens separate.
+
+    Composition must not reach across a sentence boundary. `_numeral_tokens`
+    concatenates, and the old compound SUPPRESSION made that safe — two bare
+    numerals in adjacent sentences landed adjacent and were refused, the
+    fail-closed direction its docstring names. Composing them instead recreates
+    exactly the hazard recorded there: "4. 500." is two spoken numbers, and a
+    flat view reads it as the 4500 an ASR wrote for different audio.
+    """
+    pattern = _DIGIT_GROUPS["cs" if lang.startswith("cs") else "en"]
+    out: list[list[str]] = []
+    for sentence in split_sentences(text):
+        fused = pattern.sub(lambda m: re.sub(r"\D", "", m.group()), sentence)
+        out.append(normalize(fused, lang).split())
+    return out
 
 
 
@@ -911,8 +990,16 @@ def coverage_detail(
             # "Dvacet." against "20." has always passed. English is unchanged:
             # a multi-token run is never composable there, so this is None
             # exactly where `has_compound_numeral` was True.
-            ref_composed = numeral_multiset(ref_tokens, lang)
-            hyp_composed = numeral_multiset(hyp_tokens, lang)
+            # Sentence-grouped, like the other call site: a flat list let
+            # "Dvacet. Pět." compose to 25 and match a transcript's "25.",
+            # which is two spoken numbers read as one. Grouped from the SAME
+            # canonicalised tokens, so a declared sound-alike still reaches the
+            # composition — regrouping the raw text instead silently dropped
+            # the caller's pairs here.
+            ref_composed = numeral_multiset(
+                _regroup(ref_tokens, reference, lang), lang)
+            hyp_composed = numeral_multiset(
+                _regroup(hyp_tokens, hypothesis, lang), lang)
             comparable = (
                 all(is_numberish(t, lang) for t in hyp_tokens)
                 and ref_composed is not None
@@ -1146,8 +1233,10 @@ def coverage_detail(
     # is three adjacent numerals in the script and collapses to the single
     # isolated "256" in the transcript, so an asymmetric rule reads a correct
     # transcription as a changed number.
-    ref_composed = numeral_multiset(ref_tokens, lang, quote_foreign=True)
-    hyp_composed = numeral_multiset(hyp_tokens, lang, quote_foreign=True)
+    ref_composed = numeral_multiset(
+        _numeral_tokens_by_sentence(reference, lang), lang, quote_foreign=True)
+    hyp_composed = numeral_multiset(
+        _numeral_tokens_by_sentence(hypothesis, lang), lang, quote_foreign=True)
     unreadable = ref_composed is None or hyp_composed is None
     ref_nums = [] if unreadable else sorted(ref_composed, key=str)
     hyp_nums = [] if unreadable else sorted(hyp_composed, key=str)

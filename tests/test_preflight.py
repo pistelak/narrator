@@ -37,28 +37,31 @@ def test_all_numeral_sentence_is_flagged_and_named() -> None:
     assert "Two fifty six" in finding.reason
 
 
-def test_a_czech_numeral_compound_is_rescuable_and_so_not_flagged() -> None:
-    """This chunk WAS doomed, and #23 made it renderable — preflight follows.
+def test_preflight_tracks_the_numeral_policy_it_is_predicting() -> None:
+    """Preflight follows verify.py without being edited, in both directions.
 
-    "Dvou tisíc čtyřiceti osmi." is 2048 in the genitive. Every word is an
-    inflected numeral, so blinding once left nothing to align and the chunk was
-    unverifiable. Composing Czech compounds gave the sentence a value, so it now
-    verifies when rendered ALONE — which is exactly what the sentence-split
-    fallback does with it. Preflight models that ladder, so it reports clean.
+    "Dvou tisíc čtyřiceti osmi." is 2048 in the genitive — four inflected
+    numerals, a shape the compound grammar deliberately does not read, so the
+    chunk stays doomed. "Dvacet tisíc." IS read, so the split fallback rescues
+    its chunk and preflight reports clean.
 
-    Pinned because it is the interesting direction: preflight tracked a policy
-    change in verify.py without being edited, which is the whole reason it runs
-    the real coverage code instead of a hand-copied list of shapes that fail.
+    That both answers move with `verify.py` and not with an edit here is the
+    whole reason preflight runs the real coverage code rather than a hand-copied
+    list of shapes that fail.
     """
     report = preflight(
         [Text("Heslo má přesně osm znaků. Dvou tisíc čtyřiceti osmi.")], lang="cs"
     )
-    assert report.clean
+    assert not report.clean
+    assert "Dvou tisíc" in report.unverifiable[0].reason
+
+    # A compound the grammar DOES read is rescuable, so it is not flagged: split
+    # renders "Dvacet tisíc." alone, where it verifies by value.
+    assert preflight([Text("Bylo jich hodně. Dvacet tisíc.")], lang="cs").clean
 
     # Unrescuable in English, where the compound stays ambiguous by design.
     english = preflight([Text("The dial is set. Two fifty six.")], lang="en")
     assert not english.clean
-    assert "Two fifty six" in english.unverifiable[0].reason
 
 
 def test_finding_index_matches_the_render_chunk_index() -> None:

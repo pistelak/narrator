@@ -1583,16 +1583,44 @@ def test_a_wrong_magnitude_in_a_compound_is_refused() -> None:
     assert "numeral changed" in detail
 
 
-def test_compounds_compose_rather_than_summing() -> None:
-    """Order carries meaning: `sto tisíc` and `tisíc sto` are different numbers.
+def test_shapes_outside_the_grammar_are_suppressed_not_guessed() -> None:
+    """The boundary of what this reads, pinned — because guessing is worse.
 
-    A plain sum would call both 1100 and certify either transcript against the
-    other — the multiset collapse that makes composition necessary rather than
-    convenient.
+    A first version accumulated any adjacent valued tokens, which FABRICATED
+    numbers rather than reading them: `nula tisíc` became 1000 (an explicit zero
+    read as an absent multiplier), `dvacet dvacet` became 40, and a quoted
+    English `two fifty six` became 58 under `cs`, since the Czech word set
+    contains the English one. None of those are numbers a Czech script can
+    express.
+
+    So the grammar is two validated shapes, and everything else — including real
+    Czech like `sto tisíc` — keeps the suppression it has always had. A
+    half-grammar that quietly returns the wrong integer is worse than a
+    documented refusal.
     """
-    assert coverage("stálo to sto tisíc korun", "stálo to 100000 korun", "cs")[0] == 1.0
-    assert coverage("stálo to sto tisíc korun", "stálo to 1100 korun", "cs")[0] == 0.0
-    assert coverage("stálo to tisíc sto korun", "stálo to 1100 korun", "cs")[0] == 1.0
+    from narrator.verify import _numeral_tokens_by_sentence, numeral_multiset
+
+    def composed(text: str):
+        return numeral_multiset(_numeral_tokens_by_sentence(text, "cs"), "cs")
+
+    assert composed("dvacet tisíc") == [20000]
+    assert composed("dvacet pět") == [25]
+    for outside in ("nula tisíc", "dvacet dvacet", "two fifty six",
+                    "sto tisíc", "dvou tisíc čtyřiceti osmi"):
+        assert composed(outside) is None, outside
+
+
+def test_a_compound_never_spans_a_sentence() -> None:
+    """"Dvacet. Pět." is two spoken numbers, not twenty-five.
+
+    `_numeral_tokens` concatenates sentences, and the suppression this replaced
+    relied on that: adjacent numerals across a boundary were REFUSED, which its
+    docstring names as the fail-closed direction. Composing a flat list read
+    them as one number and matched a transcript's "25."
+    """
+    score, detail = coverage("Dvacet. Pět.", "25.", "cs")
+    assert score == 0.0
+    assert "[20, 5]" in detail
 
 
 def test_a_fused_numeral_in_a_compound_is_now_checked() -> None:
