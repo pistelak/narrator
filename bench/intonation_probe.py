@@ -56,6 +56,10 @@ from narrator.prosody import (  # noqa: E402
     yes_no_question,
 )
 
+# The same digest the take store and both backends key references on, so
+# "this is the same voice" means one thing across the project.
+from narrator.takes import content_digest  # noqa: E402
+
 
 @dataclass(frozen=True)
 class Case:
@@ -239,11 +243,16 @@ def _load_existing(results_path: Path, header: dict) -> list[dict]:
 
     Refuses to resume across a params/voice change: mixed-provenance rows
     would silently confound the A/B comparison the tag exists to isolate.
+
+    "Voice" means the clip's CONTENT, not its path — see the header. An older
+    results.json carries no `voice_digest`, so it compares None against a real
+    digest and is refused rather than silently trusted: the whole point is that
+    a run whose provenance cannot be established must not be extended.
     """
     if not results_path.is_file():
         return []
     stored = json.loads(results_path.read_text(encoding="utf-8"))
-    for key in ("params", "voice_path", "voice_transcript", "takes"):
+    for key in ("params", "voice_path", "voice_digest", "voice_transcript", "takes"):
         if stored["header"].get(key) != header.get(key):
             sys.exit(
                 f"{results_path} was produced with a different {key}; "
@@ -395,6 +404,15 @@ def run(args: argparse.Namespace) -> int:
     header = {
         "tag": args.tag,
         "voice_path": str(voice_path),
+        # Content, not just the path. A reference replaced in place keeps its
+        # path, so a path-only guard resumed happily and appended a SECOND
+        # speaker's rows to the first speaker's tag — precisely the mixed
+        # provenance _load_existing exists to refuse. It matters more here than
+        # in a cache: these results justify design decisions (§11 is why
+        # prosody.py exists), so a confounded tag produces a wrong CONCLUSION
+        # that nobody re-checks. Digested once per run, against a probe measured
+        # in minutes.
+        "voice_digest": content_digest(voice_path),
         "voice_transcript": transcript,
         "takes": args.takes,
         "date": time.strftime("%Y-%m-%d"),
