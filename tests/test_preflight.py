@@ -38,26 +38,23 @@ def test_all_numeral_sentence_is_flagged_and_named() -> None:
 
 
 def test_preflight_tracks_the_numeral_policy_it_is_predicting() -> None:
-    """Preflight follows verify.py without being edited, in both directions.
+    """Preflight follows verify.py without being edited.
 
-    "Dvou tisíc čtyřiceti osmi." is 2048 in the genitive — four inflected
-    numerals, a shape the compound grammar deliberately does not read, so the
-    chunk stays doomed. "Dvacet tisíc." IS read, so the split fallback rescues
-    its chunk and preflight reports clean.
+    "Dvou tisíc čtyřiceti osmi." is 2048 in the genitive — every word an
+    inflected numeral, so blinding leaves nothing to align and the chunk is
+    doomed. This verdict has moved twice while preflight itself stayed
+    untouched: composing Czech compounds made it rescuable, and abandoning
+    composition made it doomed again.
 
-    That both answers move with `verify.py` and not with an edit here is the
-    whole reason preflight runs the real coverage code rather than a hand-copied
-    list of shapes that fail.
+    That is the whole reason preflight runs the real coverage code rather than a
+    hand-copied list of shapes that fail — a parallel list would have been wrong
+    on both flips.
     """
     report = preflight(
         [Text("Heslo má přesně osm znaků. Dvou tisíc čtyřiceti osmi.")], lang="cs"
     )
     assert not report.clean
     assert "Dvou tisíc" in report.unverifiable[0].reason
-
-    # A compound the grammar DOES read is rescuable, so it is not flagged: split
-    # renders "Dvacet tisíc." alone, where it verifies by value.
-    assert preflight([Text("Bylo jich hodně. Dvacet tisíc.")], lang="cs").clean
 
     # Unrescuable in English, where the compound stays ambiguous by design.
     english = preflight([Text("The dial is set. Two fifty six.")], lang="en")
