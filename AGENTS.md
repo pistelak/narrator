@@ -130,7 +130,9 @@ verified findings and name any left unresolved.
 `narrator/`: `chunking` (sentence boundary lives here — one home, three
 importers), `synth` (retry ladder, cheap checks, pronunciation + acronym
 spelling), `verify` (coverage scoring, folds, hard-fail rules, verifiers),
-`render` (orchestration, quarantine), `audio` (DSP/mastering), `asr`
+`render` (orchestration, quarantine), `preflight` (script-only doom check —
+the verifier run against an identity transcript, no model),
+`audio` (DSP/mastering), `asr`
 (recognisers), `backends/` (TTS engines + deterministic fake), `types`
 (protocols), `cli` (the `narrate` entry point), `__init__` (the public API —
 new exports go in `__all__`). `bench/` is measurement tooling; its results

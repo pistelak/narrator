@@ -53,13 +53,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("text", type=Path, help="UTF-8 text file; blank lines are paragraph breaks")
     parser.add_argument("out", type=Path, help="output .wav")
-    parser.add_argument("--voice", type=Path, required=True, help="reference clip (wav)")
-    parser.add_argument("--voice-text", required=True, help="transcript of the reference clip")
+    # Required for rendering, but enforced below rather than by argparse:
+    # --preflight needs no voice, and demanding one made the free check cost
+    # exactly the setup it exists to run before.
+    parser.add_argument("--voice", type=Path, help="reference clip (wav); required unless --preflight")
+    parser.add_argument("--voice-text", help="transcript of the reference clip; required unless --preflight")
     parser.add_argument("--lang", default="en")
     parser.add_argument("--paragraph-gap", type=float, default=0.35)
     parser.add_argument("--max-chars", type=int, default=MAX_CHARS)
     parser.add_argument("--mono", action="store_true",
                         help="mono output; use to match an existing mono back-catalogue")
+    parser.add_argument("--preflight", action="store_true",
+                        help="check the script and exit without loading a model: a chunk "
+                             "the verifier can never certify (e.g. an all-numeral sentence) "
+                             "fails a real render only after burning every retry — this "
+                             "finds it in milliseconds. Exit 1 if a render is doomed")
     parser.add_argument("--no-verify", action="store_true",
                         help="skip the ASR round-trip. Faster, and silent content loss "
                              "becomes undetectable — the failure this tool exists to prevent")
@@ -92,16 +100,51 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return 2
 
+    # Render-only options are refused WITH --preflight rather than silently
+    # ignored. The same doomed script otherwise exited 0 under --no-verify and 1
+    # under --write-anyway, and accepted a --reroll naming chunks that do not
+    # exist — a CI job could read "can NEVER verify" as success.
+    if args.preflight:
+        conflicting = [
+            name for name, value in (
+                ("--no-verify", args.no_verify), ("--write-anyway", args.write_anyway),
+                ("--takes", args.takes is not None), ("--reroll", bool(args.reroll.strip())),
+            ) if value
+        ]
+        if conflicting:
+            parser.error(
+                f"--preflight checks the script and renders nothing, so "
+                f"{', '.join(conflicting)} would have no effect"
+            )
+    elif args.voice is None or not args.voice_text:
+        # Before the script is read, so a missing input file cannot mask a
+        # missing required option with a filesystem traceback.
+        parser.error("--voice and --voice-text are required to render")
+
+    # Parsed after those, so --preflight pays for nothing it does not need —
+    # not a voice, and above all not a model import. It sits AFTER the reroll
+    # check, which is pure argument parsing and is required to refuse a typo
+    # "before anything is read or loaded" (its own test says so).
+    segments = parse_text(args.text.read_text(encoding="utf-8"), args.paragraph_gap)
+    if not segments:
+        print(f"{args.text}: nothing to say", file=sys.stderr)
+        return 2
+
+    if args.preflight:
+        from narrator.preflight import preflight
+
+        report = preflight(segments, lang=args.lang, max_chars=args.max_chars)
+        print(report.summary())
+        for u in report.unverifiable:
+            print(f"  chunk {u.index}: {u.reason} :: {u.text[:60]}...", file=sys.stderr)
+        return 0 if report.clean else 1
+
     from narrator.backends.higgs import HiggsBackend
     from narrator.verify import NullVerifier
 
     backend = HiggsBackend()
     verifier = NullVerifier() if args.no_verify else None  # None -> render's default
     voice = Voice(args.voice, args.voice_text, args.lang)
-    segments = parse_text(args.text.read_text(encoding="utf-8"), args.paragraph_gap)
-    if not segments:
-        print(f"{args.text}: nothing to say", file=sys.stderr)
-        return 2
 
     cfg = RenderConfig(
         max_chars=args.max_chars,
