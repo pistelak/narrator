@@ -238,6 +238,35 @@ def _synth_config(ranked: bool):
     return SynthConfig(wants_rise=yes_no_question) if ranked else SynthConfig()
 
 
+def _execution_identity() -> str:
+    """Everything about THIS build that can change a verdict.
+
+    Not `narrator.__version__` — it has been 0.1.0 throughout, so it identifies
+    nothing. The semantics constants are the honest signal: they exist precisely
+    to say "what "correct" means changed here", and the take store already
+    refuses to reuse across them for the same reason a benchmark must refuse to
+    resume across them.
+    """
+    from narrator import synth, verify
+
+    return json.dumps({"verify": verify.SEMANTICS, "synth": synth.SEMANTICS})
+
+
+def _snapshot_reference(voice_path: Path, out_dir: Path) -> Path:
+    """Copy the reference into the run directory, once, and render from THAT.
+
+    The digest was taken when the header was written and the clip was read
+    minutes later, per case — so replacing the file mid-run appended a second
+    speaker's rows under the first speaker's digest, which is the very outcome
+    the digest was added to prevent, moved from between runs to inside one. A
+    run-owned copy cannot be edited out from under the rows it produced.
+    """
+    snapshot = out_dir / "reference.wav"
+    if not snapshot.is_file():
+        snapshot.write_bytes(voice_path.read_bytes())
+    return snapshot
+
+
 def _load_existing(results_path: Path, header: dict) -> list[dict]:
     """Records from a prior run of this tag, for idempotent resume.
 
@@ -252,7 +281,8 @@ def _load_existing(results_path: Path, header: dict) -> list[dict]:
     if not results_path.is_file():
         return []
     stored = json.loads(results_path.read_text(encoding="utf-8"))
-    for key in ("params", "voice_path", "voice_digest", "voice_transcript", "takes"):
+    for key in ("params", "voice_path", "voice_digest", "voice_transcript",
+                "takes", "engine"):
         if stored["header"].get(key) != header.get(key):
             sys.exit(
                 f"{results_path} was produced with a different {key}; "
@@ -401,6 +431,9 @@ def run(args: argparse.Namespace) -> int:
     out_dir = OUT_BASE / args.tag
     out_dir.mkdir(parents=True, exist_ok=True)
     results_path = out_dir / "results.json"
+    # Snapshot first, then digest the SNAPSHOT: the bytes named in the header are
+    # then exactly the bytes every take is rendered from.
+    reference = _snapshot_reference(voice_path, out_dir)
     header = {
         "tag": args.tag,
         "voice_path": str(voice_path),
@@ -412,7 +445,14 @@ def run(args: argparse.Namespace) -> int:
         # prosody.py exists), so a confounded tag produces a wrong CONCLUSION
         # that nobody re-checks. Digested once per run, against a probe measured
         # in minutes.
-        "voice_digest": content_digest(voice_path),
+        "voice_digest": content_digest(reference),
+        # What was actually RUN, not just what the library is called. A resume
+        # guard that ignores this mixes verdict-bearing rows from different
+        # verification policies into one clean report — and these constants do
+        # move: verify.SEMANTICS went 1 -> 4 in a single afternoon. Recorded as
+        # an opaque identity so adding a component cannot silently keep old
+        # rows resumable.
+        "engine": _execution_identity(),
         "voice_transcript": transcript,
         "takes": args.takes,
         "date": time.strftime("%Y-%m-%d"),
@@ -446,7 +486,7 @@ def run(args: argparse.Namespace) -> int:
     for case in cases:
         # Fresh Voice per case so verification runs the case's language;
         # the backend's reference cache is keyed by path, so no re-encoding.
-        voice = Voice(voice_path, transcript, case.lang)
+        voice = Voice(reference, transcript, case.lang)
         for take in range(1, args.takes + 1):
             if (case.id, take) in done:
                 continue
