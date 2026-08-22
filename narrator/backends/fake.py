@@ -36,6 +36,7 @@ class Failure(StrEnum):
     TRUNCATE = "truncate"             # stops partway, mid-thought
     RUNAWAY = "runaway"               # generates until the frame cap stops it
     RAISE = "raise"                   # engine throws
+    SILENT_HOLE = "silent_hole"       # says everything, with dead air in the middle
 
 
 @dataclass
@@ -82,6 +83,15 @@ class FakeBackend:
     delivering one turn quietly — the whisper that three inference designs kept
     mistaking for a quiet reference clip."""
 
+    hole_s: float = 4.5
+    """Seconds of dead air spliced in by `Failure.SILENT_HOLE`. Appended, per the
+    note above.
+
+    Above `SynthConfig.max_silence_s` (4.0) so the mode is a defect, but under
+    what the frame cap allows for the standard test chunk, so the silence check
+    is what refuses it rather than the runaway or duration gates firing first —
+    a test that passes for the wrong reason pins nothing."""
+
     @property
     def identity(self) -> str:
         """For the take store: what this fake was CONFIGURED to do, never what it
@@ -102,6 +112,7 @@ class FakeBackend:
             self.amplitude,
             sorted(self.amplitude_script.items()),
             sorted((str(v), a) for v, a in self._levels().items()),
+            self.hole_s,
         ])
 
     def frames_per_second(self) -> int:
@@ -136,6 +147,20 @@ class FakeBackend:
         t = np.arange(samples, dtype=np.float32) / self.sample_rate
         level = self.amplitude_script.get(index, self._level_for(voice))
         audio = (level * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
+        if mode is Failure.SILENT_HOLE:
+            # Every word still "spoken" — `spoken` is untouched, so the ASR
+            # round-trip returns a perfect transcript and coverage stays 1.000.
+            # That is the whole point of this mode: issue #18 shipped 18.5 s of
+            # dead air at `failed=0`, `min coverage 1.0`, because silence
+            # between words contains no words for a transcript to miss.
+            #
+            # INSERTED, not overwritten: the real defect adds dead air, so the
+            # chunk gets longer while saying exactly the same words. Overwriting
+            # would delete speech instead, which is a different failure the
+            # duration floor already catches.
+            hole = np.zeros(int(self.hole_s * self.sample_rate), dtype=np.float32)
+            middle = samples // 2
+            audio = np.concatenate([audio[:middle], hole, audio[middle:]])
         audio[0] = self._stamp(index)
         self._spoken[index] = spoken
         return audio

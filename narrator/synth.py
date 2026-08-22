@@ -18,6 +18,7 @@ thing, indistinguishable from success".
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -25,6 +26,7 @@ from dataclasses import dataclass, replace
 import numpy as np
 
 from narrator import prosody
+from narrator.audio import SILENCE_DROP_DB, longest_silent_run, trim_silence
 from narrator.chunking import split_sentences
 from narrator.takes import TakeStore, take_key
 from narrator.types import Audio, Backend, ChunkResult, Verdict, Verifier, Voice
@@ -102,6 +104,48 @@ class SynthConfig:
     verifies against the caller's original text. Chunking also runs on the
     original, so chunk boundaries do not shift when the lexicon changes."""
 
+    max_silence_s: float = 4.0
+    """Longest interior silence a chunk may contain before it is a defect.
+
+    Renders emit multi-second holes the script never asked for, and every other
+    gate passes them: the words are all there, so coverage stays 1.000, and the
+    duration ceiling is far too loose to notice — a 20-word chunk permits 16.5 s
+    against ~8 s of real speech, so an 8 s hole fits inside the budget. One
+    episode shipped 18.5 s of dead air reporting `failed=0`, `min coverage 1.0`
+    (issue #18). Measured at 10 events over ~389 chunks.
+
+    4.0 s refuses only the SEVERE class actually measured (7.32, 8.08, 10.44,
+    10.98 s). The 1.0-1.6 s band is left to `ChunkResult.silence_s` as telemetry
+    rather than refused, because a pause the script spells — `verify.py` already
+    treats a punctuation-only `"..."` as exactly that — plausibly lives there,
+    and refusing a class nobody has calibrated is how a gate starts rejecting
+    correct audio."""
+
+    silence_drop_db: float = SILENCE_DROP_DB
+    """How far under its own speech level a stretch counts as silent. Relative,
+    never absolute — see `audio.SILENCE_DROP_DB` for the counterexample."""
+
+    def __post_init__(self) -> None:
+        # A NaN compares False against every bound, so the gate would be off
+        # while the config still claimed to have one — the silent-disable this
+        # library refuses everywhere else.
+        if not math.isfinite(self.silence_drop_db) or self.silence_drop_db <= 0:
+            raise ValueError(
+                f"silence_drop_db={self.silence_drop_db} must be a positive, finite "
+                "number of decibels; anything else silently disables the check."
+            )
+        if not math.isfinite(self.max_silence_s) or self.max_silence_s <= 0:
+            raise ValueError(f"max_silence_s={self.max_silence_s} must be positive and finite.")
+        # A sentence-split join is real digital silence (`_sentence_split`
+        # allocates zeros from this), so a gap at or above the gate threshold
+        # would manufacture the hole the gate then refuses.
+        if self.sentence_gap_s >= self.max_silence_s:
+            raise ValueError(
+                f"sentence_gap_s={self.sentence_gap_s} is not below "
+                f"max_silence_s={self.max_silence_s}: the rescue path would insert "
+                "a silence long enough to be refused as a defect."
+            )
+
 
 def frame_cap(words: int, fps: int, cfg: SynthConfig) -> int:
     expected = words / cfg.words_per_second
@@ -122,6 +166,8 @@ class _Attempt:
     duration_ok: bool
     verdict: Verdict
     hit_cap: bool = False
+    silence_s: float = 0.0
+    """Longest interior silence measured on the audio that would ship."""
     prior_failures: int = 0
     """Failed or raised attempts before success was first secured.
     `recovered_by="retry"` keys off this: with rise selection a later take
@@ -374,12 +420,28 @@ def _synthesize(
     if cfg.allow_sentence_split:
         audio_, coverage_, split_spent = _sentence_split(text, backend, verifier, voice, cfg,
                                                          intent)
+        # The assembly is checked as a whole, not trusted because its parts
+        # passed. Two sentences can each clear the gate and still meet across a
+        # join: `trim_silence` is peak-relative, so low-level residue survives it
+        # while counting as silence here. A review reproduced exactly that — an
+        # assembly measuring 9.12 s of interior silence returned ok=True,
+        # recovered_by="sentence-split", and was stored for reuse.
+        if audio_ is not None and longest_silent_run(
+            audio_, backend.sample_rate, cfg.silence_drop_db
+        ) > cfg.max_silence_s:
+            audio_ = None
         if audio_ is not None:
             return ChunkResult(
                 index=index, text=text, audio=audio_,
                 duration_s=len(audio_) / backend.sample_rate,
                 attempts=cfg.max_attempts + split_spent,
                 ok=True, coverage=coverage_, recovered_by="sentence-split",
+                # Measured on the ASSEMBLY, not inherited from a sentence: the
+                # joins are part of what ships. `SynthConfig.__post_init__`
+                # keeps `sentence_gap_s` below the threshold, so a join can
+                # never be mistaken for the defect.
+                silence_s=longest_silent_run(audio_, backend.sample_rate,
+                                             cfg.silence_drop_db),
             )
         # The failed split's generations were still paid for; the failed
         # result must report them, or six real calls read as three.
@@ -483,13 +545,27 @@ def _best_attempt(
             and duration >= (cap / backend.frames_per_second()) - 1e-6
         )
         duration_ok = floor <= duration <= ceiling
-        # Only pay for verification when the cheap checks already passed.
+        # Measured on the TRIMMED audio, which is what render actually ships
+        # (render.py applies trim_silence before stitching). Measuring the raw
+        # buffer would fail chunks for leading or trailing silence that is about
+        # to be removed, and `longest_silent_run` only counts interior runs for
+        # the same reason.
+        silence_s = longest_silent_run(
+            trim_silence(audio, backend.sample_rate), backend.sample_rate,
+            cfg.silence_drop_db,
+        )
+        silence_ok = silence_s <= cfg.max_silence_s
+        # Only pay for verification when the cheap checks already passed. The
+        # silence check belongs with them: it is arithmetic over one buffer,
+        # where verification is an ASR call, and coverage is structurally blind
+        # to this defect anyway — silence between words contains no words.
         verdict = (
             verifier.verify(audio, text, voice.lang)
-            if duration_ok and not hit_cap
+            if duration_ok and silence_ok and not hit_cap
             else Verdict(False, 0.0)
         )
         attempt = _Attempt(audio, duration, duration_ok, verdict, hit_cap,
+                           silence_s=silence_s,
                            prior_failures=failures, calls_spent=number)
 
         if attempt.ok:
@@ -574,7 +650,14 @@ def _sentence_split(
             # as 0.22 s at the settled rate.
             gap = np.zeros(int(cfg.sentence_gap_s * backend.sample_rate), dtype=np.float32)
         attempts += attempt.calls_spent
-        pieces.extend([attempt.audio, gap])
+        # Trimmed before assembly, so the audio that ships IS the audio the
+        # checks measured. Joining the raw buffer let a sentence carry a long
+        # trailing pad through: the silence check measured a trimmed copy and
+        # passed, then the pad was embedded inside the assembled chunk, reported
+        # clean, and stored for reuse. `render`'s own trim only reaches the
+        # assembled chunk's outer edges, so it could never remove an interior
+        # one.
+        pieces.extend([trim_silence(attempt.audio, backend.sample_rate), gap])
         worst = min(worst, attempt.verdict.coverage)
 
     return np.concatenate(pieces[:-1]), worst, attempts
@@ -589,4 +672,5 @@ def _result(index: int, text: str, attempt: _Attempt, recovered_by: str = "",
         dropped_sentence=attempt.verdict.dropped_sentence,
         transcript=attempt.verdict.transcript, recovered_by=recovered_by,
         word_diagnostics=attempt.verdict.word_diagnostics,
+        silence_s=attempt.silence_s,
     )

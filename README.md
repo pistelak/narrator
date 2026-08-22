@@ -182,6 +182,35 @@ alone.
 Verification is on by default; opting out is always explicit (`--no-verify`,
 or `NullVerifier()`), never a silent fallback.
 
+### Silence is checked separately, because words cannot check it
+
+A transcript is blind to one whole class of defect: a render can say every word
+correctly and still contain multi-second stretches of dead air. Silence between
+words contains no words, so coverage stays at 1.00, and the duration ceiling is
+too loose to notice — a 20-word chunk permits 16.5 s against roughly 8 s of real
+speech, so an 8 s hole fits inside the budget. One episode shipped 18.5 s of
+unscripted silence reporting zero failures at a minimum coverage of 1.00.
+
+So every chunk is also measured for the longest silence *between* its speech,
+and a chunk exceeding `SynthConfig.max_silence_s` (4 s) fails and is retried
+like any other defect. Two properties are deliberate:
+
+- **The threshold is relative, never an absolute dBFS floor.** Correct audio may
+  legitimately be quiet — a natively quiet engine, a quiet reference, a
+  deliberate whisper — and a fixed floor calls all of it silence. A stretch
+  counts as silent only when it sits far below *that chunk's own* speech level,
+  so scaling a render up or down cannot change the verdict.
+- **Only the severe class is refused.** `ChunkResult.silence_s` reports the
+  measurement on every chunk, including holes too short to reject. A pause the
+  script spells — `"..."` is treated as exactly that — lives in the short band,
+  and refusing it on evidence nobody has gathered would reject correct audio.
+
+One boundary follows from this, and it is deliberate: a pause you *want* that is
+longer than `max_silence_s` must be a `Gap`, not punctuation in a `Text`. At that
+length nothing in the audio distinguishes an intended beat from the defect, and a
+`Gap` is how this library is told a pause is content — it is honoured exactly,
+never invented, lengthened or shortened.
+
 ## Reusing takes (opt-in)
 
 Point a render at a directory of takes and it stops re-doing work it has

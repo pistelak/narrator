@@ -187,6 +187,15 @@ class ChunkResult:
     this run spent no generations, while `recovered_by` is preserved, because it
     describes how the audio itself was made and that is still true."""
 
+    silence_s: float = 0.0
+    """Longest interior silence in this chunk's audio, in seconds.
+
+    Appended, for the reason `reused` records above. Always reported, not only
+    on failure: `SynthConfig.max_silence_s` deliberately refuses just the severe
+    class that was measured, so this is the number that tells a caller whether
+    the shorter band is real in their material — and the evidence for tightening
+    the threshold later. 0.0 on a reused take, which this run did not measure."""
+
     @property
     def words(self) -> int:
         return len(self.text.split())

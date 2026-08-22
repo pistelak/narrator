@@ -304,3 +304,150 @@ def test_a_passing_diagnostic_reverify_cannot_rescue_a_capped_attempt() -> None:
     assert not result.ok, "a passing re-verification rescued a capped attempt"
     assert result.coverage == 1.0
     assert result.transcript == TEXT
+
+
+# ---------------------------------------------------------- unscripted silence
+
+def test_a_multi_second_hole_is_refused_though_every_word_is_present() -> None:
+    """The defect issue #18 exists for: silence between words contains no words.
+
+    An episode shipped 18.5 s of dead air reporting `failed=0`, `min coverage
+    1.0`. The ASR round-trip cannot see it — the transcript is perfect — and the
+    duration ceiling is far too loose, since a 20-word chunk permits 16.5 s
+    against ~8 s of real speech.
+    """
+    cfg = SynthConfig(max_attempts=1, allow_sentence_split=False)
+    result, _ = run({0: Failure.SILENT_HOLE}, cfg=cfg)
+    assert not result.ok, "a hole must not ship"
+    assert result.silence_s > cfg.max_silence_s, "and the report must name it"
+    # The sharp end of the issue: the round-trip is PERFECT on this audio. Every
+    # word was spoken, so the transcript matches and coverage is 1.00 — and the
+    # chunk is still a defect. Nothing that scores words could have caught it.
+    assert result.coverage == 1.0
+    assert result.transcript, "the diagnostic transcript still runs on failure"
+
+
+def test_a_hole_is_recovered_by_the_retry_ladder() -> None:
+    """Why the check lives per-chunk rather than post-stitch.
+
+    The defect is stochastic — issue #18 measured ~1% of chunks — so a
+    regenerated attempt almost certainly clears it. A whole-file check could
+    only refuse the finished render, after paying for every chunk.
+    """
+    result, _ = run({0: Failure.SILENT_HOLE})
+    assert result.ok
+    assert result.recovered_by == "retry"
+    assert result.silence_s <= SynthConfig().max_silence_s
+
+
+def test_the_silence_check_is_scale_invariant() -> None:
+    """A correct but QUIET render must not read as silence.
+
+    `FakeBackend(amplitude=0.001)` is entirely correct speech peaking at
+    -60 dBFS, which any absolute dBFS floor would classify as dead air — and the
+    same shape is legal for a natively quiet backend, a quiet reference, or the
+    deliberate whisper this library protects. The check runs before `apply_gain`
+    and before mastering normalises loudness, so an absolute number would not
+    even refer to the level that ships.
+    """
+    cfg = SynthConfig(max_attempts=1, allow_sentence_split=False)
+    for amplitude in (0.1, 0.001):
+        backend = FakeBackend(amplitude=amplitude)
+        verifier = CoverageVerifier(FakeASR(backend))
+        result = synthesize_chunk(TEXT, 0, backend, verifier, VOICE, cfg)
+        assert result.ok, f"correct speech at amplitude={amplitude} must pass"
+        assert result.silence_s == 0.0
+
+
+def test_a_short_hole_is_reported_but_not_refused() -> None:
+    """The 1.0-1.6 s band is telemetry, not a refusal.
+
+    Only the severe class was measured (7.32, 8.08, 10.44, 10.98 s). A pause the
+    script spells — `verify` already treats a punctuation-only "..." as one —
+    plausibly lives in the short band, so it is reported and left to the caller
+    rather than refused on evidence nobody has.
+    """
+    cfg = SynthConfig(max_attempts=1, allow_sentence_split=False)
+    backend = FakeBackend(script={0: Failure.SILENT_HOLE}, hole_s=2.0)
+    verifier = CoverageVerifier(FakeASR(backend))
+    result = synthesize_chunk(TEXT, 0, backend, verifier, VOICE, cfg)
+    assert result.ok, "a two-second hole is not the measured defect"
+    assert 1.5 < result.silence_s < 2.5, "but the caller is told about it"
+
+
+def test_a_sentence_gap_at_the_gate_threshold_is_refused_up_front() -> None:
+    """The rescue path inserts real zeros, so it must stay under the gate.
+
+    Making the interaction unrepresentable is cheaper than teaching the check to
+    recognise and skip its own joins.
+    """
+    with pytest.raises(ValueError, match="sentence_gap_s"):
+        SynthConfig(sentence_gap_s=5.0)
+
+
+def test_speech_that_merely_varies_is_not_a_hole() -> None:
+    """The false positive that would matter most: quiet delivery is not dead air.
+
+    A gate that refuses correct renders is worse than the defect it catches, so
+    the margin is pinned. A passage 25 dB under the rest of its own chunk — far
+    quieter than ordinary variation — must not register.
+    """
+    import numpy as np
+
+    from narrator.audio import longest_silent_run
+
+    sr = 24000
+
+    def tone(seconds: float, amplitude: float) -> np.ndarray:
+        t = np.arange(int(seconds * sr), dtype=np.float32) / sr
+        return (amplitude * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
+
+    # 30 dB under, which is where a review found real low-level delivery living.
+    # The default drop is 35 dB precisely so this shape has room.
+    quiet = np.concatenate([tone(2, 0.1), tone(4, 0.1 * 10 ** (-30 / 20)), tone(2, 0.1)])
+    assert longest_silent_run(quiet, sr) < 1.0
+
+
+def test_an_extreme_hole_is_still_refused_by_another_gate() -> None:
+    """Past ~96% dead air the percentile lands inside the hole and this fails open.
+
+    Left that way on purpose: audio that silent cannot have said its words, so
+    the frame cap and duration ceiling reject it first. Pinned so the reasoning
+    is checkable rather than asserted.
+    """
+    cfg = SynthConfig(max_attempts=1, allow_sentence_split=False)
+    backend = FakeBackend(script={0: Failure.SILENT_HOLE}, hole_s=60.0)
+    verifier = CoverageVerifier(FakeASR(backend))
+    result = synthesize_chunk(TEXT, 0, backend, verifier, VOICE, cfg)
+    assert not result.ok
+
+
+def test_a_sentence_split_assembly_is_checked_as_a_whole() -> None:
+    """The parts passing does not make the assembly clean.
+
+    Two sentences can each clear the gate and still meet across a join, because
+    `trim_silence` is peak-relative and low-level residue survives it while
+    counting as silence here. A review reproduced an assembly measuring 9.12 s of
+    interior silence that returned ok=True, recovered_by="sentence-split", and
+    was then stored for reuse.
+    """
+    import numpy as np
+
+    from narrator.audio import longest_silent_run
+
+    backend = FakeBackend()
+    sr = backend.sample_rate
+    t = np.arange(int(2.0 * sr), dtype=np.float32) / sr
+    speech = (0.1 * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
+    assembly = np.concatenate([speech, np.zeros(int(6.0 * sr), dtype=np.float32), speech])
+
+    cfg = SynthConfig()
+    assert longest_silent_run(assembly, sr, cfg.silence_drop_db) > cfg.max_silence_s, (
+        "the assembly is over the gate, so _synthesize must not report it clean"
+    )
+
+
+def test_a_non_finite_drop_is_refused() -> None:
+    """A NaN threshold compares False against everything and disables the gate."""
+    with pytest.raises(ValueError, match="silence_drop_db"):
+        SynthConfig(silence_drop_db=float("nan"))
