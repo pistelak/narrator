@@ -36,11 +36,15 @@ class FakeTTS:
         if name not in {"M1", "M2", "F1"}:
             raise KeyError(name)
         self.styles_by_name.append(name)
-        return f"style::{name}"
+        return f"style::{name}::{len(self.styles_by_name)}"
 
     def get_voice_style_from_path(self, path: str):
+        # Numbered by resolution, like the Higgs double: a style that merely
+        # names its path cannot tell a FRESH resolution from a stale cached one,
+        # so a backend that re-resolves and then synthesizes with the old style
+        # would still pass.
         self.styles_by_path.append(path)
-        return f"style::{path}"
+        return f"style::{path}::{len(self.styles_by_path)}"
 
     def synthesize(self, **kwargs):
         self.calls.append(kwargs)
@@ -122,6 +126,96 @@ def test_a_clip_path_cannot_collide_with_a_preset_name(
     backend.synthesize(TEXT, Voice(preset="M1", lang="en"), max_frames=999, temperature=0.4)
     assert backend._tts.styles_by_path == ["M1"]
     assert backend._tts.styles_by_name == ["M1"]   # resolved separately, not reused
+
+
+def test_an_edited_reference_re_resolves_the_style(
+    backend: SupertonicBackend, tmp_path: Path
+) -> None:
+    """Replace the file at a path and the next synthesis must use the new speaker.
+
+    Path text is not content identity. Keyed on the path alone, the cache hits
+    after an in-place edit and the engine synthesizes the PREVIOUS speaker while
+    the render verifies clean — ASR checks the words, not who says them. The
+    take store makes it reachable in a new way too: it misses correctly on the
+    edited reference, and a long-lived backend then refills that miss with the
+    old speaker's audio, now filed under the new reference's digest.
+
+    Mirrors the Higgs test of the same name. Size and mtime are both restored, so
+    a regression to `(path, size, mtime)` identity fails here rather than passing
+    by luck; and the assertion is on the style that reached `synthesize`, not on
+    the resolver count, so re-resolving and then synthesizing with the stale
+    style fails too.
+    """
+    import os
+
+    clip = tmp_path / "ref.wav"
+    clip.write_bytes(b"RIFF-speaker-A")
+    voice = Voice(clip, "t", "en")
+    before = clip.stat()
+    backend.synthesize(TEXT, voice, max_frames=999, temperature=0.4)
+
+    clip.write_bytes(b"RIFF-speaker-B")   # same path, same size, new speaker
+    os.utime(clip, ns=(before.st_atime_ns, before.st_mtime_ns))
+    after = clip.stat()
+    assert (after.st_size, after.st_mtime_ns) == (before.st_size, before.st_mtime_ns)
+
+    backend.synthesize(TEXT, voice, max_frames=999, temperature=0.4)
+
+    assert len(backend._tts.styles_by_path) == 2, "an edited clip must re-resolve"
+    assert backend._tts.calls[-1]["voice_style"].endswith("::2"), "the FRESH style must ship"
+
+
+def _clip(tmp_path: Path, index: int) -> Voice:
+    clip = tmp_path / f"v{index}.wav"
+    clip.write_bytes(f"RIFF{index}".encode())
+    return Voice(clip, "t", "en")
+
+
+def test_the_clip_cache_is_bounded_and_evicts_oldest_first(
+    backend: SupertonicBackend, tmp_path: Path
+) -> None:
+    """A long-lived backend handed many references must not grow without bound.
+
+    Both halves are asserted, because either alone is passed by a wrong policy:
+    a cache that evicted every entry on arrival also stays under the cap while
+    re-resolving every call, and "the newest is still cached" is satisfied by
+    MRU, LRU or anything else that keeps the newest. So the boundary itself is
+    pinned — oldest out, newest in — which is the documented FIFO contract.
+    """
+    from narrator.backends.supertonic import CLIP_CACHE_MAX
+
+    for index in range(CLIP_CACHE_MAX + 4):
+        backend.synthesize(TEXT, _clip(tmp_path, index), max_frames=999, temperature=0.4)
+    assert len(backend._styles) == CLIP_CACHE_MAX
+
+    resolved = len(backend._tts.styles_by_path)
+    backend.synthesize(TEXT, _clip(tmp_path, CLIP_CACHE_MAX + 3), max_frames=999,
+                       temperature=0.4)
+    assert len(backend._tts.styles_by_path) == resolved, "the newest entry is still cached"
+
+    backend.synthesize(TEXT, _clip(tmp_path, 0), max_frames=999, temperature=0.4)
+    assert len(backend._tts.styles_by_path) == resolved + 1, "the oldest was evicted"
+
+
+def test_presets_are_exempt_from_the_clip_bound(
+    backend: SupertonicBackend, tmp_path: Path
+) -> None:
+    """Supertonic ships ten presets; a bound of eight must not evict the bank.
+
+    Capping clips and presets together thrashed a case this engine explicitly
+    supports — a dialogue cycling M1..M5/F1..F5 would evict its own speakers
+    every turn, and clip styles would evict reusable preset styles. Presets
+    cannot grow without bound anyway: an unknown one raises rather than caching.
+    """
+    from narrator.backends.supertonic import CLIP_CACHE_MAX
+
+    backend.synthesize(TEXT, Voice(preset="M1", lang="en"), max_frames=999, temperature=0.4)
+    for index in range(CLIP_CACHE_MAX + 4):
+        backend.synthesize(TEXT, _clip(tmp_path, index), max_frames=999, temperature=0.4)
+
+    resolved = len(backend._tts.styles_by_name)
+    backend.synthesize(TEXT, Voice(preset="M1", lang="en"), max_frames=999, temperature=0.4)
+    assert len(backend._tts.styles_by_name) == resolved, "a clip flood must not evict a preset"
 
 
 def test_unknown_preset_names_the_voice_bank(backend: SupertonicBackend) -> None:
