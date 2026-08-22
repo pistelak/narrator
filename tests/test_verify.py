@@ -1570,203 +1570,54 @@ def test_a_fused_numeral_standing_alone_is_still_compared() -> None:
 
 # ------------------------------------------- cs numeral compounds are composed
 
-def test_a_wrong_magnitude_in_a_compound_is_refused() -> None:
-    """The silent pass this fixes: twenty thousand read back as thirty thousand.
+def test_numeral_compounds_are_suppressed_and_why_composing_them_was_abandoned() -> None:
+    """Five rounds of review, five wrong integers. The refusal is the product.
 
-    Adjacency suppressed the numeral check for the whole sentence, so the value
-    was never compared and coverage stayed 1.00 (issue #23).
-    """
-    ref = "bylo tam dvacet tisíc lidí"
-    assert coverage(ref, "bylo tam 20000 lidí", "cs")[0] == 1.0
-    score, detail = coverage(ref, "bylo tam 30000 lidí", "cs")
-    assert score == 0.0
-    assert "numeral changed" in detail
+    Composing Czech compounds is sound in principle — `dvacet tisíc` is 20x1000
+    and nothing else, unlike English "two fifty six". Every implementation
+    nevertheless shipped a value the language does not carry, and the suite
+    passed each time: an explicit zero read as an absent multiplier, an English
+    compound composed under `cs`, `dvacet sto` fabricated as 2000, the oblique
+    hundreds inheriting the thousands' coefficient range, and finally the
+    acronym STEM certified as the number 100.
 
+    That last one is why this stopped: it was a false accept on ORDINARY
+    VOCABULARY, from a table I had argued could not over-reach.
 
-def test_shapes_outside_the_grammar_are_suppressed_not_guessed() -> None:
-    """The boundary of what this reads, pinned — because guessing is worse.
-
-    A first version accumulated any adjacent valued tokens, which FABRICATED
-    numbers rather than reading them: `nula tisíc` became 1000 (an explicit zero
-    read as an absent multiplier), `dvacet dvacet` became 40, and a quoted
-    English `two fifty six` became 58 under `cs`, since the Czech word set
-    contains the English one. None of those are numbers a Czech script can
-    express.
-
-    So the grammar is two validated shapes, and everything else — including real
-    Czech like `sto tisíc` — keeps the suppression it has always had. A
-    half-grammar that quietly returns the wrong integer is worse than a
-    documented refusal.
+    So a multi-token run is suppressed. The cost is the known hole below, which
+    is bounded and visible; the alternative kept being a wrong number under a
+    clean report.
     """
     from narrator.verify import _numeral_tokens_by_sentence, numeral_multiset
 
     def composed(text: str):
         return numeral_multiset(_numeral_tokens_by_sentence(text, "cs"), "cs")
 
-    assert composed("dvacet tisíc") == [20000]
-    assert composed("dvacet pět") == [25]
-    for outside in ("nula tisíc", "dvacet dvacet", "two fifty six",
-                    "sto tisíc", "dvou tisíc čtyřiceti osmi"):
-        assert composed(outside) is None, outside
+    assert composed("dvacet tisíc") is None
+    assert composed("two fifty six") is None
+    # The hole, stated: a compound's value is not compared, in either language.
+    assert coverage("bylo tam dvacet tisíc lidí", "bylo tam 30000 lidí", "cs")[0] == 1.0
 
 
-def test_a_compound_never_spans_a_sentence() -> None:
-    """"Dvacet. Pět." is two spoken numbers, not twenty-five.
+def test_an_acronym_is_not_a_number() -> None:
+    """The false accept that ended the composition experiment.
 
-    `_numeral_tokens` concatenates sentences, and the suppression this replaced
-    relied on that: adjacent numerals across a boundary were REFUSED, which its
-    docstring names as the fail-closed direction. Composing a flat list read
-    them as one number and matched a transcript's "25."
+    Valuing the oblique singular "stem" (instrumental of sto) made the acronym
+    STEM certify as 100 — in a project whose scripts are about technology. An
+    exact-match table CAN over-reach: it just needs the language to spell a
+    numeral the way something else is spelled.
     """
-    score, detail = coverage("Dvacet. Pět.", "25.", "cs")
-    assert score == 0.0
-    assert "[20, 5]" in detail
+    assert coverage("studuje STEM obory", "studuje 100 obory", "cs")[0] == 0.0
 
 
-def test_a_fused_numeral_in_a_compound_is_now_checked() -> None:
-    """The case #8 deferred to this issue, closed.
+def test_blinding_the_oblique_large_units_still_fixes_the_false_failure() -> None:
+    """What survives from the composition work, and the reason to keep it.
 
-    #8 made `pětadvacet` a numeral, which moved `pětadvacet tisíc` into the
-    suppressed-compound bucket. It is now composed instead.
+    The oblique forms were absent from the blind set, so a coefficient beside
+    one was read as an isolated small number: "deseti tisícům" (10 000, dative)
+    became [10] and a correct transcript's "10000" hard-failed at 0.00.
+    Blinding alone fixes that — no composition required, and no wrong integer
+    possible, because nothing is valued.
     """
-    ref = "bylo tam pětadvacet tisíc lidí"
-    assert coverage(ref, "bylo tam 25000 lidí", "cs")[0] == 1.0
-    assert coverage(ref, "bylo tam 35000 lidí", "cs")[0] == 0.0
-
-
-def test_mixed_spellings_across_the_two_sides_agree() -> None:
-    """Both sides compose, so the script's words and a transcript's part-digits
-    reach the same value — the symmetry the previous comment demanded."""
-    assert coverage("bylo tam dvacet tisíc lidí", "bylo tam 20 tisíc lidí", "cs")[0] == 1.0
-    assert coverage("měl dvě stě korun", "měl 200 korun", "cs")[0] == 1.0
-
-
-def test_an_all_numeral_compound_sentence_is_compared_not_refused() -> None:
-    """It was refused in BOTH directions — correct transcript included.
-
-    "Dvacet." against "20." has always passed; "Dvacet tisíc." against "20000."
-    hard-failed as unverifiable. Composition removes that asymmetry.
-    """
-    assert coverage("Dvacet tisíc.", "20000.", "cs")[0] == 1.0
-    assert coverage("Dvacet tisíc.", "30000.", "cs")[0] == 0.0
-
-
-def test_a_run_that_cannot_be_read_keeps_the_old_suppression() -> None:
-    """Fail back, not forward.
-
-    Hundreds-as-coefficient ("sto tisíc" = 100 x 1000) is outside the two
-    validated shapes, so the run is not a number this can read and it falls back
-    to comparing nothing — exactly the previous behaviour. The change can only
-    add a refusal where it can also compute the value.
-
-    Note what is NO LONGER here: "dva miliony" used to be the example, and it
-    now composes to 2000000 and correctly refuses a transcript's "3000000",
-    which it previously passed at 1.0.
-    """
-    assert coverage("stálo to sto tisíc korun", "stálo to 999 korun", "cs")[0] == 1.0
-    assert coverage("byly jich dva miliony", "byly jich 3000000", "cs")[0] == 0.0
-
-
-def test_english_compounds_are_still_suppressed() -> None:
-    """The ambiguity that motivated the skip is real in English and stays.
-
-    "two fifty six" may be 256 or 2-50-6; nothing in the grammar decides, so
-    comparing it would manufacture the false failures blinding exists to prevent.
-    """
-    assert coverage("he read two fifty six aloud", "he read 256 aloud", "en")[0] == 1.0
-    assert coverage("Two fifty six.", "256.", "en")[0] == 0.0
-
-
-def test_hundreds_take_only_the_coefficients_czech_actually_uses() -> None:
-    """`dvacet sto` is not 2000; it is not anything.
-
-    Czech counts hundreds from two to nine — "dvě stě" — and says "dva tisíce"
-    for 2000. Leaving the hundreds slot open to the full 1-99 coefficient range
-    manufactured a value out of a sequence the language cannot produce, which is
-    the same fabrication this grammar replaced an accumulator to stop.
-    """
-    from narrator.verify import _numeral_tokens_by_sentence, numeral_multiset
-
-    def composed(text: str):
-        return numeral_multiset(_numeral_tokens_by_sentence(text, "cs"), "cs")
-
-    # The hundreds are four slots, not one: dvě STĚ, tři/čtyři STA, pět..devět
-    # SET. A single 1-99 bound over sto/stě blessed "devět stě" and "tři stě",
-    # which no Czech speaker says, while the real 300-900 forms stayed invisible.
-    assert composed("dvě stě") == [200]
-    assert composed("tři sta") == [300]
-    assert composed("pět set") == [500]
-    assert composed("devět set") == [900]
-    for not_czech in ("devět stě", "tři stě", "dva sto", "dvacet sto"):
-        assert composed(not_czech) is None, not_czech
-
-
-def test_agreement_is_tolerated_because_the_value_is_unchanged() -> None:
-    """Deliberate, and worth stating so nobody "fixes" it into false failures.
-
-    "dva tisíc" is ungrammatical — Czech wants "dva tisíce" — but both denote
-    2000, so composing either to 2000 is tolerant rather than wrong. The defects
-    this grammar exists to stop are sequences whose plain reading is NOT the
-    value assigned ("dvacet sto" is not 2000; "nula tisíc" is not 1000). Full
-    morphological agreement is a much larger project and would buy no
-    correctness here.
-    """
-    from narrator.verify import _numeral_tokens_by_sentence, numeral_multiset
-
-    def composed(text: str):
-        return numeral_multiset(_numeral_tokens_by_sentence(text, "cs"), "cs")
-
-    assert composed("dva tisíce") == composed("dva tisíc") == [2000]
-    assert composed("pět tisíc") == composed("pět tisíce") == [5000]
-    # The thousands slot is unaffected: its coefficients really do run to 99.
-    assert composed("dvacet tisíc") == [20000]
-    assert composed("pětadvacet tisíc") == [25000]
-
-
-def test_oblique_large_units_do_not_produce_a_confident_wrong_integer() -> None:
-    """The worst shape this table had, and it refused correct renders.
-
-    The oblique forms of sto/tisíc/milion/miliarda were absent, so a coefficient
-    beside one was read as an isolated small number: "deseti tisícům" (10 000,
-    dative) became [10], and a correct transcript's "10000" hard-failed at 0.00
-    with "numeral changed: [10] became [10000]". Exactly the failure the oblique
-    block for the small numerals was written to kill, one case further down the
-    paradigm.
-    """
-    from narrator.verify import _numeral_tokens_by_sentence, numeral_multiset
-
-    def composed(text: str):
-        return numeral_multiset(_numeral_tokens_by_sentence(text, "cs"), "cs")
-
-    assert composed("deseti tisícům") == [10000]
-    # The oblique hundreds take the same 2-9 coefficients as the nominative
-    # ones. Left unbounded they inherited the thousands' 1-99 range and
-    # fabricated "dvacet stech" = 2000 — the "dvacet sto" defect, one case over.
-    assert composed("dvěma sty") == [200]
-    assert composed("třemi sty") == [300]
-    assert composed("devíti sty") == [900]
-    for not_czech in ("dvacet stech", "devadesát stům", "99 stech"):
-        assert composed(not_czech) is None, not_czech
-    assert composed("pěti milionům") == [5 * 10**6]
-    assert composed("jedním milionem") == [10**6]
-
     reference = "vyhověl deseti tisícům žádostí"
     assert coverage(reference, "vyhověl 10000 žádostí", "cs")[0] == 1.0
-    assert coverage(reference, "vyhověl 20000 žádostí", "cs")[0] == 0.0
-
-
-def test_an_unreadable_compound_suppresses_the_sentence_and_that_is_known() -> None:
-    """A hole pinned as a hole, so it is a decision rather than a surprise.
-
-    An unreadable run erases both sides, so an unrelated numeral in the same
-    sentence stops being checked. The obvious repair — a per-run sentinel —
-    refuses CORRECT transcripts instead: the script writes a compound and the
-    recogniser writes one digit token, so the sides have no matching run
-    structure to exclude. Narrowing what is unreadable is the real fix.
-
-    This test exists to fail loudly if someone "fixes" it in the direction that
-    manufactures false failures, and to be deleted when the grammar covers
-    `sto tisíc`.
-    """
-    reference = "stálo to sto tisíc korun a mám pět aut"
-    assert coverage(reference, "stálo to 100000 korun a mám devět aut", "cs")[0] == 1.0

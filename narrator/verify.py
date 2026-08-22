@@ -98,7 +98,7 @@ _NUMBER_WORDS_CS = _NUMBER_WORDS_EN | set(
     dvacet třicet čtyřicet padesát šedesát sedmdesát osmdesát devadesát
     sto stě sta set tisíc tisíce milion miliony milionů miliarda miliard miliardy
     milión milióny miliónů miliónu
-    tisícem tisícům tisících stem stům stech sty
+    tisícem tisícům tisících stům stech sty
     milionem milionům milionech miliónem miliónům
     miliardu miliardou miliardám miliardách miliardě
     jedné jednoho jednomu jedním jednou dvou dvěma tří třech třem třemi
@@ -224,8 +224,7 @@ _NUMERAL_VALUES: dict[str, int] = {
     # Only the UNAMBIGUOUS singulars carry a value. The plurals are blinded (see
     # _NUMBER_WORDS_CS) but valueless, on the same argument that keeps "sta"
     # valueless: a bare plural names a magnitude, not a number.
-    "tisícem": 1000, "stem": 100, "milionem": 10**6, "miliónem": 10**6,
-    "miliardu": 10**9, "miliardou": 10**9,
+
     # Both Czech spellings of the singular are current ("milion" post-reform,
     # "milión" traditional) and an ASR may write either; the accented plural
     # obliques fold onto their unaccented sentinels, which is how "milióny"
@@ -337,83 +336,6 @@ _NUMBER_WORDS_CS.update(_CS_FUSED)
 # value table: "na sta hostů" is "hundreds of guests", not 100). Composition
 # cannot reach that reading, because the indeterminate plural never takes a
 # numeric coefficient — "tři sta" is unambiguously 300.
-_HUNDREDS = frozenset(range(2, 10))
-_CS_LARGE = {
-    "sto": (100, {1}), "stě": (100, {2}), "sta": (100, {3, 4}),
-    "set": (100, {5, 6, 7, 8, 9}),
-    "tisíc": (1000, None), "tisíce": (1000, None),
-    "tisícům": (1000, None), "tisícem": (1000, None), "tisících": (1000, None),
-    "milion": (10**6, None), "milión": (10**6, None),
-    "milionů": (10**6, None), "milionům": (10**6, None), "milionem": (10**6, None),
-    "miliony": (10**6, None), "milióny": (10**6, None), "miliónů": (10**6, None),
-    "miliarda": (10**9, None), "miliardy": (10**9, None),
-    "miliard": (10**9, None), "miliardám": (10**9, None), "miliardou": (10**9, None),
-    # The oblique hundreds take the SAME 2-9 coefficients as the nominative
-    # ones — "dvěma sty", "třemi sty", "pěti sty" — so they are bounded too.
-    # Left unbounded they inherited the 1-99 thousands range and fabricated
-    # "dvacet stech" = 2000 and "99 stech" = 9900, which is precisely the
-    # "dvacet sto" defect this block was written to close, one case over.
-    "sty": (100, _HUNDREDS), "stům": (100, _HUNDREDS), "stech": (100, _HUNDREDS),
-}
-
-
-def _cs_only(word: str) -> bool:
-    """A Czech numeral form, excluding the English words pooled into the set.
-
-    `_NUMBER_WORDS_CS` is `_NUMBER_WORDS_EN | {...}`, so "two fifty six" is three
-    numerals under `cs` too. Composing those produced 58 — neither 256 nor a
-    refusal — for a quoted English compound inside a Czech script.
-    """
-    return word in _NUMBER_WORDS_CS and word not in _NUMBER_WORDS_EN
-
-
-def _coefficient(words: list[str], values: list[int]) -> int | None:
-    """1-99 as one or two Czech tokens, or None. Digits allowed, in range."""
-    if len(words) == 1:
-        word, value = words[0], values[0]
-        if _plain_digits(word):
-            return value if 1 <= value <= 99 else None
-        return value if _cs_only(word) and 1 <= value <= 99 else None
-    if len(words) == 2 and all(_cs_only(w) for w in words):
-        tens, unit = values
-        # Additive only, and only in the one order Czech writes: dvacet pět.
-        if 20 <= tens <= 90 and tens % 10 == 0 and 1 <= unit <= 9:
-            return tens + unit
-    return None
-
-
-def _compose_cs(words: list[str], values: list[int]) -> int | None:
-    """One Czech numeral compound's value, or None when the shape is not one.
-
-    A VALIDATED shape, not a running total. The first version accumulated any
-    adjacent valued tokens, which fabricated numbers rather than reading them:
-    `nula tisíc` became 1000 because an explicit zero was treated as an absent
-    multiplier, `dvacet dvacet` became 40, and a quoted English `two fifty six`
-    became 58 under `cs`, since the Czech word set contains the English one.
-    None of those are numbers a Czech script can express, so the honest answer
-    is "not a compound I can read" — which suppresses, exactly as before.
-
-    Two shapes only, both unambiguous:
-
-      coefficient x large unit   dvacet tisíc = 20000, pětadvacet tisíc = 25000
-      tens + unit                dvacet pět = 25, the separate-word twin of #8
-
-    Anything longer or otherwise shaped — `sto dvacet pět tisíc`, `milion dvě
-    stě tisíc` — is left to the suppression it has always had. Real Czech, and
-    the general grammar that reads it is worth having, but a half-grammar that
-    quietly returns the wrong integer is worse than a documented refusal.
-    """
-    if len(words) >= 2 and words[-1] in _CS_LARGE:
-        magnitude, allowed = _CS_LARGE[words[-1]]
-        coefficient = _coefficient(words[:-1], values[:-1])
-        if coefficient is None:
-            return None
-        if allowed is not None and coefficient not in allowed:
-            return None          # "dvacet sto" is not 2000; it is not anything
-        return coefficient * magnitude
-    return _coefficient(words, values)
-
-
 def numeral_multiset(
     sentences: list[list[str]], lang: str = "en", quote_foreign: bool = False,
 ) -> list[int | str] | None:
@@ -477,24 +399,24 @@ def numeral_multiset(
                 out.append(value if value is not None else "?" + fold(run[0], lang))
                 continue
 
-            if not lang.startswith("cs"):
-                return None
-            values = [value_of(word) for word in run]
-            # The final token may be a large unit carrying no STANDALONE value —
-            # "sta" and "set" are deliberately valueless because a bare plural
-            # names a magnitude, not a number ("na sta hostů" is not 100). With
-            # a coefficient in front there is no such ambiguity: "tři sta" is
-            # 300 and nothing else, so the unit supplies its own magnitude here
-            # rather than being valued globally, which would reopen that hole.
-            if len(values) >= 2 and values[-1] is None and run[-1] in _CS_LARGE:
-                values[-1] = _CS_LARGE[run[-1]][0]
-            if any(value is None for value in values):
-                # An indeterminate plural ("miliony") deliberately has no value.
-                return None
-            composed = _compose_cs(run, [v for v in values if v is not None])
-            if composed is None:
-                return None
-            out.append(composed)
+            # A multi-token run is SUPPRESSED, in every language.
+            #
+            # Composing it was tried across five rounds of review and abandoned.
+            # Czech compounds really are unambiguous, so the idea was sound —
+            # but every implementation shipped a wrong integer that the suite
+            # passed: an explicit zero read as an absent multiplier, an English
+            # compound composed under `cs`, "dvacet sto" fabricated as 2000, the
+            # oblique hundreds inheriting the thousands' range, and finally the
+            # acronym STEM certified as the number 100, because valuing "stem"
+            # collided with ordinary vocabulary. Each fix added table entries and
+            # each entry added collision surface.
+            #
+            # The rule this file already states settles it: a half-grammar that
+            # quietly returns the wrong integer is worse than a documented
+            # refusal. The refusal costs a known hole — "dvacet tisíc" against a
+            # transcript's "30000" passes (issue #23) — and that hole is
+            # visible, bounded, and has never certified a wrong ordinary word.
+            return None
     return out
 
 
