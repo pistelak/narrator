@@ -336,6 +336,14 @@ def _coefficient(words: list[str], values: list[int]) -> int | None:
     return None
 
 
+# Czech counts hundreds only from two to nine — "dvě stě", never "dvacet sto",
+# which is not a thing anyone says (2000 is "dva tisíce"). Without this bound
+# the hundreds slot accepted the full 1-99 coefficient range and manufactured
+# 2000 out of a sequence the language cannot produce, which is the same
+# fabrication this grammar replaced an accumulator to stop.
+_CS_MAX_COEFFICIENT = {"sto": 9, "stě": 9}
+
+
 def _compose_cs(words: list[str], values: list[int]) -> int | None:
     """One Czech numeral compound's value, or None when the shape is not one.
 
@@ -359,9 +367,9 @@ def _compose_cs(words: list[str], values: list[int]) -> int | None:
     """
     if len(words) >= 2 and words[-1] in _CS_LARGE:
         coefficient = _coefficient(words[:-1], values[:-1])
-        if coefficient is not None:
-            return coefficient * _CS_LARGE[words[-1]]
-        return None
+        if coefficient is None or coefficient > _CS_MAX_COEFFICIENT.get(words[-1], 99):
+            return None
+        return coefficient * _CS_LARGE[words[-1]]
     return _coefficient(words, values)
 
 

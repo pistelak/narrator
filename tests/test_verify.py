@@ -1670,3 +1670,24 @@ def test_english_compounds_are_still_suppressed() -> None:
     """
     assert coverage("he read two fifty six aloud", "he read 256 aloud", "en")[0] == 1.0
     assert coverage("Two fifty six.", "256.", "en")[0] == 0.0
+
+
+def test_hundreds_take_only_the_coefficients_czech_actually_uses() -> None:
+    """`dvacet sto` is not 2000; it is not anything.
+
+    Czech counts hundreds from two to nine — "dvě stě" — and says "dva tisíce"
+    for 2000. Leaving the hundreds slot open to the full 1-99 coefficient range
+    manufactured a value out of a sequence the language cannot produce, which is
+    the same fabrication this grammar replaced an accumulator to stop.
+    """
+    from narrator.verify import _numeral_tokens_by_sentence, numeral_multiset
+
+    def composed(text: str):
+        return numeral_multiset(_numeral_tokens_by_sentence(text, "cs"), "cs")
+
+    assert composed("dvě stě") == [200]
+    assert composed("devět stě") == [900]
+    assert composed("dvacet sto") is None
+    # The thousands slot is unaffected: its coefficients really do run to 99.
+    assert composed("dvacet tisíc") == [20000]
+    assert composed("pětadvacet tisíc") == [25000]
