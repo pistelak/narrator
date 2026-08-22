@@ -19,6 +19,7 @@ right audio" are different answers.
 """
 
 from narrator.audio import MasterConfig
+from narrator.preflight import PreflightReport, UnverifiableChunk, preflight
 from narrator.prosody import yes_no_question
 from narrator.render import RenderConfig, RenderFailed, render
 from narrator.synth import SynthConfig
@@ -49,17 +50,20 @@ __all__ = [
     "Gap",
     "MasterConfig",
     "NullVerifier",
+    "PreflightReport",
     "RenderConfig",
     "RenderFailed",
     "RenderReport",
     "Segment",
     "SynthConfig",
     "Text",
+    "UnverifiableChunk",
     "Verdict",
     "Verifier",
     "Voice",
     "__version__",
     "default_verifier",
+    "preflight",
     "render",
     "yes_no_question",
 ]
