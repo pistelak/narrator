@@ -1566,3 +1566,79 @@ def test_a_fused_numeral_standing_alone_is_still_compared() -> None:
     """The suppression above applies only to compounds; alone it is checked."""
     assert coverage("trvalo to pětadvacet minut", "trvalo to 25 minut", "cs")[0] == 1.0
     assert coverage("trvalo to pětadvacet minut", "trvalo to 26 minut", "cs")[0] == 0.0
+
+
+# ------------------------------------------- cs numeral compounds are composed
+
+def test_a_wrong_magnitude_in_a_compound_is_refused() -> None:
+    """The silent pass this fixes: twenty thousand read back as thirty thousand.
+
+    Adjacency suppressed the numeral check for the whole sentence, so the value
+    was never compared and coverage stayed 1.00 (issue #23).
+    """
+    ref = "bylo tam dvacet tisíc lidí"
+    assert coverage(ref, "bylo tam 20000 lidí", "cs")[0] == 1.0
+    score, detail = coverage(ref, "bylo tam 30000 lidí", "cs")
+    assert score == 0.0
+    assert "numeral changed" in detail
+
+
+def test_compounds_compose_rather_than_summing() -> None:
+    """Order carries meaning: `sto tisíc` and `tisíc sto` are different numbers.
+
+    A plain sum would call both 1100 and certify either transcript against the
+    other — the multiset collapse that makes composition necessary rather than
+    convenient.
+    """
+    assert coverage("stálo to sto tisíc korun", "stálo to 100000 korun", "cs")[0] == 1.0
+    assert coverage("stálo to sto tisíc korun", "stálo to 1100 korun", "cs")[0] == 0.0
+    assert coverage("stálo to tisíc sto korun", "stálo to 1100 korun", "cs")[0] == 1.0
+
+
+def test_a_fused_numeral_in_a_compound_is_now_checked() -> None:
+    """The case #8 deferred to this issue, closed.
+
+    #8 made `pětadvacet` a numeral, which moved `pětadvacet tisíc` into the
+    suppressed-compound bucket. It is now composed instead.
+    """
+    ref = "bylo tam pětadvacet tisíc lidí"
+    assert coverage(ref, "bylo tam 25000 lidí", "cs")[0] == 1.0
+    assert coverage(ref, "bylo tam 35000 lidí", "cs")[0] == 0.0
+
+
+def test_mixed_spellings_across_the_two_sides_agree() -> None:
+    """Both sides compose, so the script's words and a transcript's part-digits
+    reach the same value — the symmetry the previous comment demanded."""
+    assert coverage("bylo tam dvacet tisíc lidí", "bylo tam 20 tisíc lidí", "cs")[0] == 1.0
+    assert coverage("měl dvě stě korun", "měl 200 korun", "cs")[0] == 1.0
+
+
+def test_an_all_numeral_compound_sentence_is_compared_not_refused() -> None:
+    """It was refused in BOTH directions — correct transcript included.
+
+    "Dvacet." against "20." has always passed; "Dvacet tisíc." against "20000."
+    hard-failed as unverifiable. Composition removes that asymmetry.
+    """
+    assert coverage("Dvacet tisíc.", "20000.", "cs")[0] == 1.0
+    assert coverage("Dvacet tisíc.", "30000.", "cs")[0] == 0.0
+
+
+def test_a_run_that_cannot_be_read_keeps_the_old_suppression() -> None:
+    """Fail back, not forward.
+
+    An indeterminate plural deliberately has no value ("Byly jich miliony." is
+    not 1000000), so a run containing one is not a number this can read. It
+    falls back to comparing nothing, which is exactly the previous behaviour —
+    the change can only add a refusal where it can also compute the value.
+    """
+    assert coverage("byly jich dva miliony", "byly jich 3000000", "cs")[0] == 1.0
+
+
+def test_english_compounds_are_still_suppressed() -> None:
+    """The ambiguity that motivated the skip is real in English and stays.
+
+    "two fifty six" may be 256 or 2-50-6; nothing in the grammar decides, so
+    comparing it would manufacture the false failures blinding exists to prevent.
+    """
+    assert coverage("he read two fifty six aloud", "he read 256 aloud", "en")[0] == 1.0
+    assert coverage("Two fifty six.", "256.", "en")[0] == 0.0
