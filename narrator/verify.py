@@ -39,7 +39,7 @@ from narrator.chunking import split_sentences
 from narrator.takes import _class_id, identity_of
 from narrator.types import ASR, Audio, Verdict, Verifier
 
-SEMANTICS = 2
+SEMANTICS = 3
 """Version of what "correct" means here, for the take store's key.
 
 Bump it on ANY behavioural change to scoring: a new fold, a hard-fail rule, the
@@ -303,6 +303,91 @@ _NUMBER_WORDS_CS.update(_CS_FUSED)
 # "miliony" to "milionů", which are audibly different endings in teaching
 # audio (third gate review); fold() already absorbs the variance an ASR
 # actually produces, so the sentinel is per spoken form.
+
+
+def _compose_cs(values: list[int]) -> int:
+    """Left-to-right accumulation of a Czech numeral run into one value.
+
+    The ordinary written-numeral algorithm: units add, a multiplier scales what
+    is pending, and a large unit closes a group. It is what makes `sto tisíc`
+    (100000) and `tisíc sto` (1100) different numbers rather than the same
+    multiset, which a plain sum would have collapsed.
+    """
+    total = current = 0
+    for value in values:
+        if value >= 100:
+            current = (current or 1) * value
+            if value >= 1000:
+                total += current
+                current = 0
+        else:
+            current += value
+    return total + current
+
+
+def numeral_multiset(
+    words: list[str], lang: str = "en", quote_foreign: bool = False,
+) -> list[int | str] | None:
+    """Every numeral value in `words`, with adjacent runs composed — or None.
+
+    None means "this side contains a run this function cannot read", and the
+    caller must then fall back to comparing nothing, which is what the whole
+    sentence did before compounds were composed at all.
+
+    Why compose at all, when `isolated_numerals` documents skipping compounds as
+    deliberate: that reasoning is about ENGLISH. "two fifty six" really is
+    ambiguous — 256, or 2-50-6 — so comparing it manufactures the false failures
+    blinding exists to prevent. Czech is not ambiguous: `dvacet tisíc` is 20x1000
+    and nothing else, so the value is computable rather than guessed, and
+    skipping it certified a transcript's "30000" against audio that said twenty
+    thousand, at coverage 1.00 (issue #23).
+
+    English therefore keeps the skip exactly: a multi-token run is never
+    composable there, so this returns None the moment one appears, which is the
+    previous behaviour reproduced rather than approximated.
+    """
+    if not words:
+        return []
+
+    def numberish(word: str) -> bool:
+        if is_numberish(word, lang):
+            return True
+        return quote_foreign and not word.isascii() and word in _NUMERAL_VALUES
+
+    def value_of(word: str) -> int | None:
+        if _plain_digits(word) and len(word) <= 18 and str(int(word)) == word:
+            return int(word)
+        return _NUMERAL_VALUES.get(word)
+
+    out: list[int | str] = []
+    index = 0
+    while index < len(words):
+        if not numberish(words[index]):
+            index += 1
+            continue
+        start = index
+        while index < len(words) and numberish(words[index]):
+            index += 1
+        run = words[start:index]
+
+        if len(run) == 1:
+            # Single token: identical to isolated_numerals, sentinel included, so
+            # an unvalued form still yields exactly one element rather than
+            # vanishing from the comparison (three gate reviews on that hole).
+            value = value_of(run[0])
+            out.append(value if value is not None else "?" + fold(run[0], lang))
+            continue
+
+        if not lang.startswith("cs"):
+            return None
+        values = [value_of(word) for word in run]
+        if any(value is None for value in values):
+            # An indeterminate plural ("miliony") deliberately has no value, and
+            # a run containing one is not a number this can read. Refusing to
+            # guess leaves exactly today's behaviour for that sentence.
+            return None
+        out.append(_compose_cs(values))
+    return out
 
 
 def has_compound_numeral(words: list[str], lang: str = "en") -> bool:
@@ -819,14 +904,23 @@ def coverage_detail(
             # Content is judged AFTER pair canonicalization — "fore" under a
             # ("Four", "fore") pair is the declared spelling of a numeral,
             # not leftover content the script never asked for.
+            # Composed rather than merely refused when the run is readable. A
+            # whole sentence of "Dvacet tisíc." against a transcript's "20000."
+            # was hard-failing as unverifiable in BOTH directions — the correct
+            # transcript and the wrong one alike — while the single-token
+            # "Dvacet." against "20." has always passed. English is unchanged:
+            # a multi-token run is never composable there, so this is None
+            # exactly where `has_compound_numeral` was True.
+            ref_composed = numeral_multiset(ref_tokens, lang)
+            hyp_composed = numeral_multiset(hyp_tokens, lang)
             comparable = (
                 all(is_numberish(t, lang) for t in hyp_tokens)
-                and not has_compound_numeral(ref_tokens, lang)
-                and not has_compound_numeral(hyp_tokens, lang)
+                and ref_composed is not None
+                and hyp_composed is not None
             )
             if comparable:
-                ref_nums = sorted(isolated_numerals(ref_tokens, lang), key=str)
-                hyp_nums = sorted(isolated_numerals(hyp_tokens, lang), key=str)
+                ref_nums = sorted(ref_composed, key=str)
+                hyp_nums = sorted(hyp_composed, key=str)
                 if ref_nums == hyp_nums:
                     return CoverageDetail(1.0, "")
                 return CoverageDetail(
@@ -1043,11 +1137,20 @@ def coverage_detail(
     # is three adjacent numerals in the script and collapses to the single
     # isolated "256" in the transcript, so an asymmetric rule reads a correct
     # transcription as a changed number.
-    compound = has_compound_numeral(ref_tokens, lang) or has_compound_numeral(hyp_tokens, lang)
-    ref_nums = [] if compound else sorted(
-        isolated_numerals(ref_tokens, lang, quote_foreign=True), key=str)
-    hyp_nums = [] if compound else sorted(
-        isolated_numerals(hyp_tokens, lang, quote_foreign=True), key=str)
+    # A run of adjacent numerals is COMPOSED into its value where the language
+    # makes that unambiguous, and suppressed where it does not. `None` from
+    # either side means some run could not be read, and both sides then compare
+    # nothing — the previous behaviour, reproduced rather than approximated.
+    #
+    # Symmetric on purpose, for the reason the old comment gave: "two fifty six"
+    # is three adjacent numerals in the script and collapses to the single
+    # isolated "256" in the transcript, so an asymmetric rule reads a correct
+    # transcription as a changed number.
+    ref_composed = numeral_multiset(ref_tokens, lang, quote_foreign=True)
+    hyp_composed = numeral_multiset(hyp_tokens, lang, quote_foreign=True)
+    unreadable = ref_composed is None or hyp_composed is None
+    ref_nums = [] if unreadable else sorted(ref_composed, key=str)
+    hyp_nums = [] if unreadable else sorted(hyp_composed, key=str)
     if ref_nums != hyp_nums:
         # Merge rescue, one direction only. The ASR sometimes welds a numeral
         # to its neighbour — "dva z" comes back as "dvaze" — and the welded
