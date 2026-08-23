@@ -83,6 +83,16 @@ class FakeBackend:
     delivering one turn quietly — the whisper that three inference designs kept
     mistaking for a quiet reference clip."""
 
+    consumes: tuple[str, ...] = ()
+    """Spans the engine acts on and does not SPEAK — control tokens.
+
+    Needed because this fake echoes whatever it was asked to say, so a declared
+    non-speech atom would come back in the transcript and nothing about issue
+    #17 would be testable. `FakeASR.orthography` cannot stand in: it wraps the
+    key in \b, and no word boundary exists between a space and "<", so the
+    substitution never fires on a `<|…|>` atom.
+    """
+
     hole_s: float = 4.5
     """Seconds of dead air spliced in by `Failure.SILENT_HOLE`. Appended, per the
     note above.
@@ -113,6 +123,7 @@ class FakeBackend:
             sorted(self.amplitude_script.items()),
             sorted((str(v), a) for v, a in self._levels().items()),
             self.hole_s,
+            list(self.consumes),   # ORDER matters: removal is sequential
         ])
 
     def frames_per_second(self) -> int:
@@ -129,6 +140,14 @@ class FakeBackend:
         if mode is Failure.RAISE:
             raise RuntimeError(f"fake engine failure on call {index}")
 
+        if self.consumes:
+            # Consumed before the failure modes, so a mangling mode operates on
+            # real speech and the synthetic duration reflects spoken words.
+            # Guarded, so an undeclared backend is byte-for-byte what it was —
+            # the collapse below would otherwise rewrite every caller's spacing.
+            for atom in self.consumes:
+                text = text.replace(atom, " ")
+            text = " ".join(text.split())
         spoken = self._apply(text, mode)
         duration = len(spoken.split()) / self.words_per_second
 

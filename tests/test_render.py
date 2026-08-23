@@ -11,6 +11,7 @@ import soundfile as sf
 from narrator.audio import MasterConfig, concatenate, declick, soft_limit, to_channels, trim_silence
 from narrator.backends.fake import Failure, FakeASR, FakeBackend
 from narrator.render import RenderConfig, RenderFailed, render
+from narrator.synth import SynthConfig
 from narrator.types import Gap, Text, Voice
 from narrator.verify import CoverageVerifier
 
@@ -591,3 +592,29 @@ def test_silence_is_reported_on_every_chunk(tmp_path: Path) -> None:
     report = render(SEGMENTS, VOICE, backend, tmp_path / "s.wav", verifier)
     assert report.clean
     assert all(c.silence_s == 0.0 for c in report.chunks)
+
+
+def test_a_chunk_that_is_only_atoms_is_refused(tmp_path: Path) -> None:
+    """The vacuous pass: an empty reference scores 1.0 against ANY transcript.
+
+    Left alone, such a chunk is certified, written, AND stored for reuse.
+    Preflight reports it too, but preflight is advisory and nothing obliges a
+    caller to run it, so the render refuses on its own.
+
+    An input error rather than a verification verdict — `Text.__post_init__`
+    already refuses "something to be spoken" with nothing to speak; this is the
+    same refusal one layer later, where removal makes the emptiness visible.
+    """
+    atom = "<|sfx:laughter|>"
+    backend = FakeBackend(consumes=(atom,))
+    verifier = CoverageVerifier(FakeASR(backend))
+    cfg = RenderConfig(synth=SynthConfig(non_speech=(atom,)))
+
+    with pytest.raises(ValueError, match="nothing but declared non_speech"):
+        render([Text(atom)], VOICE, backend, tmp_path / "a.wav", verifier, cfg)
+    assert backend.calls == 0, "refused before paying for a generation"
+
+    # A tag BESIDE real speech is the supported case and still renders.
+    report = render([Text(f"{atom} Alpha beta gamma delta.")], VOICE, backend,
+                    tmp_path / "b.wav", verifier, cfg)
+    assert report.clean

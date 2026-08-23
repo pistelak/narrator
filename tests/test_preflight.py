@@ -229,3 +229,22 @@ def test_a_clean_preflight_is_not_a_promise_that_the_render_will_pass() -> None:
     script = "<|emotion:surprise|> Jeden vous?"
     assert preflight([Text(script)], lang="cs").clean
     assert coverage(script, "Jeden vouz?", "cs")[0] < MIN_COVERAGE
+
+
+def test_preflight_sees_declared_atoms_too() -> None:
+    """Otherwise it reports clean for a chunk the render must refuse.
+
+    Preflight round-trips the reference against itself. Given raw text, a
+    declared atom sits on BOTH sides and cancels out, so a chunk that is nothing
+    but atoms scores 1.0 here while its render has no speech left to verify.
+    """
+    atom = "<|sfx:laughter|>"
+    segments = [Text(f"Alpha beta gamma delta. {atom}")]
+
+    assert preflight(segments).clean, "unknown markup is just content"
+    # Declared, the atom is removed first — exactly as the render will do.
+    report = preflight(segments, non_speech=(atom,))
+    assert report.clean, "a tag beside real speech is fine"
+
+    only_atoms = preflight([Text(atom)], non_speech=(atom,))
+    assert not only_atoms.clean, "a chunk with no speech left cannot be verified"

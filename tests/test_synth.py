@@ -7,6 +7,7 @@ sailed straight over one of them. Those paths get the most tests here.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -451,3 +452,99 @@ def test_a_non_finite_drop_is_refused() -> None:
     """A NaN threshold compares False against everything and disables the gate."""
     with pytest.raises(ValueError, match="silence_drop_db"):
         SynthConfig(silence_drop_db=float("nan"))
+
+
+# ------------------------------------------------ declared non-speech atoms
+
+ATOM = "<|emotion:surprise|>"
+ATOM_CFG = SynthConfig(non_speech=(ATOM,))
+
+
+def _tagged(script: str, cfg: SynthConfig = ATOM_CFG, script_modes=None):
+    backend = FakeBackend(consumes=(ATOM,), script=script_modes or {})
+    verifier = CoverageVerifier(FakeASR(backend))
+    return synthesize_chunk(script, 0, backend, verifier, VOICE, cfg), backend
+
+
+def test_a_tagged_chunk_verifies_against_its_speech() -> None:
+    """The defect: every tagged chunk failed by construction.
+
+    73 chunks, 11 tagged, exactly those 11 failed with the audio fine. The tag
+    is one token the model acts on and never says, so no transcriber can return
+    it — but it was part of the text the round-trip compared against.
+    """
+    result, backend = _tagged(f"{ATOM} Not the keeper. Not a stranger.")
+    assert result.ok
+    assert backend.requests[0].startswith(ATOM), "the engine still receives the atom"
+    assert result.text.startswith(ATOM), "the report still shows the caller's script"
+
+
+def test_the_guard_still_guards_a_tagged_chunk() -> None:
+    """Declaring an atom must not become a way to launder a bad take."""
+    cfg = replace(ATOM_CFG, max_attempts=1, allow_sentence_split=False)
+    result, _ = _tagged(f"{ATOM} Not the keeper. Not a stranger.", cfg,
+                        {0: Failure.DROP_SENTENCE})
+    assert not result.ok
+
+
+def test_word_count_comes_from_the_speech_not_the_markup() -> None:
+    """Atoms inflate the duration FLOOR, which rejects correct short audio.
+
+    Two real words carrying three atoms read as five, and the floor then demands
+    ~1.11 s of audio for ~0.8 s of correct speech.
+    """
+    spoken = "Not the keeper."
+    result, backend = _tagged(f"{ATOM} {spoken}")
+    assert result.ok
+    assert backend.max_frames_seen[0] == frame_cap(len(spoken.split()), 25, ATOM_CFG)
+
+
+def test_atoms_are_opaque_to_the_pronunciation_lexicon() -> None:
+    """Measured: a lexicon pair rewrote the token NAME.
+
+    ("joy", "radost") turned `<|emotion:joy|>` into `<|emotion:radost|>` — a
+    control token that does not exist — silently, because the tag never reaches
+    verification either way. Declared-not-speech means not compared, not
+    counted, and not respelled.
+    """
+    from narrator.synth import resolve_spoken
+
+    cfg = SynthConfig(non_speech=("<|emotion:joy|>",), pronunciation=(("joy", "radost"),))
+    assert resolve_spoken("<|emotion:joy|> joy", "en", cfg) == "<|emotion:joy|> radost"
+
+
+def test_resolve_reference_never_fuses_two_words() -> None:
+    from narrator.synth import resolve_reference
+
+    assert resolve_reference(f"a{ATOM}b", ATOM_CFG) == "a b"
+    # Untouched when no atom occurs, so declaring one cannot invalidate a take
+    # for a chunk that does not contain it.
+    assert resolve_reference("plain text", ATOM_CFG) == "plain text"
+
+
+def test_an_atom_only_sentence_is_folded_into_its_neighbour() -> None:
+    """A trailing atom must not cost a chunk its rescue path.
+
+    Rendered alone, an atom-only sentence can never verify, so the split aborts
+    and every tagged chunk loses the recovery that exists because the failure it
+    rescues is stochastic.
+    """
+    from narrator.synth import _coalesce_atom_only
+
+    assert _coalesce_atom_only(["Je to tak?", ATOM], ATOM_CFG) == [f"Je to tak? {ATOM}"]
+    # A leading run folds FORWARD; there is no predecessor to fold into.
+    assert _coalesce_atom_only([ATOM, "Je to tak?"], ATOM_CFG) == [f"{ATOM} Je to tak?"]
+
+
+def test_an_atom_may_not_carry_whitespace_or_a_terminator() -> None:
+    """Both rules are load-bearing, not tidiness.
+
+    Whitespace would let removal stop commuting with sentence splitting; a
+    terminator deletes a boundary from the reference, merging two scored
+    sentences into one and eroding the granularity that stops a dropped
+    sentence hiding in an aggregate.
+    """
+    with pytest.raises(ValueError, match="whitespace"):
+        SynthConfig(non_speech=("<|a b|>",))
+    with pytest.raises(ValueError, match="terminator"):
+        SynthConfig(non_speech=("<|a.|>",))
