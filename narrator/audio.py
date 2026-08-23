@@ -173,55 +173,37 @@ def trim_silence(audio: Audio, sample_rate: int) -> Audio:
     guard = int(TRIM_GUARD_MS / 1000 * sample_rate)
     start = max(0, loud[0] * hop - guard)
     end = min(audio.size, loud[-1] * hop + frame + guard)
-    trimmed = audio[start:end]
-
-    # A SECOND pass, speech-relative, because the two thresholds disagree and
-    # material lives in the gap between them. This one keeps everything above
-    # `TRIM_DB` measured against the chunk's PEAK frame; the interior silence
-    # gate calls silent everything below `SILENCE_DROP_DB` measured against the
-    # chunk's p95 frame. On speech those two references sit ~0.1 dB apart, so
-    # the band between the thresholds is ~7 dB wide — and an edge run inside it
-    # survives here (it is above peak-42) while being invisible there (the
-    # interior detector deliberately ignores edges, which are this function's
-    # job). Measured: 5 s of speech followed by 8 s of tail at p95-38 came
-    # through this function untouched at 13.00 s and measured 0.02 s of interior
-    # silence, then stitched into a 10 s run in the written file (issue #21).
-    #
-    # Removal, not refusal: an interior hole cannot be cut without editing the
-    # timing between words, which is why that one fails a chunk — but trimming
-    # edges is already this function's charter. It also needs no new ordering.
-    # The take store keeps raw pre-trim audio precisely so trims are recomputed
-    # every run, so every cached take inherits this on its next render.
-    head, tail = _edge_runs(trimmed, sample_rate, SILENCE_DROP_DB)
-    cut_head = max(0, head - guard) if head / sample_rate >= EDGE_SILENCE_S else 0
-    cut_tail = max(0, tail - guard) if tail / sample_rate >= EDGE_SILENCE_S else 0
-    return trimmed[cut_head : trimmed.size - cut_tail] if cut_head or cut_tail else trimmed
+    return audio[start:end]
 
 
-EDGE_SILENCE_S = 1.0
-"""How long an edge run must be before the speech-relative pass removes it.
+def _silent_runs(audio: Audio, sample_rate: int,
+                 drop_db: float = SILENCE_DROP_DB) -> list[tuple[int, int]]:
+    """Every run below `drop_db` under the speech level, as sample spans.
 
-Generous on purpose. A trailing breath or a decaying final syllable is a few
-hundred milliseconds; a second of material sitting 35 dB under the chunk's own
-speech is not delivery. The tolerance is what keeps this from eating the quiet
-endings `SILENCE_DROP_DB` was calibrated to protect."""
-
-
-def _edge_runs(audio: Audio, sample_rate: int, drop_db: float) -> tuple[int, int]:
-    """Leading and trailing sample counts sitting `drop_db` under the speech."""
+    Edges included, unlike `longest_silent_run` — this measures a finished file,
+    where a run at the start or end is as unscripted as one in the middle.
+    """
     frame = int(SILENCE_FRAME_MS / 1000 * sample_rate)
     if frame <= 0 or audio.size < frame * 2:
-        return 0, 0
+        return []
     count = audio.size // frame
     rms = np.sqrt((audio[: count * frame].reshape(count, frame) ** 2).mean(axis=1) + 1e-20)
-    voiced = np.nonzero(rms > float(np.percentile(rms, 95)) * (10 ** (-drop_db / 20)))[0]
-    # Percentile collapse: if edge material is most of the buffer, p95 lands
-    # inside it and this would measure nothing. Same fail-open the interior
-    # detector documents, reachable at a lower dead-air fraction because an edge
-    # run can dominate without the middle being silent.
-    if voiced.size < max(2, count // 20):
-        return 0, 0
-    return int(voiced[0] * frame), int((count - 1 - voiced[-1]) * frame)
+    level = float(np.percentile(rms, 95))
+    if level <= 0.0:
+        return []
+    quiet = rms <= level * (10 ** (-drop_db / 20))
+
+    runs: list[tuple[int, int]] = []
+    start: int | None = None
+    for i, is_quiet in enumerate(quiet):
+        if is_quiet and start is None:
+            start = i
+        elif not is_quiet and start is not None:
+            runs.append((start * frame, i * frame))
+            start = None
+    if start is not None:
+        runs.append((start * frame, count * frame))
+    return runs
 
 
 def declick(audio: Audio, sample_rate: int) -> Audio:

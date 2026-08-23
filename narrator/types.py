@@ -250,6 +250,26 @@ class RenderReport:
     loudness_lufs: float = 0.0
     peak_dbfs: float = 0.0
     render_s: float = 0.0
+    unscripted_silence_s: float = 0.0
+    """Longest silence in the written file that no `Gap` asked for.
+
+    Reported, not refused, and deliberately so. Renders emit stretches of silence
+    the script never declared (issue #21), and the per-chunk gate cannot see one
+    that forms only after stitching — it measures a chunk's interior, while a run
+    at a chunk's EDGE belongs to `trim_silence`.
+
+    Refusing on this number was implemented and cut. Removing edge material by
+    level alone deletes real audio: a whispered clause sits in the same band as
+    an unwanted tail, and since verification runs BEFORE trimming, the recogniser
+    credits words that removal then takes out of the shipped file — silent
+    content loss, which is the failure this library exists to prevent. Measured:
+    1.5-2.0 s of a quiet opening removed after being verified.
+
+    So this measures and says so. Declared `Gap` spans are excluded, because
+    those are exactly the silence the caller asked for. Once there is data on
+    what a real corpus produces, a threshold can be argued from it rather than
+    guessed."""
+
     takes_unwritten: int = 0
     """Verified takes the store could not file (a full disk, an unwritable path).
 
