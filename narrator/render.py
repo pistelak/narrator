@@ -19,6 +19,7 @@ import numpy as np
 
 from narrator.audio import (
     MasterConfig,
+    _silent_runs,
     apply_gain,
     concatenate,
     declick,
@@ -267,6 +268,7 @@ def render(
     audio, lufs, peak = master(raw, backend.sample_rate, cfg.mastering)
 
     frames = audio.shape[0] if audio.ndim else 0
+    unscripted = _unscripted_silence(pieces, audio, backend.sample_rate, cfg.synth)
     report = RenderReport(
         out_path=out,
         duration_s=frames / backend.sample_rate,
@@ -274,6 +276,7 @@ def render(
         loudness_lufs=lufs,
         peak_dbfs=peak,
         render_s=time.perf_counter() - started,
+        unscripted_silence_s=unscripted,
         takes_unwritten=store.write_failures if store is not None else 0,
     )
 
@@ -319,6 +322,38 @@ class _DeferredDefaultVerifier:
             self._verifier = default_verifier(self.backend.sample_rate,
                                               sound_alikes=self.sound_alikes)
         return self._verifier.verify(audio, text, lang)
+
+
+def _unscripted_silence(pieces: list[Audio | Gap], audio: Audio, sample_rate: int,
+                        cfg: SynthConfig) -> float:
+    """Longest silent run in the written audio that no `Gap` accounts for.
+
+    Measured on the stitched result, because that is where the defect appears: a
+    run can form across a join from material no single chunk contains enough of
+    to fail. Declared gaps are subtracted rather than searched around — narrator
+    allocated them itself, at known offsets, so their spans are exactly the
+    silence the caller asked for.
+    """
+    mono = audio.mean(axis=1) if audio.ndim == 2 else audio
+    if mono.size == 0:
+        return 0.0
+
+    declared: list[tuple[int, int]] = []
+    at = 0
+    for piece in pieces:
+        if isinstance(piece, Gap):
+            n = int(piece.seconds * sample_rate)
+            declared.append((at, at + n))
+            at += n
+        else:
+            at += len(piece)
+
+    worst = 0.0
+    for start, end in _silent_runs(mono, sample_rate, cfg.silence_drop_db):
+        overlap = sum(min(end, b) - max(start, a) for a, b in declared
+                      if min(end, b) > max(start, a))
+        worst = max(worst, (end - start - overlap) / sample_rate)
+    return worst
 
 
 def _plan(segments: list[Segment], max_chars: int) -> list[Segment]:

@@ -176,6 +176,36 @@ def trim_silence(audio: Audio, sample_rate: int) -> Audio:
     return audio[start:end]
 
 
+def _silent_runs(audio: Audio, sample_rate: int,
+                 drop_db: float = SILENCE_DROP_DB) -> list[tuple[int, int]]:
+    """Every run below `drop_db` under the speech level, as sample spans.
+
+    Edges included, unlike `longest_silent_run` — this measures a finished file,
+    where a run at the start or end is as unscripted as one in the middle.
+    """
+    frame = int(SILENCE_FRAME_MS / 1000 * sample_rate)
+    if frame <= 0 or audio.size < frame * 2:
+        return []
+    count = audio.size // frame
+    rms = np.sqrt((audio[: count * frame].reshape(count, frame) ** 2).mean(axis=1) + 1e-20)
+    level = float(np.percentile(rms, 95))
+    if level <= 0.0:
+        return []
+    quiet = rms <= level * (10 ** (-drop_db / 20))
+
+    runs: list[tuple[int, int]] = []
+    start: int | None = None
+    for i, is_quiet in enumerate(quiet):
+        if is_quiet and start is None:
+            start = i
+        elif not is_quiet and start is not None:
+            runs.append((start * frame, i * frame))
+            start = None
+    if start is not None:
+        runs.append((start * frame, count * frame))
+    return runs
+
+
 def declick(audio: Audio, sample_rate: int) -> Audio:
     """Short fades at both edges, so a join does not click."""
     n = int(sample_rate * FADE_MS / 1000)

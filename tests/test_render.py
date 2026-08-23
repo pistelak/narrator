@@ -8,7 +8,14 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from narrator.audio import MasterConfig, concatenate, declick, soft_limit, to_channels, trim_silence
+from narrator.audio import (
+    MasterConfig,
+    concatenate,
+    declick,
+    soft_limit,
+    to_channels,
+    trim_silence,
+)
 from narrator.backends.fake import Failure, FakeASR, FakeBackend
 from narrator.render import RenderConfig, RenderFailed, render
 from narrator.synth import SynthConfig
@@ -686,3 +693,56 @@ def test_a_chunk_with_no_audio_ships_nothing_rather_than_nothing_measured(
     assert empty.start_s is not None
     assert ChunkResult(index=0, text="t", audio=np.zeros(0), duration_s=1.0,
                        attempts=1, ok=True).shipped_s is None
+
+
+def _at_level(seconds: float, level: float, sr: int) -> np.ndarray:
+    band = np.zeros(int(seconds * sr), dtype=np.float32)
+    band[::2], band[1::2] = level, -level
+    return band
+
+
+def _p95(audio: np.ndarray, sr: int) -> float:
+    frame = int(0.02 * sr)
+    count = len(audio) // frame
+    rms = np.sqrt((audio[: count * frame].reshape(count, frame) ** 2).mean(1) + 1e-20)
+    return float(np.percentile(rms, 95))
+
+
+class _DeafBandTail(FakeBackend):
+    """Ends every chunk with material between the two silence thresholds.
+
+    `trim_silence` keeps everything above the chunk's PEAK frame minus TRIM_DB
+    (-42); the interior gate calls silent everything below the chunk's p95 frame
+    minus SILENCE_DROP_DB (-35). On speech those references sit ~0.1 dB apart, so
+    a ~7 dB band exists that survives trimming AND is invisible to the gate,
+    which ignores edges because they are trimming's job. Nothing owns it.
+    """
+
+    def synthesize(self, text, voice, *, max_frames, temperature):
+        audio = super().synthesize(text, voice, max_frames=max_frames,
+                                   temperature=temperature)
+        level = _p95(audio, self.sample_rate) * 10 ** (-38 / 20)
+        return np.concatenate([audio, _at_level(3, level, self.sample_rate)])
+
+
+def test_a_clean_render_reports_no_unscripted_silence(tmp_path: Path) -> None:
+    """A declared Gap is not unscripted — it is exactly what was asked for."""
+    backend, verifier = build()
+    report = render(SEGMENTS, VOICE, backend, tmp_path / "a.wav", verifier)
+    assert report.unscripted_silence_s == 0.0
+
+
+def test_silence_no_gap_asked_for_is_reported(tmp_path: Path) -> None:
+    """The defect made visible, which is what this reports.
+
+    The per-chunk gate cannot see it: the run sits at a chunk's EDGE, which the
+    interior detector excludes by design because trimming owns edges.
+    """
+    backend = _DeafBandTail()
+    verifier = CoverageVerifier(FakeASR(backend))
+    report = render(SEGMENTS, VOICE, backend, tmp_path / "b.wav", verifier,
+                    RenderConfig(quarantine=False))
+
+    assert report.unscripted_silence_s > 1.0
+    # The declared 3 s Gap in SEGMENTS is excluded, so this is not just the gap.
+    assert all(c.silence_s < 1.0 for c in report.chunks), "no CHUNK contains it"
