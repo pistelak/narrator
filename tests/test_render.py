@@ -12,7 +12,7 @@ from narrator.audio import MasterConfig, concatenate, declick, soft_limit, to_ch
 from narrator.backends.fake import Failure, FakeASR, FakeBackend
 from narrator.render import RenderConfig, RenderFailed, render
 from narrator.synth import SynthConfig
-from narrator.types import Gap, Text, Voice
+from narrator.types import ChunkResult, Gap, Text, Voice
 from narrator.verify import CoverageVerifier
 
 VOICE = Voice(Path("nonexistent.wav"), "reference", "en")
@@ -618,3 +618,71 @@ def test_a_chunk_that_is_only_atoms_is_refused(tmp_path: Path) -> None:
     report = render([Text(f"{atom} Alpha beta gamma delta.")], VOICE, backend,
                     tmp_path / "b.wav", verifier, cfg)
     assert report.clean
+
+
+def test_the_reported_chunk_spans_add_up_to_the_file(tmp_path: Path) -> None:
+    """The invariant that was broken: the parts must sum to the whole.
+
+    `duration_s` is the raw synthesis length and `render` trims before
+    stitching, so accumulating it drifts by every silence removed before a given
+    chunk. `RenderReport.duration_s` is measured on the finished audio, so the
+    total was right while the parts did not reach it — the confusing direction,
+    and it cost a real investigation in issue #21.
+
+    Asserted in samples with `round()` on each chunk, because neither side is
+    exact on its own: gap frames are floored per gap (`int(seconds * rate)`) and
+    a length that went float -> seconds -> float does not always return to the
+    same integer (`Gap(13 / 22050)` is the counterexample). Rounding each term
+    recovers the sample count that was actually written.
+    """
+    backend, verifier = build()
+    report = render(SEGMENTS, VOICE, backend, tmp_path / "a.wav", verifier)
+    rate = backend.sample_rate
+
+    chunk_samples = sum(round(c.shipped_s * rate) for c in report.chunks)
+    gap_samples = sum(int(s.seconds * rate) for s in SEGMENTS if isinstance(s, Gap))
+    assert round(report.duration_s * rate) == chunk_samples + gap_samples
+
+
+def test_a_chunk_can_be_located_in_the_file(tmp_path: Path) -> None:
+    """`shipped_s` alone is not enough, which is why `start_s` exists.
+
+    `Gap` segments never appear in `RenderReport.chunks`, so summing chunk
+    lengths skips the silence between them and lands short — a variant of the
+    same drift, reachable the moment a script uses a Gap.
+    """
+    backend, verifier = build()
+    report = render(SEGMENTS, VOICE, backend, tmp_path / "b.wav", verifier)
+
+    first, second = report.chunks
+    assert first.start_s == 0.0
+    # The second chunk starts after the first PLUS the declared gap between them.
+    assert second.start_s == pytest.approx(first.shipped_s + 3.0, abs=1 / backend.sample_rate)
+    assert second.start_s + second.shipped_s == pytest.approx(report.duration_s, abs=0.01)
+
+
+def test_a_chunk_with_no_audio_ships_nothing_rather_than_nothing_measured(
+    tmp_path: Path,
+) -> None:
+    """0.0 and None mean different things and both are reachable.
+
+    A chunk whose every attempt raised has no audio and occupies no file — that
+    is 0.0. None is "never went through render", which is why the default is not
+    0.0: a take restored from the store must not claim a span it never had.
+    """
+    # One chunk raises every attempt, one succeeds — a render where EVERY chunk
+    # is empty crashes in `master`, which predates this change (filed separately).
+    backend = FakeBackend(script={i: Failure.RAISE for i in range(3)})  # chunk 1 only
+    verifier = CoverageVerifier(FakeASR(backend))
+    report = render([Text("Alpha beta gamma delta."), Text("Not the keeper.")],
+                    VOICE, backend, tmp_path / "c.wav", verifier,
+                    RenderConfig(quarantine=False))
+
+    empty = next(c for c in report.chunks if c.audio.size == 0)
+    assert empty.shipped_s == 0.0
+    # It occupies nothing, but it still HAS a position — the point it would have
+    # been written at. Leaving that None would say "never went through render",
+    # which is a different claim.
+    assert empty.start_s is not None
+    assert ChunkResult(index=0, text="t", audio=np.zeros(0), duration_s=1.0,
+                       attempts=1, ok=True).shipped_s is None

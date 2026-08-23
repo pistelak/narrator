@@ -167,6 +167,13 @@ class ChunkResult:
     text: str
     audio: Audio
     duration_s: float
+    """Length of the RAW synthesis, NOT the length in the written file.
+
+    The duration bounds were checked against this, so it keeps its diagnostic
+    value — but `render` trims before stitching, so a chunk reported here at
+    27.3 s can occupy 14.5 s of the file. Use `shipped_s` for the in-file length
+    and `start_s` to locate it."""
+
     attempts: int
     ok: bool
     coverage: float = 1.0
@@ -195,6 +202,33 @@ class ChunkResult:
     class that was measured, so this is the number that tells a caller whether
     the shorter band is real in their material — and the evidence for tightening
     the threshold later. 0.0 on a reused take, which this run did not measure."""
+
+    shipped_s: float | None = None
+    """Seconds this chunk actually occupies in the written file, or None.
+
+    Appended, for the reason `reused` records above — inserting it mid-list
+    silently rebound every positional constructor call by one, which a review
+    caught here.
+
+    `duration_s` is the RAW synthesis length, measured before `render` trims, so
+    a chunk reported at 27.3 s can ship at 14.5 s and accumulating `duration_s`
+    to locate a chunk drifts by every silence trimmed before it. That cost a real
+    investigation in issue #21.
+
+    None means "not measured" — a result that never went through `render`, or one
+    restored from the take store before render overwrites it. Not 0.0, because
+    0.0 is legitimate: a chunk whose every attempt raised occupies nothing."""
+
+    start_s: float | None = None
+    """Seconds from the start of the written file to this chunk, or None.
+
+    `shipped_s` alone cannot locate a chunk: `Gap` segments never appear in
+    `RenderReport.chunks`, so summing chunk lengths skips the silence between
+    them. This is the number that answers "where in the file is chunk N".
+
+    Still None inside an `on_progress` callback, necessarily: that fires between
+    chunks — which is where a real kill lands — while this needs the settled rate
+    and the complete piece list. Every result in the returned report has it."""
 
     @property
     def words(self) -> int:
