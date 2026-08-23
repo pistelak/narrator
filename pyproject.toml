@@ -22,7 +22,7 @@ higgs = ["mlx-audio>=0.4.8", "mlx-whisper>=0.4.3", "torch>=2.6"]
 # The cascade's primary recogniser. Apple-Silicon only, like higgs.
 parakeet = ["parakeet-mlx>=0.5"]
 supertonic = ["supertonic>=1.3"]
-dev = ["pytest>=8", "ruff>=0.6"]
+dev = ["pytest>=8", "ruff>=0.6", "num2words>=0.5"]   # num2words: the cs numeral audit's oracle
 
 [project.scripts]
 narrate = "narrator.cli:main"

@@ -40,7 +40,7 @@ from narrator.chunking import split_sentences
 from narrator.takes import _class_id, identity_of
 from narrator.types import ASR, Audio, Verdict, Verifier
 
-SEMANTICS = 5
+SEMANTICS = 6
 """Version of what "correct" means here, for the take store's key.
 
 Bump it on ANY behavioural change to scoring: a new fold, a hard-fail rule, the
@@ -552,6 +552,11 @@ def _regroup(tokens: list[str], text: str, lang: str) -> list[list[str]]:
     return out
 
 
+# Punctuation a number cannot span. A decimal comma sits BETWEEN digits
+# ("3,5") and is left alone by requiring a non-digit on one side.
+_CLAUSE_BREAK = re.compile(r"(?<!\d),\s|[;:]\s|\s[—–-]\s")
+
+
 def _numeral_tokens_by_sentence(text: str, lang: str) -> list[list[str]]:
     """`_numeral_tokens`, but keeping each sentence's tokens separate.
 
@@ -565,8 +570,16 @@ def _numeral_tokens_by_sentence(text: str, lang: str) -> list[list[str]]:
     pattern = _DIGIT_GROUPS["cs" if lang.startswith("cs") else "en"]
     out: list[list[str]] = []
     for sentence in split_sentences(text):
-        fused = pattern.sub(lambda m: re.sub(r"\D", "", m.group()), sentence)
-        out.append(normalize(fused, lang).split())
+        # Split INSIDE a sentence at punctuation too, not only between
+        # sentences. A number never spans a comma, but a list does: "bylo jich
+        # dvacet, pět odešlo" is twenty and five, and read as one run it becomes
+        # 25 — matching a transcript's "25" at coverage 1.00. Same argument as
+        # the sentence rule one level up, where "4. 500." was read as 4500.
+        for clause in _CLAUSE_BREAK.split(sentence):
+            fused = pattern.sub(lambda m: re.sub(r"\D", "", m.group()), clause)
+            tokens = normalize(fused, lang).split()
+            if tokens:
+                out.append(tokens)
     return out
 
 

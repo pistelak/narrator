@@ -292,6 +292,10 @@ def phrases() -> dict[tuple[str, ...], int]:
     """
     global _PHRASES
     if _PHRASES is None:
+        # Built into a local and published in one assignment, so a second caller
+        # arriving mid-build either sees None and builds its own (wasteful, but
+        # identical and discarded) or sees a COMPLETE table — never a partial
+        # one. A lock would serialise every lookup for a 0.1 s one-time cost.
         table: dict[tuple[str, ...], int] = {}
         for value in _EAGER_VALUES:
             for spelling in gen(value):
@@ -300,5 +304,5 @@ def phrases() -> dict[tuple[str, ...], int]:
                     # wrong integer waiting to happen. The audit asserts there
                     # are none; this keeps the first writer if one ever appears.
                     table.setdefault(spelling, value)
-        _PHRASES = table
+        _PHRASES = table            # single publish; see above
     return _PHRASES

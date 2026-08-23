@@ -91,7 +91,11 @@ try:
 except ImportError:
     num2words = None
 if num2words is None:
-    print("oracle: SKIPPED (pip install num2words for the second opinion)")
+    # Counted as a failure, not a note. "ALL PASS" with a silently absent check
+    # is the shape this whole issue is about: a green result that did not verify
+    # what it claims to.
+    check(False, "oracle SKIPPED — pip install num2words; ALL PASS requires it")
+    print("oracle: SKIPPED (pip install num2words)")
 else:
     random.seed(7)
     samples = list(range(1, 1000)) + [random.randrange(1000, 10**6) for _ in range(3000)] \

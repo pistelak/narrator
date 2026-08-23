@@ -1622,3 +1622,27 @@ def test_blinding_the_oblique_large_units_still_fixes_the_false_failure() -> Non
     """
     reference = "vyhověl deseti tisícům žádostí"
     assert coverage(reference, "vyhověl 10000 žádostí", "cs")[0] == 1.0
+
+
+def test_a_number_never_spans_punctuation() -> None:
+    """A list is not a compound.
+
+    "bylo jich dvacet, pět odešlo" is twenty and five. Read as one run it
+    composes to 25 and matches a transcript's "25" at coverage 1.00 — a false
+    accept from two numbers that were never one.
+
+    Same argument as the sentence rule one level up, where a flat token view
+    read "4. 500." as 4500. A number does not span a comma; a list does.
+    """
+    from narrator.verify import _numeral_tokens_by_sentence, numeral_multiset
+
+    def composed(text: str):
+        return numeral_multiset(_numeral_tokens_by_sentence(text, "cs"), "cs")
+
+    assert composed("bylo jich dvacet, pět odešlo") == [20, 5]
+    score, detail = coverage("bylo jich dvacet, pět odešlo", "bylo jich 25 odešlo", "cs")
+    assert score == 0.0
+    assert "[20, 5]" in detail
+
+    # A real compound, unpunctuated, still composes.
+    assert composed("bylo tam dvacet pět tisíc lidí") == [25000]
