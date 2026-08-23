@@ -1570,33 +1570,34 @@ def test_a_fused_numeral_standing_alone_is_still_compared() -> None:
 
 # ------------------------------------------- cs numeral compounds are composed
 
-def test_numeral_compounds_are_suppressed_and_why_composing_them_was_abandoned() -> None:
-    """Five rounds of review, five wrong integers. The refusal is the product.
+def test_a_numeral_compound_is_looked_up_never_computed() -> None:
+    """Six attempts; the first five computed, this one looks up.
 
-    Composing Czech compounds is sound in principle — `dvacet tisíc` is 20x1000
-    and nothing else, unlike English "two fifty six". Every implementation
-    nevertheless shipped a value the language does not carry, and the suite
-    passed each time: an explicit zero read as an absent multiplier, an English
-    compound composed under `cs`, `dvacet sto` fabricated as 2000, the oblique
-    hundreds inheriting the thousands' coefficient range, and finally the
-    acronym STEM certified as the number 100.
-
-    That last one is why this stopped: it was a false accept on ORDINARY
-    VOCABULARY, from a table I had argued could not over-reach.
-
-    So a multi-token run is suppressed. The cost is the known hole below, which
-    is bounded and visible; the alternative kept being a wrong number under a
-    clean report.
+    Every previous implementation parsed a run and computed, and each shipped a
+    value the language does not carry while its suite passed. Those five
+    sequences are not in the generated map, so the values are no longer
+    expressible: a miss lands on suppression, which is where a fabricated
+    integer used to land instead.
     """
     from narrator.verify import _numeral_tokens_by_sentence, numeral_multiset
 
     def composed(text: str):
         return numeral_multiset(_numeral_tokens_by_sentence(text, "cs"), "cs")
 
-    assert composed("dvacet tisíc") is None
-    assert composed("two fifty six") is None
-    # The hole, stated: a compound's value is not compared, in either language.
-    assert coverage("bylo tam dvacet tisíc lidí", "bylo tam 30000 lidí", "cs")[0] == 1.0
+    assert composed("dvacet tisíc") == [20000]
+    assert composed("dvě stě") == [200]
+    assert composed("dvacet pět") == [25]
+    assert composed("20 tisíc") == [20000], "recognisers write the coefficient as a digit"
+
+    # The five recorded defects, each structurally absent rather than guarded.
+    for fabricated in ("nula tisíc", "dvacet sto", "dvacet dvacet",
+                       "dvacet stech", "jedna tisíc"):
+        assert composed(fabricated) is None, fabricated
+    assert composed("two fifty six") is None, "English keeps the skip"
+
+    # The defect this closes.
+    assert coverage("bylo tam dvacet tisíc lidí", "bylo tam 30000 lidí", "cs")[0] == 0.0
+    assert coverage("bylo tam dvacet tisíc lidí", "bylo tam 20000 lidí", "cs")[0] == 1.0
 
 
 def test_an_acronym_is_not_a_number() -> None:
@@ -1621,3 +1622,27 @@ def test_blinding_the_oblique_large_units_still_fixes_the_false_failure() -> Non
     """
     reference = "vyhověl deseti tisícům žádostí"
     assert coverage(reference, "vyhověl 10000 žádostí", "cs")[0] == 1.0
+
+
+def test_a_number_never_spans_punctuation() -> None:
+    """A list is not a compound.
+
+    "bylo jich dvacet, pět odešlo" is twenty and five. Read as one run it
+    composes to 25 and matches a transcript's "25" at coverage 1.00 — a false
+    accept from two numbers that were never one.
+
+    Same argument as the sentence rule one level up, where a flat token view
+    read "4. 500." as 4500. A number does not span a comma; a list does.
+    """
+    from narrator.verify import _numeral_tokens_by_sentence, numeral_multiset
+
+    def composed(text: str):
+        return numeral_multiset(_numeral_tokens_by_sentence(text, "cs"), "cs")
+
+    assert composed("bylo jich dvacet, pět odešlo") == [20, 5]
+    score, detail = coverage("bylo jich dvacet, pět odešlo", "bylo jich 25 odešlo", "cs")
+    assert score == 0.0
+    assert "[20, 5]" in detail
+
+    # A real compound, unpunctuated, still composes.
+    assert composed("bylo tam dvacet pět tisíc lidí") == [25000]
