@@ -111,3 +111,28 @@ def test_imperfect_asr_disagreements_do_not_read_as_drops() -> None:
     transcript = asr.transcribe(audio, "cs")
     assert transcript != text, "imperfect ASR should have altered something"
     assert coverage(text, transcript)[0] == 1.0
+
+
+def test_declaring_consumed_atoms_changes_the_backend_identity() -> None:
+    """Order matters for removal, so it must matter for identity.
+
+    Removal is sequential, so ("<|a|>", "<|a|b|>") and its reverse can leave
+    different text — a sorted identity would let a take from one be served for
+    the other.
+    """
+    assert FakeBackend(consumes=("x", "y")).identity != FakeBackend(consumes=("y", "x")).identity
+    assert FakeBackend(consumes=("x",)).identity != FakeBackend().identity
+
+
+def test_an_undeclared_backend_is_untouched() -> None:
+    """The feature must be a no-op when unused.
+
+    An unconditional whitespace collapse rewrote every caller's spacing, which
+    is a behaviour change for backends that declare nothing.
+    """
+    voice = Voice(Path("v.wav"), "t", "en")
+    plain, tagged = FakeBackend(), FakeBackend(consumes=("<|x|>",))
+    audio = plain.synthesize("a   b", voice, max_frames=999, temperature=0.4)
+    assert plain.heard(audio) == "a   b"
+    assert tagged.heard(tagged.synthesize("a   b", voice, max_frames=999,
+                                          temperature=0.4)) == "a b"

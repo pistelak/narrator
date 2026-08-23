@@ -26,7 +26,7 @@ from narrator.audio import (
     trim_silence,
 )
 from narrator.chunking import MAX_CHARS, chunk
-from narrator.synth import SynthConfig, synthesize_chunk
+from narrator.synth import SynthConfig, resolve_reference, synthesize_chunk
 from narrator.takes import TakeStore, identity_of
 from narrator.types import (
     Audio,
@@ -164,6 +164,25 @@ def render(
             f"{total} (0..{total - 1}). Nothing would be re-generated and the render "
             "would look like a reroll that changed nothing."
         )
+
+    if cfg.synth.non_speech:
+        # A chunk whose declared atoms leave no speech cannot be verified: the
+        # reference is empty, `coverage("", anything)` answers 1.0, and the take
+        # is certified and STORED. Preflight reports this too, but preflight is
+        # advisory and nothing obliges a caller to run it.
+        #
+        # Refused rather than failed, because it is an input error of the same
+        # kind `Text.__post_init__` already refuses — "something to be spoken"
+        # with nothing to speak. It only becomes visible one layer later, after
+        # removal. A verification verdict would be the wrong shape: it would
+        # override `NullVerifier`, which opts out of checking the AUDIO, not out
+        # of the library refusing an incoherent request.
+        for at, planned in enumerate(s for s in plan if isinstance(s, Text)):
+            if not resolve_reference(planned.text, cfg.synth).strip():
+                raise ValueError(
+                    f"chunk {at} is nothing but declared non_speech atoms, so there "
+                    f"is no speech to verify: {planned.text[:60]!r}"
+                )
 
     pieces: list[Audio | Gap] = []
     results: list[ChunkResult] = []

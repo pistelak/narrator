@@ -123,7 +123,7 @@ class FakeBackend:
             sorted(self.amplitude_script.items()),
             sorted((str(v), a) for v, a in self._levels().items()),
             self.hole_s,
-            sorted(self.consumes),
+            list(self.consumes),   # ORDER matters: removal is sequential
         ])
 
     def frames_per_second(self) -> int:
@@ -140,11 +140,14 @@ class FakeBackend:
         if mode is Failure.RAISE:
             raise RuntimeError(f"fake engine failure on call {index}")
 
-        for atom in self.consumes:
+        if self.consumes:
             # Consumed before the failure modes, so a mangling mode operates on
             # real speech and the synthetic duration reflects spoken words.
-            text = text.replace(atom, " ")
-        text = " ".join(text.split())
+            # Guarded, so an undeclared backend is byte-for-byte what it was —
+            # the collapse below would otherwise rewrite every caller's spacing.
+            for atom in self.consumes:
+                text = text.replace(atom, " ")
+            text = " ".join(text.split())
         spoken = self._apply(text, mode)
         duration = len(spoken.split()) / self.words_per_second
 
