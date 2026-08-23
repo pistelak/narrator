@@ -31,7 +31,7 @@ from narrator.chunking import split_sentences
 from narrator.takes import TakeStore, take_key
 from narrator.types import Audio, Backend, ChunkResult, Verdict, Verifier, Voice
 
-SEMANTICS = 1
+SEMANTICS = 2
 """Version of the ladder's own behaviour, for the take store's key.
 
 Bump it whenever a change here alters which take ships or how one is made —

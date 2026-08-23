@@ -8,7 +8,14 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from narrator.audio import MasterConfig, concatenate, declick, soft_limit, to_channels, trim_silence
+from narrator.audio import (
+    MasterConfig,
+    concatenate,
+    declick,
+    soft_limit,
+    to_channels,
+    trim_silence,
+)
 from narrator.backends.fake import Failure, FakeASR, FakeBackend
 from narrator.render import RenderConfig, RenderFailed, render
 from narrator.synth import SynthConfig
@@ -686,3 +693,97 @@ def test_a_chunk_with_no_audio_ships_nothing_rather_than_nothing_measured(
     assert empty.start_s is not None
     assert ChunkResult(index=0, text="t", audio=np.zeros(0), duration_s=1.0,
                        attempts=1, ok=True).shipped_s is None
+
+
+def _speechy(seconds: float, sr: int = 24000, amplitude: float = 0.1) -> np.ndarray:
+    t = np.arange(int(seconds * sr)) / sr
+    envelope = 0.5 + 0.5 * np.sin(2 * np.pi * 3 * t)       # syllable-rate
+    return (amplitude * envelope * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
+
+
+def _at_level(seconds: float, level: float, sr: int = 24000) -> np.ndarray:
+    band = np.zeros(int(seconds * sr), dtype=np.float32)
+    band[::2], band[1::2] = level, -level
+    return band
+
+
+def _p95(audio: np.ndarray, sr: int = 24000) -> float:
+    frame = int(0.02 * sr)
+    count = len(audio) // frame
+    rms = np.sqrt((audio[: count * frame].reshape(count, frame) ** 2).mean(1) + 1e-20)
+    return float(np.percentile(rms, 95))
+
+
+def test_edge_material_between_the_two_thresholds_is_trimmed() -> None:
+    """The deaf band: two thresholds that never agreed with each other.
+
+    `trim_silence` keeps everything above the chunk's PEAK frame minus TRIM_DB
+    (-42). The interior silence gate calls silent everything below the chunk's
+    p95 frame minus SILENCE_DROP_DB (-35). On speech those references sit ~0.1 dB
+    apart, so a ~7 dB band exists where an edge run survives trimming AND is
+    invisible to the gate — the gate ignores edges on purpose, because they are
+    trimming's job.
+
+    Measured before this pass existed: 5 s of speech plus 8 s of tail at p95-38
+    came through untouched at 13.00 s, measured 0.02 s of interior silence, and
+    stitched into a 10 s run in the written file (issue #21).
+    """
+    speech = _speechy(5)
+    deaf = np.concatenate([speech, _at_level(8, _p95(speech) * 10 ** (-38 / 20))])
+    assert len(trim_silence(deaf, 24000)) / 24000 == pytest.approx(5.0, abs=0.1)
+
+
+def test_the_edge_pass_leaves_quiet_delivery_alone() -> None:
+    """Both boundaries, pinned — this pass must not eat correct audio.
+
+    The first is the false positive that made me cut a join check from #18: an
+    all-signal chunk shaped [0.16 s loud, 2.34 s at -26 dB] contains no silence
+    at all, and -26 is comfortably above the -35 threshold.
+
+    The second is the quiet-delivery band SILENCE_DROP_DB was calibrated to
+    protect: a 1.2 s ending at p95-28 is a decaying final syllable, not dead air.
+    """
+    speech = _speechy(5)
+    level = _p95(speech)
+
+    false_positive = np.concatenate([_speechy(0.16), _at_level(2.34, level * 10 ** (-26 / 20))])
+    assert len(trim_silence(false_positive, 24000)) == len(false_positive)
+
+    quiet_ending = np.concatenate([speech, _at_level(1.2, level * 10 ** (-28 / 20))])
+    assert len(trim_silence(quiet_ending, 24000)) == len(quiet_ending)
+
+
+def test_a_short_edge_run_is_below_the_tolerance() -> None:
+    """A trailing breath is a few hundred milliseconds, not a second."""
+    speech = _speechy(5)
+    breath = np.concatenate([speech, _at_level(0.4, _p95(speech) * 10 ** (-40 / 20))])
+    assert len(trim_silence(breath, 24000)) == pytest.approx(len(breath), rel=0.02)
+
+
+def test_the_written_file_carries_no_unscripted_run(tmp_path: Path) -> None:
+    """End to end, which is where the issue was reported.
+
+    Every chunk ends with deaf-band material. Before this pass the written file
+    carried a 4.98 s run against a declared 2.0 s Gap; now the longest run IS
+    the declared gap.
+    """
+    import soundfile as sf
+
+    from narrator.audio import longest_silent_run
+
+    class DeafBandTail(FakeBackend):
+        def synthesize(self, text, voice, *, max_frames, temperature):
+            audio = super().synthesize(text, voice, max_frames=max_frames,
+                                       temperature=temperature)
+            level = _p95(audio, self.sample_rate) * 10 ** (-38 / 20)
+            return np.concatenate([audio, _at_level(3, level, self.sample_rate)])
+
+    backend = DeafBandTail()
+    verifier = CoverageVerifier(FakeASR(backend))
+    out = tmp_path / "episode.wav"
+    render([Text("Not the keeper. Not a stranger."), Gap(2.0), Text("They were sent away.")],
+           VOICE, backend, out, verifier, RenderConfig(quarantine=False))
+
+    written, rate = sf.read(out, dtype="float32")
+    mono = written.mean(1) if written.ndim == 2 else written
+    assert longest_silent_run(mono, rate) == pytest.approx(2.0, abs=0.15)
