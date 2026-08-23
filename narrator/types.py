@@ -194,27 +194,6 @@ class ChunkResult:
     this run spent no generations, while `recovered_by` is preserved, because it
     describes how the audio itself was made and that is still true."""
 
-    shipped_s: float | None = None
-    """Seconds this chunk actually occupies in the written file, or None.
-
-    `duration_s` is the RAW synthesis length, measured before `render` trims —
-    so a chunk reported at 27.3 s can ship at 14.5 s, and accumulating
-    `duration_s` to locate a chunk drifts by every silence trimmed before it.
-    That confusion cost a real investigation in issue #21.
-
-    None means "not measured": a `ChunkResult` that never went through `render`,
-    or one restored from the take store before render overwrites it. Not 0.0,
-    because 0.0 is a legitimate value — a chunk whose every attempt raised has no
-    audio and occupies nothing."""
-
-    start_s: float | None = None
-    """Seconds from the start of the written file to this chunk, or None.
-
-    `shipped_s` alone still cannot locate a chunk: `Gap` segments never appear in
-    `RenderReport.chunks`, so summing chunk lengths skips the silence between
-    them. This is the number that answers "where in the file is chunk N", which
-    is what someone debugging a timing defect actually needs."""
-
     silence_s: float = 0.0
     """Longest interior silence in this chunk's audio, in seconds.
 
@@ -223,6 +202,33 @@ class ChunkResult:
     class that was measured, so this is the number that tells a caller whether
     the shorter band is real in their material — and the evidence for tightening
     the threshold later. 0.0 on a reused take, which this run did not measure."""
+
+    shipped_s: float | None = None
+    """Seconds this chunk actually occupies in the written file, or None.
+
+    Appended, for the reason `reused` records above — inserting it mid-list
+    silently rebound every positional constructor call by one, which a review
+    caught here.
+
+    `duration_s` is the RAW synthesis length, measured before `render` trims, so
+    a chunk reported at 27.3 s can ship at 14.5 s and accumulating `duration_s`
+    to locate a chunk drifts by every silence trimmed before it. That cost a real
+    investigation in issue #21.
+
+    None means "not measured" — a result that never went through `render`, or one
+    restored from the take store before render overwrites it. Not 0.0, because
+    0.0 is legitimate: a chunk whose every attempt raised occupies nothing."""
+
+    start_s: float | None = None
+    """Seconds from the start of the written file to this chunk, or None.
+
+    `shipped_s` alone cannot locate a chunk: `Gap` segments never appear in
+    `RenderReport.chunks`, so summing chunk lengths skips the silence between
+    them. This is the number that answers "where in the file is chunk N".
+
+    Still None inside an `on_progress` callback, necessarily: that fires between
+    chunks — which is where a real kill lands — while this needs the settled rate
+    and the complete piece list. Every result in the returned report has it."""
 
     @property
     def words(self) -> int:

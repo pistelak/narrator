@@ -629,9 +629,11 @@ def test_the_reported_chunk_spans_add_up_to_the_file(tmp_path: Path) -> None:
     total was right while the parts did not reach it — the confusing direction,
     and it cost a real investigation in issue #21.
 
-    Asserted in SAMPLES, not seconds: gap frames are floored per gap
-    (`int(seconds * rate)`), so a seconds-level equality is off by up to one
-    sample per Gap while the sample-level one is exact.
+    Asserted in samples with `round()` on each chunk, because neither side is
+    exact on its own: gap frames are floored per gap (`int(seconds * rate)`) and
+    a length that went float -> seconds -> float does not always return to the
+    same integer (`Gap(13 / 22050)` is the counterexample). Rounding each term
+    recovers the sample count that was actually written.
     """
     backend, verifier = build()
     report = render(SEGMENTS, VOICE, backend, tmp_path / "a.wav", verifier)
@@ -678,5 +680,9 @@ def test_a_chunk_with_no_audio_ships_nothing_rather_than_nothing_measured(
 
     empty = next(c for c in report.chunks if c.audio.size == 0)
     assert empty.shipped_s == 0.0
+    # It occupies nothing, but it still HAS a position — the point it would have
+    # been written at. Leaving that None would say "never went through render",
+    # which is a different claim.
+    assert empty.start_s is not None
     assert ChunkResult(index=0, text="t", audio=np.zeros(0), duration_s=1.0,
                        attempts=1, ok=True).shipped_s is None

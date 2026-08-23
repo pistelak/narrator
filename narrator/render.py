@@ -186,6 +186,9 @@ def render(
 
     pieces: list[Audio | Gap] = []
     owners: list[int | None] = []
+    # A chunk with no audio still HAS a position — the point where it would have
+    # been, which is what a caller reading the report needs to see.
+    owners_for_empty: dict[int, int] = {}
     results: list[ChunkResult] = []
     index = 0
 
@@ -227,8 +230,14 @@ def render(
             pieces.append(apply_gain(trimmed, chunk_voice.gain_db))
         else:
             result.shipped_s = 0.0
-        # After the trim, so the callback sees a complete result rather than the
-        # not-measured sentinel.
+            # No audio, so no piece — but it still HAS a position: the point it
+            # would have occupied, which is what a caller reading the report
+            # needs in order to line the report up with the file.
+            owners_for_empty[len(results) - 1] = len(pieces)
+        # Fired between chunks, which is where a real kill lands and what makes
+        # progress progress. `start_s` is necessarily still None here: it needs
+        # the settled rate and the whole piece list, neither of which exists
+        # mid-loop. Documented on the field rather than worked around.
         if cfg.on_progress is not None:
             cfg.on_progress(result, total)
 
@@ -244,6 +253,11 @@ def render(
         if owner is not None:
             results[owner].start_s = at / backend.sample_rate
         at += len(piece)
+    for result_at, piece_at in owners_for_empty.items():
+        # Everything before where it would have gone.
+        before = sum(int(p.seconds * backend.sample_rate) if isinstance(p, Gap) else len(p)
+                     for p in pieces[:piece_at])
+        results[result_at].start_s = before / backend.sample_rate
 
     raw = concatenate([
         np.zeros(int(p.seconds * backend.sample_rate), dtype=np.float32)
