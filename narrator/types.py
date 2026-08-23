@@ -167,6 +167,13 @@ class ChunkResult:
     text: str
     audio: Audio
     duration_s: float
+    """Length of the RAW synthesis, NOT the length in the written file.
+
+    The duration bounds were checked against this, so it keeps its diagnostic
+    value — but `render` trims before stitching, so a chunk reported here at
+    27.3 s can occupy 14.5 s of the file. Use `shipped_s` for the in-file length
+    and `start_s` to locate it."""
+
     attempts: int
     ok: bool
     coverage: float = 1.0
@@ -186,6 +193,27 @@ class ChunkResult:
     that the run measured anything: `attempts` is 0 on a reused chunk because
     this run spent no generations, while `recovered_by` is preserved, because it
     describes how the audio itself was made and that is still true."""
+
+    shipped_s: float | None = None
+    """Seconds this chunk actually occupies in the written file, or None.
+
+    `duration_s` is the RAW synthesis length, measured before `render` trims —
+    so a chunk reported at 27.3 s can ship at 14.5 s, and accumulating
+    `duration_s` to locate a chunk drifts by every silence trimmed before it.
+    That confusion cost a real investigation in issue #21.
+
+    None means "not measured": a `ChunkResult` that never went through `render`,
+    or one restored from the take store before render overwrites it. Not 0.0,
+    because 0.0 is a legitimate value — a chunk whose every attempt raised has no
+    audio and occupies nothing."""
+
+    start_s: float | None = None
+    """Seconds from the start of the written file to this chunk, or None.
+
+    `shipped_s` alone still cannot locate a chunk: `Gap` segments never appear in
+    `RenderReport.chunks`, so summing chunk lengths skips the silence between
+    them. This is the number that answers "where in the file is chunk N", which
+    is what someone debugging a timing defect actually needs."""
 
     silence_s: float = 0.0
     """Longest interior silence in this chunk's audio, in seconds.

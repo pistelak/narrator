@@ -185,6 +185,7 @@ def render(
                 )
 
     pieces: list[Audio | Gap] = []
+    owners: list[int | None] = []
     results: list[ChunkResult] = []
     index = 0
 
@@ -201,6 +202,7 @@ def render(
             # render never settles the rate, but then the file is written at
             # the declared rate too, so samples and header still agree.
             pieces.append(segment)
+            owners.append(None)
             continue
 
         chunk_voice = segment.voice or voice
@@ -209,15 +211,39 @@ def render(
                                   store=store, reuse=index not in cfg.reroll)
         results.append(result)
         index += 1
-        if cfg.on_progress is not None:
-            cfg.on_progress(result, total)
         if result.audio.size:
             # The voice's declared gain lands here, before stitching: a level
             # offset between reference clips belongs to the speaker, not to a
             # chunk, so every chunk of that voice moves by the same amount and
             # the performance inside each one is left as synthesised.
             trimmed = declick(trim_silence(result.audio, backend.sample_rate), backend.sample_rate)
+            # Measured HERE, on the buffer that actually ships. synth cannot
+            # compute it: the sentence-split path is trimmed per sentence and
+            # then trimmed AGAIN at the assembly's outer edges, against a
+            # threshold relative to the whole assembly, so only this trim's
+            # output is the true length.
+            result.shipped_s = len(trimmed) / backend.sample_rate
+            owners.append(len(results) - 1)
             pieces.append(apply_gain(trimmed, chunk_voice.gain_db))
+        else:
+            result.shipped_s = 0.0
+        # After the trim, so the callback sees a complete result rather than the
+        # not-measured sentinel.
+        if cfg.on_progress is not None:
+            cfg.on_progress(result, total)
+
+    # Offsets are assigned AFTER the loop, at the settled rate — the same reason
+    # gap samples are allocated here rather than where the Gap was seen. A
+    # backend that only learns its true rate during the first synthesis would
+    # otherwise place every earlier chunk with a stale one.
+    at = 0
+    for piece, owner in zip(pieces, owners, strict=True):
+        if isinstance(piece, Gap):
+            at += int(piece.seconds * backend.sample_rate)
+            continue
+        if owner is not None:
+            results[owner].start_s = at / backend.sample_rate
+        at += len(piece)
 
     raw = concatenate([
         np.zeros(int(p.seconds * backend.sample_rate), dtype=np.float32)
