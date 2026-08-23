@@ -53,8 +53,8 @@ def test_preflight_tracks_the_numeral_policy_it_is_predicting() -> None:
     report = preflight(
         [Text("Heslo má přesně osm znaků. Dvou tisíc čtyřiceti osmi.")], lang="cs"
     )
-    assert not report.clean
-    assert "Dvou tisíc" in report.unverifiable[0].reason
+    # Now READ, so the split fallback rescues it: the sentence verifies alone.
+    assert report.clean
 
     # Unrescuable in English, where the compound stays ambiguous by design.
     english = preflight([Text("The dial is set. Two fifty six.")], lang="en")

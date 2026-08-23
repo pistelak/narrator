@@ -35,6 +35,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
+from narrator import cs_numerals
 from narrator.chunking import split_sentences
 from narrator.takes import _class_id, identity_of
 from narrator.types import ASR, Audio, Verdict, Verifier
@@ -99,6 +100,7 @@ _NUMBER_WORDS_CS = _NUMBER_WORDS_EN | set(
     sto stě sta set tisíc tisíce milion miliony milionů miliarda miliard miliardy
     milión milióny miliónů miliónu
     tisícem tisícům tisících stům stech sty
+    jednu jednom desíti tisíců miliardami
     milionem milionům milionech miliónem miliónům miliónech
     miliardu miliardou miliardám miliardách miliardě
     jedné jednoho jednomu jedním jednou dvou dvěma tří třech třem třemi
@@ -379,9 +381,19 @@ def numeral_multiset(
                 out.append(value if value is not None else "?" + fold(run[0], lang))
                 continue
 
+            if lang.startswith("cs"):
+                # Looked up, never computed. The run must be one of the ways
+                # Czech actually spells some number; anything else falls through
+                # to the suppression below, which is where every previous
+                # attempt's fabricated integers would now land instead.
+                value = cs_numerals.phrases().get(tuple(run))
+                if value is not None:
+                    out.append(value)
+                    continue
             # A multi-token run is SUPPRESSED, in every language.
             #
-            # Composing it was tried across five rounds of review and abandoned.
+            # Composing it by ARITHMETIC was tried across five rounds and
+            # abandoned; a lookup against generated spellings replaced it.
             # Czech compounds really are unambiguous, so the idea was sound —
             # but every implementation shipped a wrong integer that the suite
             # passed: an explicit zero read as an absent multiplier, an English
