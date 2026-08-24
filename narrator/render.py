@@ -26,7 +26,7 @@ from narrator.audio import (
     master,
     trim_silence,
 )
-from narrator.chunking import MAX_CHARS, chunk
+from narrator.chunking import MAX_CHARS, plan_segments
 from narrator.synth import SynthConfig, resolve_reference, synthesize_chunk
 from narrator.takes import TakeStore, identity_of
 from narrator.types import (
@@ -157,7 +157,7 @@ def render(
         verifier = _DeferredDefaultVerifier(backend, cfg.synth.pronunciation)
     started = time.perf_counter()
     store = TakeStore(cfg.takes) if cfg.takes is not None else None
-    plan = _plan(segments, cfg.max_chars)
+    plan = plan_segments(segments, cfg.max_chars)
     total = sum(1 for s in plan if isinstance(s, Text))
     if cfg.reroll and (max(cfg.reroll) >= total or min(cfg.reroll) < 0):
         raise ValueError(
@@ -381,20 +381,6 @@ def _unscripted_silence(pieces: list[Audio | Gap], audio: Audio, sample_rate: in
                       if min(end, b) > max(start, a))
         worst = max(worst, (end - start - overlap) / sample_rate)
     return worst
-
-
-def _plan(segments: list[Segment], max_chars: int) -> list[Segment]:
-    """Flatten segments: gaps pass through, texts become chunk-sized Texts."""
-    plan: list[Segment] = []
-    for segment in segments:
-        if isinstance(segment, Gap):
-            plan.append(segment)
-        elif isinstance(segment, Text):
-            plan.extend(Text(piece, voice=segment.voice)
-                        for piece in chunk(segment.text, max_chars))
-        else:  # pragma: no cover - guarded by the type union
-            raise TypeError(f"Not a segment: {segment!r}")
-    return plan
 
 
 def _write(out: Path, audio: Audio, sample_rate: int) -> None:

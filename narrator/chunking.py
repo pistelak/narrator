@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import re
 
+from narrator.types import Gap, Segment, Text
+
 MAX_CHARS = 250
 MIN_WORDS = 3
 
@@ -148,3 +150,27 @@ def _merge_orphans(chunks: list[str], max_chars: int) -> list[str]:
         else:
             out.append(c)
     return out
+
+
+def plan_segments(segments: list[Segment], max_chars: int = MAX_CHARS) -> list[Segment]:
+    """Flatten a script: gaps pass through, texts become chunk-sized Texts.
+
+    Here rather than in `render` because `preflight` has to predict exactly the
+    chunks `render` will produce, and it used to do that by walking the segment
+    list itself and calling `chunk` in its own loop. Two walks agreeing was a
+    coincidence maintained by hand; preflight's whole contract is that it models
+    the render it is predicting, so the walk is now the same code.
+
+    A `Text`'s pinned voice rides along. Chunking never crosses a segment, so a
+    voice cannot bleed into another speaker's turn by construction.
+    """
+    plan: list[Segment] = []
+    for segment in segments:
+        if isinstance(segment, Gap):
+            plan.append(segment)
+        elif isinstance(segment, Text):
+            plan.extend(Text(piece, voice=segment.voice)
+                        for piece in chunk(segment.text, max_chars))
+        else:  # pragma: no cover - guarded by the type union
+            raise TypeError(f"Not a segment: {segment!r}")
+    return plan

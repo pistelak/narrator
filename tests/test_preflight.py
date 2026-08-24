@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from narrator.backends.fake import FakeASR, FakeBackend
+from narrator.chunking import plan_segments
 from narrator.preflight import preflight
 from narrator.render import RenderFailed, render
 from narrator.synth import SynthConfig, resolve_reference
@@ -281,3 +282,36 @@ def test_preflight_and_render_ask_one_question_about_no_speech() -> None:
     # The plain case is unchanged, and a tag beside real speech still passes.
     assert not preflight([Text(atom)], non_speech=(atom,)).clean
     assert preflight([Text(f"{atom} Alpha beta gamma.")], non_speech=(atom,)).clean
+
+
+def test_preflight_chunks_are_render_chunks_on_a_script_that_actually_splits(
+    tmp_path: Path,
+) -> None:
+    """Preflight predicts render's chunks by running render's own walk.
+
+    The two used to walk the segment list separately — preflight looping over
+    segments and calling `chunk` itself, render doing the same in `_plan`. They
+    agreed, but by hand: nothing made them agree, and preflight's entire contract
+    is that it models the render it is predicting. A drift would misnumber every
+    finding after the first multi-chunk segment, which is precisely where a long
+    script lives.
+
+    So this exercises a script that genuinely splits — several chunks from one
+    Text, with Gaps interleaved, since Gaps consume no chunk index — and pins
+    that the two counts and the two numberings are the same.
+    """
+    long_text = " ".join(f"Sentence number {n} carries enough words to matter."
+                         for n in range(40))
+    segments = [Text(long_text), Gap(1.5), Text("Alpha beta gamma delta."),
+                Gap(0.5), Text(long_text)]
+
+    report = preflight(segments)
+    planned = [s for s in plan_segments(segments) if isinstance(s, Text)]
+    assert report.chunks == len(planned) > 5, "the script must really split"
+    assert report.gap_s == 2.0, "gaps are counted, and consume no chunk index"
+
+    backend = FakeBackend()
+    rendered = render(segments, VOICE, backend, tmp_path / "a.wav",
+                      CoverageVerifier(FakeASR(backend)))
+    assert [c.index for c in rendered.chunks] == list(range(report.chunks))
+    assert [c.text for c in rendered.chunks] == [s.text for s in planned]
