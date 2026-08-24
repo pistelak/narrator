@@ -72,7 +72,6 @@ class SupertonicBackend:
     """Wraps the supertonic ONNX runtime."""
 
     model_id: str = MODEL
-    default_preset: str = "M1"
     total_steps: int = 10
     """Diffusion steps. 10 is smoother than the package default of 8."""
 
@@ -100,14 +99,23 @@ class SupertonicBackend:
 
     @property
     def identity(self) -> str | None:
-        """For the take store. Every setting that reaches the waveform is here,
-        `default_preset` included: a preset-less Voice resolves against it, so two
-        backends differing only in that default speak with different voices."""
+        """For the take store. Every setting that reaches the waveform is here.
+
+        A `default_preset` field used to be among them, on the stated grounds
+        that "a preset-less Voice resolves against it". No Voice is preset-less:
+        `Voice.__post_init__` requires a clip or a preset, and a Voice carrying a
+        clip takes the path branch in `_style`, so the default was unreachable on
+        both sides of that fork. It named a setting that could not reach any
+        waveform. Over-keying is a cost bug rather than a safety one — it buys
+        misses, where under-keying serves uncertified audio — but this one also
+        carried a false claim about how voices resolve, which is worse than the
+        misses. Dropping it changes every stored Supertonic key; those keys named
+        a value that never described their audio, so the misses are correct."""
         engine = package_version("supertonic")
         if engine is None:
             return None
         return "supertonic/" + json.dumps(
-            [_class_id(self), self._loaded_id or self.model_id, self.default_preset,
+            [_class_id(self), self._loaded_id or self.model_id,
              self.total_steps, self.speed, self.sample_rate, self.honours_frame_cap,
              engine])
 
@@ -146,9 +154,29 @@ class SupertonicBackend:
         reference's digest.
 
         Validation comes before the lookup because the key reads the file."""
-        preset = voice.preset or self.default_preset
+        # `Voice.__post_init__` guarantees a clip or a preset, so the preset
+        # branch below always has one. There is no backend-level default to fall
+        # back on, and there was never a reachable one: a Voice carrying a clip
+        # takes the path branch, and a Voice without one cannot have been
+        # constructed without a preset.
+        preset = voice.preset
         if voice.audio_path is not None and not voice.audio_path.is_file():
             raise FileNotFoundError(f"Voice reference not found: {voice.audio_path}")
+        if voice.audio_path is None and not preset:
+            # Unreachable through the constructor, and stated rather than
+            # trusted. A frozen dataclass is not a sealed one — `object.__setattr__`
+            # gets past `__post_init__`, and a review asked what happens then. The
+            # old code answered by silently substituting a backend default, which
+            # is how a malformed Voice used to get a real voice: the take key
+            # would then name the default while the audio came from it, and the
+            # caller never learned their Voice was broken. Raising, not asserting,
+            # because `-O` strips asserts and this must hold however Python was
+            # started.
+            raise ValueError(
+                f"Voice has neither audio_path nor preset: {voice!r}. "
+                "This cannot happen through Voice(...) — something bypassed its "
+                "validation."
+            )
         key = (f"path:{voice.audio_path.resolve()}:{content_digest(voice.audio_path)}"
                if voice.audio_path else f"preset:{preset}")
         if key in self._styles:
