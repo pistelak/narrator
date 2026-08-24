@@ -1433,6 +1433,41 @@ def format_word_diagnostics(codes: tuple[str, ...], limit: int = 6) -> str:
     return " · ".join(parts)
 
 
+def verdict_for_transcript(
+    reference: str,
+    transcript: str,
+    lang: str,
+    sound_alikes: tuple[tuple[str, str], ...] = (),
+    min_coverage: float = MIN_COVERAGE,
+) -> Verdict:
+    """Score a transcript against the text it should be, and apply the gate.
+
+    The acceptance policy, with no ASR in it: what "correct" means, where the
+    threshold sits, and which diagnostics a caller is allowed to see. Separated
+    from `CoverageVerifier.verify` because it has a second caller with no audio
+    at all — `preflight` feeds a chunk its OWN text as the transcript, the
+    identity round-trip a perfect recogniser cannot beat.
+
+    Preflight used to re-spell this: call `coverage_detail`, compare against
+    `MIN_COVERAGE`, pull `worst_sentence` out by hand. That worked, and it meant
+    the gate was written in two places — so the next fail-closed rule added here
+    would have been invisible to the oracle whose entire job is to predict this
+    function. One definition, two callers.
+
+    Diagnostics are gated exactly like `dropped_sentence`: a passing chunk with
+    tolerated ASR spelling quirks must not print alarming codes.
+    """
+    detail = coverage_detail(reference, transcript, lang, sound_alikes)
+    ok = detail.score >= min_coverage
+    return Verdict(
+        ok=ok,
+        coverage=detail.score,
+        dropped_sentence="" if ok else detail.worst_sentence,
+        transcript=transcript,
+        word_diagnostics=() if ok else detail.word_diagnostics,
+    )
+
+
 @dataclass
 class CoverageVerifier:
     """The default verifier: transcribe, then score per-sentence coverage."""
@@ -1477,17 +1512,8 @@ class CoverageVerifier:
 
     def verify(self, audio: Audio, text: str, lang: str) -> Verdict:
         transcript = self.asr.transcribe(audio, lang)
-        detail = coverage_detail(text, transcript, lang, self.sound_alikes)
-        ok = detail.score >= self.min_coverage
-        # Diagnostics are gated exactly like dropped_sentence: a passing chunk
-        # with tolerated ASR spelling quirks must not print alarming codes.
-        return Verdict(
-            ok=ok,
-            coverage=detail.score,
-            dropped_sentence="" if ok else detail.worst_sentence,
-            transcript=transcript,
-            word_diagnostics=() if ok else detail.word_diagnostics,
-        )
+        return verdict_for_transcript(
+            text, transcript, lang, self.sound_alikes, self.min_coverage)
 
 
 @dataclass

@@ -52,7 +52,7 @@ from dataclasses import dataclass, replace
 from narrator.chunking import MAX_CHARS, plan_segments, split_sentences
 from narrator.synth import SynthConfig, resolve_reference
 from narrator.types import Gap, Segment
-from narrator.verify import MIN_COVERAGE, coverage_detail, normalize
+from narrator.verify import normalize, verdict_for_transcript
 
 # The render's own pacing default, so the duration estimate and the frame-cap
 # budget agree on how fast the narrator talks.
@@ -152,13 +152,16 @@ def preflight(
                 chunks, raw, "[no speech left after removing declared non_speech]"))
             chunks += 1
             continue
-        detail = coverage_detail(piece, piece, lang, sound_alikes)
-        # The verifier's real gate, not `< 1.0`: doomed must mean "fails
-        # the exact threshold the audio will face", so preflight can never
-        # flag something the render would in fact tolerate.
+        # The verifier's own function, not a re-spelling of it: doomed must
+        # mean "fails the exact gate the audio will face", so preflight can
+        # never flag something the render would in fact tolerate. Comparing a
+        # score against `MIN_COVERAGE` here was that re-spelling, and it would
+        # have gone stale the first time a fail-closed rule was added to the
+        # verdict rather than to the score.
+        verdict = verdict_for_transcript(piece, piece, lang, sound_alikes)
         rescued = allow_sentence_split and _split_rescues(piece, lang, sound_alikes)
-        if detail.score < MIN_COVERAGE and not rescued:
-            findings.append(UnverifiableChunk(chunks, piece, detail.worst_sentence))
+        if not verdict.ok and not rescued:
+            findings.append(UnverifiableChunk(chunks, piece, verdict.dropped_sentence))
         n = len(piece.split())
         words += n
         speech_s += n / _WPS
@@ -184,6 +187,6 @@ def _split_rescues(piece: str, lang: str, sound_alikes: tuple[tuple[str, str], .
     if len(sentences) < 2:
         return False
     return all(
-        coverage_detail(s, s, lang, sound_alikes).score >= MIN_COVERAGE
+        verdict_for_transcript(s, s, lang, sound_alikes).ok
         for s in sentences
     )
