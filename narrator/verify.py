@@ -248,7 +248,7 @@ _NUMERAL_VALUES: dict[str, int] = {
 # once at import. Two reasons, both structural:
 #
 #   - Every consumer already reads this table. `isolated_numeral_positions`
-#     values them and `has_compound_numeral` sees them through `is_numberish`,
+#     values them and the adjacency checks see them through `is_numberish`,
 #     so a helper would have to be threaded into each.
 #
 #     An earlier version of this note claimed the forms also get
@@ -410,14 +410,6 @@ def numeral_multiset(
             # visible, bounded, and has never certified a wrong ordinary word.
             return None
     return out
-
-
-def has_compound_numeral(words: list[str], lang: str = "en") -> bool:
-    """Two numerals side by side, e.g. "two fifty six"."""
-    return any(
-        is_numberish(w, lang) and is_numberish(words[i + 1], lang)
-        for i, w in enumerate(words[:-1])
-    )
 
 
 def isolated_numeral_positions(
@@ -771,7 +763,7 @@ def content_words(text: str, lang: str = "en") -> list[str]:
 def _bounded_matches(hyp_words: list[str], needle_words: list[str]) -> list[tuple[int, int]]:
     """Occurrences of `needle_words` in `hyp_words` as (start, end) index spans,
     allowing the words to have merged or split in the transcript but not to
-    straddle other words. `_bounded_count` is the length of this list; the spans
+    straddle other words. `len()` of this list is the occurrence count; the spans
     themselves exist so the diagnostics can tell which hypothesis tokens a
     short-sentence rescue consumed, rather than reporting them as insertions."""
     if not needle_words:
@@ -788,12 +780,6 @@ def _bounded_matches(hyp_words: list[str], needle_words: list[str]) -> list[tupl
             if len(joined) > len(needle):
                 break
     return matches
-
-
-def _bounded_count(hyp_words: list[str], needle_words: list[str]) -> int:
-    """How many times `needle_words` appears in `hyp_words`, allowing the words to
-    have merged or split in the transcript but not to straddle other words."""
-    return len(_bounded_matches(hyp_words, needle_words))
 
 
 @dataclass(frozen=True)
@@ -905,8 +891,8 @@ def coverage_detail(
         # entirely) into a clean pass, at exactly the granularity the fallback
         # exists to make failures visible. Found by preflight's identity oracle:
         # a chunk it declared doomed rendered "clean" through this hole.
-        ref_tokens = normalize(reference, lang).split()
-        if ref_tokens:
+        ref_all_tokens = normalize(reference, lang).split()
+        if ref_all_tokens:
             # ...but fail-closed only where there is genuinely nothing to
             # compare. ISOLATED numerals carry comparable value, so "Four."
             # against a transcript's "4" is verified, not unverifiable — the
@@ -951,10 +937,10 @@ def coverage_detail(
                 if len(numeral) == 1:
                     to_numeral.update(
                         {m: numeral[0] for m in cluster if m != numeral[0]})
-            hyp_tokens = [
+            hyp_numeral_tokens = [
                 to_numeral.get(t, t) for t in _numeral_tokens(hypothesis, lang)
             ]
-            ref_tokens = [
+            ref_numeral_tokens = [
                 to_numeral.get(t, t) for t in _numeral_tokens(reference, lang)
             ]
 
@@ -982,7 +968,7 @@ def coverage_detail(
             # transcript and the wrong one alike — while the single-token
             # "Dvacet." against "20." has always passed. English is unchanged:
             # a multi-token run is never composable there, so this is None
-            # exactly where `has_compound_numeral` was True.
+            # exactly where two numerals stand side by side.
             # Sentence-grouped, like the other call site: a flat list let
             # "Dvacet. Pět." compose to 25 and match a transcript's "25.",
             # which is two spoken numbers read as one. Grouped from the SAME
@@ -990,11 +976,11 @@ def coverage_detail(
             # composition — regrouping the raw text instead silently dropped
             # the caller's pairs here.
             ref_composed = numeral_multiset(
-                _regroup(ref_tokens, reference, lang), lang)
+                _regroup(ref_numeral_tokens, reference, lang), lang)
             hyp_composed = numeral_multiset(
-                _regroup(hyp_tokens, hypothesis, lang), lang)
+                _regroup(hyp_numeral_tokens, hypothesis, lang), lang)
             comparable = (
-                all(is_numberish(t, lang) for t in hyp_tokens)
+                all(is_numberish(t, lang) for t in hyp_numeral_tokens)
                 and ref_composed is not None
                 and hyp_composed is not None
             )
@@ -1212,17 +1198,12 @@ def coverage_detail(
     # still hard-fails; composing a value across foreign word sequences is
     # the [2,50,6]-vs-[256] ambiguity compound suppression exists to avoid.
     ref_tokens = _numeral_tokens(reference, lang)
-    hyp_tokens = _numeral_tokens(hypothesis, lang)
-    # Skip if EITHER side compounds. The check must be symmetric: "two fifty six"
-    # is three adjacent numerals in the script and collapses to the single
-    # isolated "256" in the transcript, so an asymmetric rule reads a correct
-    # transcription as a changed number.
     # A run of adjacent numerals is COMPOSED into its value where the language
     # makes that unambiguous, and suppressed where it does not. `None` from
     # either side means some run could not be read, and both sides then compare
     # nothing — the previous behaviour, reproduced rather than approximated.
     #
-    # Symmetric on purpose, for the reason the old comment gave: "two fifty six"
+    # Skipped if EITHER side compounds, and symmetric on purpose: "two fifty six"
     # is three adjacent numerals in the script and collapses to the single
     # isolated "256" in the transcript, so an asymmetric rule reads a correct
     # transcription as a changed number.
