@@ -9,6 +9,7 @@ of a reference clip.
 
 from __future__ import annotations
 
+from dataclasses import fields
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -269,3 +270,33 @@ def test_higgs_refuses_a_preset_only_voice() -> None:
     b._model = SimpleNamespace()
     with pytest.raises(ValueError, match="no voice bank"):
         b._codes_for(Voice(preset="M1", lang="en"))
+
+
+def test_no_backend_default_stands_in_for_a_missing_preset(
+    backend: SupertonicBackend, tmp_path: Path
+) -> None:
+    """There is no preset-less Voice, so there was nothing for a default to serve.
+
+    The backend carried a `default_preset="M1"` field, and its `identity`
+    docstring justified including it with "a preset-less Voice resolves against
+    it". No Voice is preset-less — `Voice.__post_init__` requires a clip or a
+    preset — and a Voice carrying a clip never reaches the preset branch. So the
+    field sat in the take key naming a setting that could not reach a waveform.
+
+    A frozen dataclass is not a sealed one, though, and that is the half the
+    deletion had to answer: `object.__setattr__` gets past `__post_init__`, and
+    the old `voice.preset or self.default_preset` then quietly substituted M1 —
+    a malformed Voice getting real audio, filed under a key naming a default the
+    caller never chose. It now refuses.
+    """
+    # A clip-only Voice is legal and never consults a preset.
+    clip = _clip(tmp_path, 0)
+    backend.synthesize(TEXT, clip, max_frames=999, temperature=0.4)
+    assert backend._tts.styles_by_name == [], "a clip path must not resolve a preset"
+
+    assert "default_preset" not in {f.name for f in fields(SupertonicBackend)}
+
+    broken = Voice(preset="M1", lang="en")
+    object.__setattr__(broken, "preset", None)
+    with pytest.raises(ValueError, match="bypassed its validation"):
+        backend.synthesize(TEXT, broken, max_frames=999, temperature=0.4)

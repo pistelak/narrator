@@ -8,6 +8,7 @@ the fake backend, so preflight and render can never silently disagree.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -15,8 +16,9 @@ import pytest
 from narrator.backends.fake import FakeASR, FakeBackend
 from narrator.preflight import preflight
 from narrator.render import RenderFailed, render
+from narrator.synth import SynthConfig, resolve_reference
 from narrator.types import Gap, Text, Voice
-from narrator.verify import MIN_COVERAGE, CoverageVerifier, coverage
+from narrator.verify import MIN_COVERAGE, CoverageVerifier, coverage, normalize
 
 VOICE = Voice(Path("nonexistent.wav"), "reference", "en")
 
@@ -248,3 +250,34 @@ def test_preflight_sees_declared_atoms_too() -> None:
 
     only_atoms = preflight([Text(atom)], non_speech=(atom,))
     assert not only_atoms.clean, "a chunk with no speech left cannot be verified"
+
+
+def test_preflight_and_render_ask_one_question_about_no_speech() -> None:
+    """The contract: a chunk preflight calls doomed must really be doomed.
+
+    It was not. Preflight asked whether the resolved reference still NORMALIZED
+    to a word; render asked whether it was blank. Punctuation is the gap between
+    those, so `Text("<|pause|> ...")` with `<|pause|>` declared resolved to
+    "...", preflight reported "no speech left", and render shipped it clean.
+
+    The fix went to render, not to preflight, because preflight was the one
+    asking the right question: a reference that normalizes to nothing scores 1.0
+    against ANY transcript, so shipping it certifies audio nobody checked.
+    """
+    atom = "<|pause|>"
+    script = f"{atom} ..."
+    cfg = replace(SynthConfig(), non_speech=(atom,))
+
+    resolved = resolve_reference(script, cfg)
+    assert resolved.strip(), "the old, looser predicate saw speech here"
+    assert not normalize(resolved, "en").split(), "and there is none"
+    assert coverage(resolved, "totally different words", "en")[0] == 1.0, (
+        "which is why shipping it certifies anything"
+    )
+
+    report = preflight([Text(script)], non_speech=(atom,))
+    assert not report.clean, "preflight was right to call this doomed"
+
+    # The plain case is unchanged, and a tag beside real speech still passes.
+    assert not preflight([Text(atom)], non_speech=(atom,)).clean
+    assert preflight([Text(f"{atom} Alpha beta gamma.")], non_speech=(atom,)).clean

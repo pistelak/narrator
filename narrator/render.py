@@ -41,7 +41,7 @@ from narrator.types import (
     Verifier,
     Voice,
 )
-from narrator.verify import default_verifier, format_word_diagnostics
+from narrator.verify import default_verifier, format_word_diagnostics, normalize
 
 
 class RenderFailed(RuntimeError):
@@ -179,10 +179,37 @@ def render(
         # override `NullVerifier`, which opts out of checking the AUDIO, not out
         # of the library refusing an incoherent request.
         for at, planned in enumerate(s for s in plan if isinstance(s, Text)):
-            if not resolve_reference(planned.text, cfg.synth).strip():
+            # The question is whether any WORD survives removal, not whether any
+            # character does. An earlier version asked `.strip()`, which lets
+            # punctuation stand in for speech: `Text("<|pause|> ...")` resolved to
+            # "...", walked past this guard, and was certified at 1.0 against a
+            # transcript of totally different words — the exact vacuous pass this
+            # guard exists to refuse, one character class further out. `normalize`
+            # is what the verifier itself reduces the reference to, so asking it
+            # here is asking the same question the gate will ask.
+            #
+            # It also restores preflight's one contract. Preflight already asked
+            # the normalize question, so it reported this chunk doomed while
+            # render shipped it clean — a FAILING preflight chunk that was not in
+            # fact doomed. Two predicates for one question; there is now one, and
+            # it is the stricter one, because the looser one was certifying audio
+            # nobody had checked.
+            #
+            # Scoped to chunks that REMOVAL emptied, which is preflight's
+            # condition too. Caller-written punctuation is a different question:
+            # `Text("...")` certifies vacuously whether or not any atom is
+            # declared elsewhere in the render, so refusing it only when some
+            # unrelated atom happens to be configured would make the same script
+            # legal or illegal depending on a setting it never used. That hole is
+            # real and named here rather than half-closed (a review caught the
+            # half-closed version); closing it is a verifier-policy change with
+            # its own measurement, not a side effect of this guard.
+            resolved = resolve_reference(planned.text, cfg.synth)
+            if resolved != planned.text and not normalize(
+                    resolved, (planned.voice or voice).lang).split():
                 raise ValueError(
-                    f"chunk {at} is nothing but declared non_speech atoms, so there "
-                    f"is no speech to verify: {planned.text[:60]!r}"
+                    f"chunk {at} has no speech left after declared non_speech is "
+                    f"removed, so there is nothing to verify: {planned.text[:60]!r}"
                 )
 
     pieces: list[Audio | Gap] = []

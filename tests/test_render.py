@@ -617,9 +617,25 @@ def test_a_chunk_that_is_only_atoms_is_refused(tmp_path: Path) -> None:
     verifier = CoverageVerifier(FakeASR(backend))
     cfg = RenderConfig(synth=SynthConfig(non_speech=(atom,)))
 
-    with pytest.raises(ValueError, match="nothing but declared non_speech"):
+    with pytest.raises(ValueError, match="no speech left after declared non_speech"):
         render([Text(atom)], VOICE, backend, tmp_path / "a.wav", verifier, cfg)
     assert backend.calls == 0, "refused before paying for a generation"
+
+    # Punctuation is not speech, and the guard used to think it was. Asking
+    # `.strip()` let `Text("<|sfx:laughter|> ...")` through with the reference
+    # "...", which normalizes to nothing and therefore scores 1.0 against ANY
+    # transcript — the same vacuous certification, one character class out.
+    # Preflight already reported this chunk doomed, so the looser guard here was
+    # also what broke preflight's one contract.
+    with pytest.raises(ValueError, match="no speech left after declared non_speech"):
+        render([Text(f"{atom} ...")], VOICE, backend, tmp_path / "c.wav", verifier, cfg)
+
+    # ...but only where REMOVAL is what emptied it. Caller-written punctuation
+    # certifies vacuously too, and that is a real hole — it is simply not this
+    # guard's, since it exists whether or not any atom is configured. Refusing it
+    # here would make the same script legal or illegal depending on an unrelated
+    # setting, which a review caught in the first version of this fix.
+    render([Text("...")], VOICE, backend, tmp_path / "d.wav", verifier, cfg)
 
     # A tag BESIDE real speech is the supported case and still renders.
     report = render([Text(f"{atom} Alpha beta gamma delta.")], VOICE, backend,
