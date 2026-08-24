@@ -33,6 +33,7 @@ import difflib
 import json
 import re
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from narrator import cs_numerals
@@ -782,6 +783,61 @@ def _bounded_matches(hyp_words: list[str], needle_words: list[str]) -> list[tupl
     return matches
 
 
+def _sound_alike_classes(
+    sound_alikes: tuple[tuple[str, str], ...], lang: str,
+) -> list[set[str]]:
+    """Caller-declared pairs merged into equivalence CLASSES, in normalize space.
+
+    Classes rather than a one-hop map, because alignment composes pairs:
+    ("Four","fore") plus ("fore","for") verifies "for", and a single-hop map
+    refused the chain the caller had declared (gate review). Overlapping pairs
+    therefore merge into one set.
+
+    Single-token pairs only. A multi-word spoken form like "do not enter"
+    cannot be allowed to touch the protection of "not", and the boundary
+    rescue already covers merges.
+
+    Written once because it was written twice — the numeral guard and the
+    critical-token guard had line-for-line identical copies, so a fix to the
+    merging could land in one and miss the other.
+    """
+    classes: list[set[str]] = []
+    for written, spoken in sound_alikes:
+        wt = normalize(written, lang).split()
+        st = normalize(spoken, lang).split()
+        if len(wt) != 1 or len(st) != 1 or wt[0] == st[0]:
+            continue
+        merged = {wt[0], st[0]}
+        untouched = []
+        for group in classes:
+            if group & merged:
+                merged |= group
+            else:
+                untouched.append(group)
+        classes = [*untouched, merged]
+    return classes
+
+
+def _canonical_into(
+    classes: list[set[str]], distinguished: Callable[[str], bool],
+) -> dict[str, str]:
+    """Map every member of a class onto its one distinguished member.
+
+    A class holding TWO distinguished members refuses to map at all, and that
+    fail-closed is the point in both places it is used: collapsing two numeral
+    spellings would invent an equivalence between numbers, and collapsing
+    ("cannot","cant") would erase a distinction the critical list exists to
+    keep. A class holding none maps nothing — there is nothing to canonicalize
+    onto.
+    """
+    canon: dict[str, str] = {}
+    for members in classes:
+        marked = sorted(m for m in members if distinguished(m))
+        if len(marked) == 1:
+            canon.update({m: marked[0] for m in members if m != marked[0]})
+    return canon
+
+
 @dataclass(frozen=True)
 class CoverageDetail:
     """coverage() plus the word-level evidence behind it.
@@ -914,29 +970,10 @@ def coverage_detail(
             # Each class canonicalizes into its numeral member; a class with
             # two distinct numeral spellings refuses to map at all, since
             # collapsing them would invent an equivalence between numbers.
-            alike_clusters: list[set[str]] = []
-            for written, spoken in sound_alikes:
-                wt = normalize(written, lang).split()
-                st = normalize(spoken, lang).split()
-                if len(wt) != 1 or len(st) != 1 or wt[0] == st[0]:
-                    continue
-                cluster = {wt[0], st[0]}
-                rest = []
-                for group in alike_clusters:
-                    if group & cluster:
-                        cluster |= group
-                    else:
-                        rest.append(group)
-                alike_clusters = [*rest, cluster]
-            to_numeral: dict[str, str] = {}
-            for cluster in alike_clusters:
-                numeral = sorted(
-                    m for m in cluster
-                    if is_numberish(m, lang)
-                    or m in _NUMERAL_VALUES)
-                if len(numeral) == 1:
-                    to_numeral.update(
-                        {m: numeral[0] for m in cluster if m != numeral[0]})
+            to_numeral = _canonical_into(
+                _sound_alike_classes(sound_alikes, lang),
+                lambda m: is_numberish(m, lang) or m in _NUMERAL_VALUES,
+            )
             hyp_numeral_tokens = [
                 to_numeral.get(t, t) for t in _numeral_tokens(hypothesis, lang)
             ]
@@ -1330,26 +1367,8 @@ def coverage_detail(
     # holding TWO protected tokens (("cannot","cant")) refuses to map at all:
     # collapsing them would erase a distinction this list exists to keep, so
     # that pair fails closed.
-    clusters: list[set[str]] = []
-    for written, spoken in sound_alikes:
-        wf = normalize(written, lang).split()
-        sf = normalize(spoken, lang).split()
-        if len(wf) != 1 or len(sf) != 1 or wf[0] == sf[0]:
-            continue
-        cluster = {wf[0], sf[0]}
-        untouched = []
-        for group in clusters:
-            if group & cluster:
-                cluster |= group
-            else:
-                untouched.append(group)
-        clusters = [*untouched, cluster]
-    critical_canon: dict[str, str] = {}
-    for cluster in clusters:
-        protected = sorted(cluster & _CRITICAL_TOKENS)
-        if len(protected) == 1:
-            critical_canon.update(
-                {m: protected[0] for m in cluster if m != protected[0]})
+    critical_canon = _canonical_into(
+        _sound_alike_classes(sound_alikes, lang), _CRITICAL_TOKENS.__contains__)
     ref_critical = critical_counts(
         [critical_canon.get(w, w) for w in normalize(reference, lang).split()])
     hyp_critical = critical_counts(
