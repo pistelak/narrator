@@ -1579,10 +1579,10 @@ def test_a_numeral_compound_is_looked_up_never_computed() -> None:
     expressible: a miss lands on suppression, which is where a fabricated
     integer used to land instead.
     """
-    from narrator.verify import _numeral_tokens_by_sentence, numeral_multiset
+    from narrator.verify import _numeral_groups, numeral_multiset
 
     def composed(text: str):
-        return numeral_multiset(_numeral_tokens_by_sentence(text, "cs"), "cs")
+        return numeral_multiset(_numeral_groups(text, "cs"), "cs")
 
     assert composed("dvacet tisíc") == [20000]
     assert composed("dvě stě") == [200]
@@ -1634,10 +1634,10 @@ def test_a_number_never_spans_punctuation() -> None:
     Same argument as the sentence rule one level up, where a flat token view
     read "4. 500." as 4500. A number does not span a comma; a list does.
     """
-    from narrator.verify import _numeral_tokens_by_sentence, numeral_multiset
+    from narrator.verify import _numeral_groups, numeral_multiset
 
     def composed(text: str):
-        return numeral_multiset(_numeral_tokens_by_sentence(text, "cs"), "cs")
+        return numeral_multiset(_numeral_groups(text, "cs"), "cs")
 
     assert composed("bylo jich dvacet, pět odešlo") == [20, 5]
     score, detail = coverage("bylo jich dvacet, pět odešlo", "bylo jich 25 odešlo", "cs")
@@ -1646,3 +1646,56 @@ def test_a_number_never_spans_punctuation() -> None:
 
     # A real compound, unpunctuated, still composes.
     assert composed("bylo tam dvacet pět tisíc lidí") == [25000]
+
+
+def test_numeral_grouping_keeps_numbers_out_of_each_others_clauses() -> None:
+    """The invariant that let two numeral tokenizers become one.
+
+    `_numeral_tokens` used to be its own pipeline, fusing digit groups per
+    SENTENCE, while the grouped one fused per CLAUSE — and a `_regroup` helper
+    split the flat list back up afterwards. They agreed for every input, because
+    a digit group's separators and a clause break are disjoint: English groups
+    with a comma and NO space (`1,000`), Czech with a dot, a space, an NBSP or a
+    thin space (`1 000`), while a clause break needs `, ` with a NON-DIGIT
+    before it, `; `, `: `, or a spaced dash.
+
+    Asserting `flat == flatten(groups)` would now be tautological — the flat view
+    is defined as that flattening, and a review pointed out the first version of
+    this test compared a function with its own definition. So this pins the
+    GROUPS themselves, on the cases the two deleted docstrings were written for.
+    Break any of the three inputs to that disjointness — the digit patterns,
+    `_CLAUSE_BREAK`, or sentence splitting — and these expectations move.
+    """
+    from narrator.verify import _numeral_groups
+
+    expected = {
+        # "4. 500." is two spoken numbers; read flat it was the 4500 an ASR
+        # wrote for different audio.
+        ("4. 500.", "en"): [["4"], ["500"]],
+        ("4. 500.", "cs"): [["4"], ["500"]],
+        # A list is not a number: twenty and five, not 25.
+        ("bylo jich dvacet, pět odešlo", "cs"): [["bylo", "jich", "dvacet"],
+                                                 ["pět", "odešlo"]],
+        # Grouped digits fuse in their own language and only there.
+        ("1,000", "en"): [["1000"]],
+        ("1,000", "cs"): [["1", "000"]],
+        ("1 000", "cs"): [["1000"]],
+        ("1 000", "en"): [["1", "000"]],
+        ("1.000", "cs"): [["1000"]],
+        ("1 000 000", "cs"): [["1000000"]],
+        # A comma with a space after a DIGIT is not a clause break — that
+        # lookbehind is what keeps "1 000, ne 2 000" one clause, and it is also
+        # why a grouping comma can never be mistaken for one.
+        ("Cena je 1 000, ne 2 000.", "cs"): [["cena", "je", "1000",
+                                              "ne", "2000"]],
+        ("1, 000", "cs"): [["1", "000"]],
+        # The decimal comma sits between digits and is left alone.
+        ("3,5 metru", "cs"): [["3", "5", "metru"]],
+        # The other three break shapes, each splitting a group off cleanly.
+        ("x; 1 000", "cs"): [["x"], ["1000"]],
+        ("y: 2 000", "cs"): [["y"], ["2000"]],
+        ("a — b", "cs"): [["a"], ["b"]],
+        ("Dvacet. Pět.", "cs"): [["dvacet"], ["pět"]],
+    }
+    for (text, lang), groups in expected.items():
+        assert _numeral_groups(text, lang) == groups, (text, lang)

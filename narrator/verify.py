@@ -508,41 +508,16 @@ _DIGIT_GROUPS = {
 
 
 def _numeral_tokens(text: str, lang: str) -> list[str]:
-    """Normalized tokens for the numeral checks: grouping fused per SENTENCE.
+    """`_numeral_groups` flattened, for the checks that only need adjacency.
 
-    Fusing across the whole text let punctuation masquerade as grouping —
-    "4. 500." is two spoken numbers, but a full-text view read it as the
-    single 4500 an ASR wrote for different audio (gate review). A grouped
-    number never spans a sentence; two bare numerals in adjacent sentences
-    land adjacent after concatenation and compound suppression refuses
-    them, the fail-closed direction.
+    Fusing digit groups across the whole text let punctuation masquerade as
+    grouping — "4. 500." is two spoken numbers, but a full-text view read it as
+    the single 4500 an ASR wrote for different audio (gate review). The grouping
+    lives in `_numeral_groups`; concatenating its groups is safe for THIS view
+    because two bare numerals in adjacent groups land adjacent and compound
+    suppression refuses them, the fail-closed direction.
     """
-    pattern = _DIGIT_GROUPS["cs" if lang.startswith("cs") else "en"]
-    tokens: list[str] = []
-    for sentence in split_sentences(text):
-        fused = pattern.sub(
-            lambda m: re.sub(r"\D", "", m.group()), sentence)
-        tokens.extend(normalize(fused, lang).split())
-    return tokens
-
-
-def _regroup(tokens: list[str], text: str, lang: str) -> list[list[str]]:
-    """Split an already-canonicalised flat token list back into its sentences.
-
-    The all-numeral branch canonicalises tokens through the caller's
-    `sound_alikes` before comparing, so re-deriving groups from the raw text
-    would drop those pairs. Sentence sizes come from the text; the VALUES come
-    from the tokens that were canonicalised.
-    """
-    sizes = [len(group) for group in _numeral_tokens_by_sentence(text, lang)]
-    out: list[list[str]] = []
-    at = 0
-    for size in sizes:
-        out.append(tokens[at:at + size])
-        at += size
-    if at < len(tokens):                      # lengths disagreed; stay flat
-        return [tokens]
-    return out
+    return [token for group in _numeral_groups(text, lang) for token in group]
 
 
 # Punctuation a number cannot span. A decimal comma sits BETWEEN digits
@@ -550,15 +525,20 @@ def _regroup(tokens: list[str], text: str, lang: str) -> list[list[str]]:
 _CLAUSE_BREAK = re.compile(r"(?<!\d),\s|[;:]\s|\s[—–-]\s")
 
 
-def _numeral_tokens_by_sentence(text: str, lang: str) -> list[list[str]]:
-    """`_numeral_tokens`, but keeping each sentence's tokens separate.
+def _numeral_groups(text: str, lang: str) -> list[list[str]]:
+    """Normalized tokens for the numeral checks, kept in their clause groups.
 
-    Composition must not reach across a sentence boundary. `_numeral_tokens`
-    concatenates, and the old compound SUPPRESSION made that safe — two bare
-    numerals in adjacent sentences landed adjacent and were refused, the
-    fail-closed direction its docstring names. Composing them instead recreates
-    exactly the hazard recorded there: "4. 500." is two spoken numbers, and a
-    flat view reads it as the 4500 an ASR wrote for different audio.
+    The one tokenizer. Composition must not reach across a sentence boundary,
+    so the grouping is the primitive and the flat view (`_numeral_tokens`) is
+    derived from it. There used to be two independent pipelines and a `_regroup`
+    that split the flat one back up; they agreed by construction — a digit
+    group's separators (comma-no-space in en, dot/space in cs) cannot contain a
+    clause break — but "agree by construction" was an argument nobody had
+    written down, and one of the two was where composition happened.
+
+    Composing across a boundary recreates the measured hazard: "4. 500." is two
+    spoken numbers, and a flat view reads it as the 4500 an ASR wrote for
+    different audio.
     """
     pattern = _DIGIT_GROUPS["cs" if lang.startswith("cs") else "en"]
     out: list[list[str]] = []
@@ -974,12 +954,15 @@ def coverage_detail(
                 _sound_alike_classes(sound_alikes, lang),
                 lambda m: is_numberish(m, lang) or m in _NUMERAL_VALUES,
             )
-            hyp_numeral_tokens = [
-                to_numeral.get(t, t) for t in _numeral_tokens(hypothesis, lang)
+            hyp_numeral_groups = [
+                [to_numeral.get(t, t) for t in group]
+                for group in _numeral_groups(hypothesis, lang)
             ]
-            ref_numeral_tokens = [
-                to_numeral.get(t, t) for t in _numeral_tokens(reference, lang)
+            ref_numeral_groups = [
+                [to_numeral.get(t, t) for t in group]
+                for group in _numeral_groups(reference, lang)
             ]
+            hyp_numeral_tokens = [t for group in hyp_numeral_groups for t in group]
 
             # Every isolated numeral now yields a typed element (see
             # isolated_numerals), so the multiset comparison IS the guard:
@@ -1008,14 +991,14 @@ def coverage_detail(
             # exactly where two numerals stand side by side.
             # Sentence-grouped, like the other call site: a flat list let
             # "Dvacet. Pět." compose to 25 and match a transcript's "25.",
-            # which is two spoken numbers read as one. Grouped from the SAME
-            # canonicalised tokens, so a declared sound-alike still reaches the
-            # composition — regrouping the raw text instead silently dropped
-            # the caller's pairs here.
-            ref_composed = numeral_multiset(
-                _regroup(ref_numeral_tokens, reference, lang), lang)
-            hyp_composed = numeral_multiset(
-                _regroup(hyp_numeral_tokens, hypothesis, lang), lang)
+            # which is two spoken numbers read as one. Canonicalised INSIDE the
+            # groups, so a declared sound-alike still reaches the composition —
+            # deriving the groups from the raw text instead silently dropped the
+            # caller's pairs here. An earlier version flattened first and split
+            # the flat list back up afterwards, which is the same thing said
+            # twice; the groups are the primitive now.
+            ref_composed = numeral_multiset(ref_numeral_groups, lang)
+            hyp_composed = numeral_multiset(hyp_numeral_groups, lang)
             comparable = (
                 all(is_numberish(t, lang) for t in hyp_numeral_tokens)
                 and ref_composed is not None
@@ -1245,9 +1228,9 @@ def coverage_detail(
     # isolated "256" in the transcript, so an asymmetric rule reads a correct
     # transcription as a changed number.
     ref_composed = numeral_multiset(
-        _numeral_tokens_by_sentence(reference, lang), lang, quote_foreign=True)
+        _numeral_groups(reference, lang), lang, quote_foreign=True)
     hyp_composed = numeral_multiset(
-        _numeral_tokens_by_sentence(hypothesis, lang), lang, quote_foreign=True)
+        _numeral_groups(hypothesis, lang), lang, quote_foreign=True)
     unreadable = ref_composed is None or hyp_composed is None
     ref_nums = [] if unreadable else sorted(ref_composed, key=str)
     hyp_nums = [] if unreadable else sorted(hyp_composed, key=str)
