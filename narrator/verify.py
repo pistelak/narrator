@@ -33,6 +33,7 @@ import difflib
 import json
 import re
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from narrator import cs_numerals
@@ -248,7 +249,7 @@ _NUMERAL_VALUES: dict[str, int] = {
 # once at import. Two reasons, both structural:
 #
 #   - Every consumer already reads this table. `isolated_numeral_positions`
-#     values them and `has_compound_numeral` sees them through `is_numberish`,
+#     values them and the adjacency checks see them through `is_numberish`,
 #     so a helper would have to be threaded into each.
 #
 #     An earlier version of this note claimed the forms also get
@@ -412,14 +413,6 @@ def numeral_multiset(
     return out
 
 
-def has_compound_numeral(words: list[str], lang: str = "en") -> bool:
-    """Two numerals side by side, e.g. "two fifty six"."""
-    return any(
-        is_numberish(w, lang) and is_numberish(words[i + 1], lang)
-        for i, w in enumerate(words[:-1])
-    )
-
-
 def isolated_numeral_positions(
     words: list[str], lang: str = "en", quote_foreign: bool = False,
 ) -> list[tuple[int, int | str]]:
@@ -515,41 +508,16 @@ _DIGIT_GROUPS = {
 
 
 def _numeral_tokens(text: str, lang: str) -> list[str]:
-    """Normalized tokens for the numeral checks: grouping fused per SENTENCE.
+    """`_numeral_groups` flattened, for the checks that only need adjacency.
 
-    Fusing across the whole text let punctuation masquerade as grouping —
-    "4. 500." is two spoken numbers, but a full-text view read it as the
-    single 4500 an ASR wrote for different audio (gate review). A grouped
-    number never spans a sentence; two bare numerals in adjacent sentences
-    land adjacent after concatenation and compound suppression refuses
-    them, the fail-closed direction.
+    Fusing digit groups across the whole text let punctuation masquerade as
+    grouping — "4. 500." is two spoken numbers, but a full-text view read it as
+    the single 4500 an ASR wrote for different audio (gate review). The grouping
+    lives in `_numeral_groups`; concatenating its groups is safe for THIS view
+    because two bare numerals in adjacent groups land adjacent and compound
+    suppression refuses them, the fail-closed direction.
     """
-    pattern = _DIGIT_GROUPS["cs" if lang.startswith("cs") else "en"]
-    tokens: list[str] = []
-    for sentence in split_sentences(text):
-        fused = pattern.sub(
-            lambda m: re.sub(r"\D", "", m.group()), sentence)
-        tokens.extend(normalize(fused, lang).split())
-    return tokens
-
-
-def _regroup(tokens: list[str], text: str, lang: str) -> list[list[str]]:
-    """Split an already-canonicalised flat token list back into its sentences.
-
-    The all-numeral branch canonicalises tokens through the caller's
-    `sound_alikes` before comparing, so re-deriving groups from the raw text
-    would drop those pairs. Sentence sizes come from the text; the VALUES come
-    from the tokens that were canonicalised.
-    """
-    sizes = [len(group) for group in _numeral_tokens_by_sentence(text, lang)]
-    out: list[list[str]] = []
-    at = 0
-    for size in sizes:
-        out.append(tokens[at:at + size])
-        at += size
-    if at < len(tokens):                      # lengths disagreed; stay flat
-        return [tokens]
-    return out
+    return [token for group in _numeral_groups(text, lang) for token in group]
 
 
 # Punctuation a number cannot span. A decimal comma sits BETWEEN digits
@@ -557,15 +525,20 @@ def _regroup(tokens: list[str], text: str, lang: str) -> list[list[str]]:
 _CLAUSE_BREAK = re.compile(r"(?<!\d),\s|[;:]\s|\s[—–-]\s")
 
 
-def _numeral_tokens_by_sentence(text: str, lang: str) -> list[list[str]]:
-    """`_numeral_tokens`, but keeping each sentence's tokens separate.
+def _numeral_groups(text: str, lang: str) -> list[list[str]]:
+    """Normalized tokens for the numeral checks, kept in their clause groups.
 
-    Composition must not reach across a sentence boundary. `_numeral_tokens`
-    concatenates, and the old compound SUPPRESSION made that safe — two bare
-    numerals in adjacent sentences landed adjacent and were refused, the
-    fail-closed direction its docstring names. Composing them instead recreates
-    exactly the hazard recorded there: "4. 500." is two spoken numbers, and a
-    flat view reads it as the 4500 an ASR wrote for different audio.
+    The one tokenizer. Composition must not reach across a sentence boundary,
+    so the grouping is the primitive and the flat view (`_numeral_tokens`) is
+    derived from it. There used to be two independent pipelines and a `_regroup`
+    that split the flat one back up; they agreed by construction — a digit
+    group's separators (comma-no-space in en, dot/space in cs) cannot contain a
+    clause break — but "agree by construction" was an argument nobody had
+    written down, and one of the two was where composition happened.
+
+    Composing across a boundary recreates the measured hazard: "4. 500." is two
+    spoken numbers, and a flat view reads it as the 4500 an ASR wrote for
+    different audio.
     """
     pattern = _DIGIT_GROUPS["cs" if lang.startswith("cs") else "en"]
     out: list[list[str]] = []
@@ -771,7 +744,7 @@ def content_words(text: str, lang: str = "en") -> list[str]:
 def _bounded_matches(hyp_words: list[str], needle_words: list[str]) -> list[tuple[int, int]]:
     """Occurrences of `needle_words` in `hyp_words` as (start, end) index spans,
     allowing the words to have merged or split in the transcript but not to
-    straddle other words. `_bounded_count` is the length of this list; the spans
+    straddle other words. `len()` of this list is the occurrence count; the spans
     themselves exist so the diagnostics can tell which hypothesis tokens a
     short-sentence rescue consumed, rather than reporting them as insertions."""
     if not needle_words:
@@ -790,10 +763,59 @@ def _bounded_matches(hyp_words: list[str], needle_words: list[str]) -> list[tupl
     return matches
 
 
-def _bounded_count(hyp_words: list[str], needle_words: list[str]) -> int:
-    """How many times `needle_words` appears in `hyp_words`, allowing the words to
-    have merged or split in the transcript but not to straddle other words."""
-    return len(_bounded_matches(hyp_words, needle_words))
+def _sound_alike_classes(
+    sound_alikes: tuple[tuple[str, str], ...], lang: str,
+) -> list[set[str]]:
+    """Caller-declared pairs merged into equivalence CLASSES, in normalize space.
+
+    Classes rather than a one-hop map, because alignment composes pairs:
+    ("Four","fore") plus ("fore","for") verifies "for", and a single-hop map
+    refused the chain the caller had declared (gate review). Overlapping pairs
+    therefore merge into one set.
+
+    Single-token pairs only. A multi-word spoken form like "do not enter"
+    cannot be allowed to touch the protection of "not", and the boundary
+    rescue already covers merges.
+
+    Written once because it was written twice — the numeral guard and the
+    critical-token guard had line-for-line identical copies, so a fix to the
+    merging could land in one and miss the other.
+    """
+    classes: list[set[str]] = []
+    for written, spoken in sound_alikes:
+        wt = normalize(written, lang).split()
+        st = normalize(spoken, lang).split()
+        if len(wt) != 1 or len(st) != 1 or wt[0] == st[0]:
+            continue
+        merged = {wt[0], st[0]}
+        untouched = []
+        for group in classes:
+            if group & merged:
+                merged |= group
+            else:
+                untouched.append(group)
+        classes = [*untouched, merged]
+    return classes
+
+
+def _canonical_into(
+    classes: list[set[str]], distinguished: Callable[[str], bool],
+) -> dict[str, str]:
+    """Map every member of a class onto its one distinguished member.
+
+    A class holding TWO distinguished members refuses to map at all, and that
+    fail-closed is the point in both places it is used: collapsing two numeral
+    spellings would invent an equivalence between numbers, and collapsing
+    ("cannot","cant") would erase a distinction the critical list exists to
+    keep. A class holding none maps nothing — there is nothing to canonicalize
+    onto.
+    """
+    canon: dict[str, str] = {}
+    for members in classes:
+        marked = sorted(m for m in members if distinguished(m))
+        if len(marked) == 1:
+            canon.update({m: marked[0] for m in members if m != marked[0]})
+    return canon
 
 
 @dataclass(frozen=True)
@@ -905,8 +927,8 @@ def coverage_detail(
         # entirely) into a clean pass, at exactly the granularity the fallback
         # exists to make failures visible. Found by preflight's identity oracle:
         # a chunk it declared doomed rendered "clean" through this hole.
-        ref_tokens = normalize(reference, lang).split()
-        if ref_tokens:
+        ref_all_tokens = normalize(reference, lang).split()
+        if ref_all_tokens:
             # ...but fail-closed only where there is genuinely nothing to
             # compare. ISOLATED numerals carry comparable value, so "Four."
             # against a transcript's "4" is verified, not unverifiable — the
@@ -928,35 +950,19 @@ def coverage_detail(
             # Each class canonicalizes into its numeral member; a class with
             # two distinct numeral spellings refuses to map at all, since
             # collapsing them would invent an equivalence between numbers.
-            alike_clusters: list[set[str]] = []
-            for written, spoken in sound_alikes:
-                wt = normalize(written, lang).split()
-                st = normalize(spoken, lang).split()
-                if len(wt) != 1 or len(st) != 1 or wt[0] == st[0]:
-                    continue
-                cluster = {wt[0], st[0]}
-                rest = []
-                for group in alike_clusters:
-                    if group & cluster:
-                        cluster |= group
-                    else:
-                        rest.append(group)
-                alike_clusters = [*rest, cluster]
-            to_numeral: dict[str, str] = {}
-            for cluster in alike_clusters:
-                numeral = sorted(
-                    m for m in cluster
-                    if is_numberish(m, lang)
-                    or m in _NUMERAL_VALUES)
-                if len(numeral) == 1:
-                    to_numeral.update(
-                        {m: numeral[0] for m in cluster if m != numeral[0]})
-            hyp_tokens = [
-                to_numeral.get(t, t) for t in _numeral_tokens(hypothesis, lang)
+            to_numeral = _canonical_into(
+                _sound_alike_classes(sound_alikes, lang),
+                lambda m: is_numberish(m, lang) or m in _NUMERAL_VALUES,
+            )
+            hyp_numeral_groups = [
+                [to_numeral.get(t, t) for t in group]
+                for group in _numeral_groups(hypothesis, lang)
             ]
-            ref_tokens = [
-                to_numeral.get(t, t) for t in _numeral_tokens(reference, lang)
+            ref_numeral_groups = [
+                [to_numeral.get(t, t) for t in group]
+                for group in _numeral_groups(reference, lang)
             ]
+            hyp_numeral_tokens = [t for group in hyp_numeral_groups for t in group]
 
             # Every isolated numeral now yields a typed element (see
             # isolated_numerals), so the multiset comparison IS the guard:
@@ -982,19 +988,19 @@ def coverage_detail(
             # transcript and the wrong one alike — while the single-token
             # "Dvacet." against "20." has always passed. English is unchanged:
             # a multi-token run is never composable there, so this is None
-            # exactly where `has_compound_numeral` was True.
+            # exactly where two numerals stand side by side.
             # Sentence-grouped, like the other call site: a flat list let
             # "Dvacet. Pět." compose to 25 and match a transcript's "25.",
-            # which is two spoken numbers read as one. Grouped from the SAME
-            # canonicalised tokens, so a declared sound-alike still reaches the
-            # composition — regrouping the raw text instead silently dropped
-            # the caller's pairs here.
-            ref_composed = numeral_multiset(
-                _regroup(ref_tokens, reference, lang), lang)
-            hyp_composed = numeral_multiset(
-                _regroup(hyp_tokens, hypothesis, lang), lang)
+            # which is two spoken numbers read as one. Canonicalised INSIDE the
+            # groups, so a declared sound-alike still reaches the composition —
+            # deriving the groups from the raw text instead silently dropped the
+            # caller's pairs here. An earlier version flattened first and split
+            # the flat list back up afterwards, which is the same thing said
+            # twice; the groups are the primitive now.
+            ref_composed = numeral_multiset(ref_numeral_groups, lang)
+            hyp_composed = numeral_multiset(hyp_numeral_groups, lang)
             comparable = (
-                all(is_numberish(t, lang) for t in hyp_tokens)
+                all(is_numberish(t, lang) for t in hyp_numeral_tokens)
                 and ref_composed is not None
                 and hyp_composed is not None
             )
@@ -1212,24 +1218,19 @@ def coverage_detail(
     # still hard-fails; composing a value across foreign word sequences is
     # the [2,50,6]-vs-[256] ambiguity compound suppression exists to avoid.
     ref_tokens = _numeral_tokens(reference, lang)
-    hyp_tokens = _numeral_tokens(hypothesis, lang)
-    # Skip if EITHER side compounds. The check must be symmetric: "two fifty six"
-    # is three adjacent numerals in the script and collapses to the single
-    # isolated "256" in the transcript, so an asymmetric rule reads a correct
-    # transcription as a changed number.
     # A run of adjacent numerals is COMPOSED into its value where the language
     # makes that unambiguous, and suppressed where it does not. `None` from
     # either side means some run could not be read, and both sides then compare
     # nothing — the previous behaviour, reproduced rather than approximated.
     #
-    # Symmetric on purpose, for the reason the old comment gave: "two fifty six"
+    # Skipped if EITHER side compounds, and symmetric on purpose: "two fifty six"
     # is three adjacent numerals in the script and collapses to the single
     # isolated "256" in the transcript, so an asymmetric rule reads a correct
     # transcription as a changed number.
     ref_composed = numeral_multiset(
-        _numeral_tokens_by_sentence(reference, lang), lang, quote_foreign=True)
+        _numeral_groups(reference, lang), lang, quote_foreign=True)
     hyp_composed = numeral_multiset(
-        _numeral_tokens_by_sentence(hypothesis, lang), lang, quote_foreign=True)
+        _numeral_groups(hypothesis, lang), lang, quote_foreign=True)
     unreadable = ref_composed is None or hyp_composed is None
     ref_nums = [] if unreadable else sorted(ref_composed, key=str)
     hyp_nums = [] if unreadable else sorted(hyp_composed, key=str)
@@ -1349,26 +1350,8 @@ def coverage_detail(
     # holding TWO protected tokens (("cannot","cant")) refuses to map at all:
     # collapsing them would erase a distinction this list exists to keep, so
     # that pair fails closed.
-    clusters: list[set[str]] = []
-    for written, spoken in sound_alikes:
-        wf = normalize(written, lang).split()
-        sf = normalize(spoken, lang).split()
-        if len(wf) != 1 or len(sf) != 1 or wf[0] == sf[0]:
-            continue
-        cluster = {wf[0], sf[0]}
-        untouched = []
-        for group in clusters:
-            if group & cluster:
-                cluster |= group
-            else:
-                untouched.append(group)
-        clusters = [*untouched, cluster]
-    critical_canon: dict[str, str] = {}
-    for cluster in clusters:
-        protected = sorted(cluster & _CRITICAL_TOKENS)
-        if len(protected) == 1:
-            critical_canon.update(
-                {m: protected[0] for m in cluster if m != protected[0]})
+    critical_canon = _canonical_into(
+        _sound_alike_classes(sound_alikes, lang), _CRITICAL_TOKENS.__contains__)
     ref_critical = critical_counts(
         [critical_canon.get(w, w) for w in normalize(reference, lang).split()])
     hyp_critical = critical_counts(
@@ -1450,6 +1433,41 @@ def format_word_diagnostics(codes: tuple[str, ...], limit: int = 6) -> str:
     return " · ".join(parts)
 
 
+def verdict_for_transcript(
+    reference: str,
+    transcript: str,
+    lang: str,
+    sound_alikes: tuple[tuple[str, str], ...] = (),
+    min_coverage: float = MIN_COVERAGE,
+) -> Verdict:
+    """Score a transcript against the text it should be, and apply the gate.
+
+    The acceptance policy, with no ASR in it: what "correct" means, where the
+    threshold sits, and which diagnostics a caller is allowed to see. Separated
+    from `CoverageVerifier.verify` because it has a second caller with no audio
+    at all — `preflight` feeds a chunk its OWN text as the transcript, the
+    identity round-trip a perfect recogniser cannot beat.
+
+    Preflight used to re-spell this: call `coverage_detail`, compare against
+    `MIN_COVERAGE`, pull `worst_sentence` out by hand. That worked, and it meant
+    the gate was written in two places — so the next fail-closed rule added here
+    would have been invisible to the oracle whose entire job is to predict this
+    function. One definition, two callers.
+
+    Diagnostics are gated exactly like `dropped_sentence`: a passing chunk with
+    tolerated ASR spelling quirks must not print alarming codes.
+    """
+    detail = coverage_detail(reference, transcript, lang, sound_alikes)
+    ok = detail.score >= min_coverage
+    return Verdict(
+        ok=ok,
+        coverage=detail.score,
+        dropped_sentence="" if ok else detail.worst_sentence,
+        transcript=transcript,
+        word_diagnostics=() if ok else detail.word_diagnostics,
+    )
+
+
 @dataclass
 class CoverageVerifier:
     """The default verifier: transcribe, then score per-sentence coverage."""
@@ -1494,17 +1512,8 @@ class CoverageVerifier:
 
     def verify(self, audio: Audio, text: str, lang: str) -> Verdict:
         transcript = self.asr.transcribe(audio, lang)
-        detail = coverage_detail(text, transcript, lang, self.sound_alikes)
-        ok = detail.score >= self.min_coverage
-        # Diagnostics are gated exactly like dropped_sentence: a passing chunk
-        # with tolerated ASR spelling quirks must not print alarming codes.
-        return Verdict(
-            ok=ok,
-            coverage=detail.score,
-            dropped_sentence="" if ok else detail.worst_sentence,
-            transcript=transcript,
-            word_diagnostics=() if ok else detail.word_diagnostics,
-        )
+        return verdict_for_transcript(
+            text, transcript, lang, self.sound_alikes, self.min_coverage)
 
 
 @dataclass

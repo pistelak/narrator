@@ -49,10 +49,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-from narrator.chunking import MAX_CHARS, chunk, split_sentences
+from narrator.chunking import MAX_CHARS, plan_segments, split_sentences
 from narrator.synth import SynthConfig, resolve_reference
-from narrator.types import Gap, Segment, Text
-from narrator.verify import MIN_COVERAGE, coverage_detail, normalize
+from narrator.types import Gap, Segment
+from narrator.verify import normalize, verdict_for_transcript
 
 # The render's own pacing default, so the duration estimate and the frame-cap
 # budget agree on how fast the narrator talks.
@@ -115,7 +115,8 @@ def preflight(
     learn what this function knows for free. Fix the script (spell the
     sentence so it carries a non-numeral content word) and re-run.
 
-    Chunking runs on the original text, exactly as render() does — the
+    Chunking runs on the original text, exactly as render() does — literally
+    the same `plan_segments` walk, not a second one written to match. The
     pronunciation lexicon never shifts boundaries and never reaches the
     verifier, so there is no lexicon parameter here to misuse.
 
@@ -127,44 +128,44 @@ def preflight(
     findings: list[UnverifiableChunk] = []
     chunks = words = 0
     speech_s = gap_s = 0.0
-    for segment in segments:
+    for segment in plan_segments(segments, max_chars):
         if isinstance(segment, Gap):
             gap_s += segment.seconds
             continue
-        if not isinstance(segment, Text):  # pragma: no cover - guarded by the type union
-            raise TypeError(f"Not a segment: {segment!r}")
-        for piece in chunk(segment.text, max_chars):
-            # Declared atoms are removed first, exactly as the render will do.
-            # Without this, preflight round-trips the RAW text — the atom present
-            # on both sides, cancelling out — and reports clean for a chunk the
-            # render must refuse because its reference has no speech left.
-            raw = piece
-            piece = resolve_reference(piece, replace(SynthConfig(), non_speech=non_speech))
-            if raw != piece and not normalize(piece, lang).split():
-                # Every token was a declared atom, so there is no speech left to
-                # compare and `coverage("", "")` answers 1.0 — a vacuous pass
-                # that would certify whatever audio came back.
-                #
-                # It is flagged HERE and not in the verifier because only this
-                # layer can tell the two empties apart: a punctuation-only
-                # sentence the caller WROTE is a pause the script spells, which
-                # `verify` blesses on purpose, while this one lost its content
-                # to a removal. The verifier never sees the raw text.
-                findings.append(UnverifiableChunk(
-                    chunks, raw, "[no speech left after removing declared non_speech]"))
-                chunks += 1
-                continue
-            detail = coverage_detail(piece, piece, lang, sound_alikes)
-            # The verifier's real gate, not `< 1.0`: doomed must mean "fails
-            # the exact threshold the audio will face", so preflight can never
-            # flag something the render would in fact tolerate.
-            rescued = allow_sentence_split and _split_rescues(piece, lang, sound_alikes)
-            if detail.score < MIN_COVERAGE and not rescued:
-                findings.append(UnverifiableChunk(chunks, piece, detail.worst_sentence))
-            n = len(piece.split())
-            words += n
-            speech_s += n / _WPS
+        # Declared atoms are removed first, exactly as the render will do.
+        # Without this, preflight round-trips the RAW text — the atom present
+        # on both sides, cancelling out — and reports clean for a chunk the
+        # render must refuse because its reference has no speech left.
+        raw = segment.text
+        piece = resolve_reference(raw, replace(SynthConfig(), non_speech=non_speech))
+        if raw != piece and not normalize(piece, lang).split():
+            # Every token was a declared atom, so there is no speech left to
+            # compare and `coverage("", "")` answers 1.0 — a vacuous pass
+            # that would certify whatever audio came back.
+            #
+            # It is flagged HERE and not in the verifier because only this
+            # layer can tell the two empties apart: a punctuation-only
+            # sentence the caller WROTE is a pause the script spells, which
+            # `verify` blesses on purpose, while this one lost its content
+            # to a removal. The verifier never sees the raw text.
+            findings.append(UnverifiableChunk(
+                chunks, raw, "[no speech left after removing declared non_speech]"))
             chunks += 1
+            continue
+        # The verifier's own function, not a re-spelling of it: doomed must
+        # mean "fails the exact gate the audio will face", so preflight can
+        # never flag something the render would in fact tolerate. Comparing a
+        # score against `MIN_COVERAGE` here was that re-spelling, and it would
+        # have gone stale the first time a fail-closed rule was added to the
+        # verdict rather than to the score.
+        verdict = verdict_for_transcript(piece, piece, lang, sound_alikes)
+        rescued = allow_sentence_split and _split_rescues(piece, lang, sound_alikes)
+        if not verdict.ok and not rescued:
+            findings.append(UnverifiableChunk(chunks, piece, verdict.dropped_sentence))
+        n = len(piece.split())
+        words += n
+        speech_s += n / _WPS
+        chunks += 1
     return PreflightReport(chunks, words, speech_s, gap_s, tuple(findings))
 
 
@@ -186,6 +187,6 @@ def _split_rescues(piece: str, lang: str, sound_alikes: tuple[tuple[str, str], .
     if len(sentences) < 2:
         return False
     return all(
-        coverage_detail(s, s, lang, sound_alikes).score >= MIN_COVERAGE
+        verdict_for_transcript(s, s, lang, sound_alikes).ok
         for s in sentences
     )

@@ -26,7 +26,7 @@ from narrator.audio import (
     master,
     trim_silence,
 )
-from narrator.chunking import MAX_CHARS, chunk
+from narrator.chunking import MAX_CHARS, plan_segments
 from narrator.synth import SynthConfig, resolve_reference, synthesize_chunk
 from narrator.takes import TakeStore, identity_of
 from narrator.types import (
@@ -157,7 +157,7 @@ def render(
         verifier = _DeferredDefaultVerifier(backend, cfg.synth.pronunciation)
     started = time.perf_counter()
     store = TakeStore(cfg.takes) if cfg.takes is not None else None
-    plan = _plan(segments, cfg.max_chars)
+    plan = plan_segments(segments, cfg.max_chars)
     total = sum(1 for s in plan if isinstance(s, Text))
     if cfg.reroll and (max(cfg.reroll) >= total or min(cfg.reroll) < 0):
         raise ValueError(
@@ -213,11 +213,16 @@ def render(
                 )
 
     pieces: list[Audio | Gap] = []
-    owners: list[int | None] = []
-    # A chunk with no audio still HAS a position — the point where it would have
-    # been, which is what a caller reading the report needs to see.
-    owners_for_empty: dict[int, int] = {}
     results: list[ChunkResult] = []
+    # Where each result begins, as an index into `pieces`. One number per result,
+    # recorded BEFORE its audio is appended, so a chunk with no audio needs no
+    # special case: it begins at the piece that follows it, which is exactly the
+    # position it would have occupied. A caller reading the report needs that
+    # position to line the report up with the file, and the previous shape —
+    # a parallel `owners` list plus an `owners_for_empty` side table, reconciled
+    # in two passes — spent a re-sum of every earlier piece on each empty result
+    # to say the same thing.
+    starts_at: list[int] = []
     index = 0
 
     for segment in plan:
@@ -233,7 +238,6 @@ def render(
             # render never settles the rate, but then the file is written at
             # the declared rate too, so samples and header still agree.
             pieces.append(segment)
-            owners.append(None)
             continue
 
         chunk_voice = segment.voice or voice
@@ -241,6 +245,7 @@ def render(
                                   chunk_voice, cfg.synth,
                                   store=store, reuse=index not in cfg.reroll)
         results.append(result)
+        starts_at.append(len(pieces))
         index += 1
         if result.audio.size:
             # The voice's declared gain lands here, before stitching: a level
@@ -254,14 +259,11 @@ def render(
             # threshold relative to the whole assembly, so only this trim's
             # output is the true length.
             result.shipped_s = len(trimmed) / backend.sample_rate
-            owners.append(len(results) - 1)
             pieces.append(apply_gain(trimmed, chunk_voice.gain_db))
         else:
+            # No audio, so no piece appended — and nothing else to record, since
+            # `starts_at` already holds the position it would have occupied.
             result.shipped_s = 0.0
-            # No audio, so no piece — but it still HAS a position: the point it
-            # would have occupied, which is what a caller reading the report
-            # needs in order to line the report up with the file.
-            owners_for_empty[len(results) - 1] = len(pieces)
         # Fired between chunks, which is where a real kill lands and what makes
         # progress progress. `start_s` is necessarily still None here: it needs
         # the settled rate and the whole piece list, neither of which exists
@@ -274,18 +276,16 @@ def render(
     # backend that only learns its true rate during the first synthesis would
     # otherwise place every earlier chunk with a stale one.
     at = 0
-    for piece, owner in zip(pieces, owners, strict=True):
-        if isinstance(piece, Gap):
-            at += int(piece.seconds * backend.sample_rate)
-            continue
-        if owner is not None:
-            results[owner].start_s = at / backend.sample_rate
-        at += len(piece)
-    for result_at, piece_at in owners_for_empty.items():
-        # Everything before where it would have gone.
-        before = sum(int(p.seconds * backend.sample_rate) if isinstance(p, Gap) else len(p)
-                     for p in pieces[:piece_at])
-        results[result_at].start_s = before / backend.sample_rate
+    offsets: list[int] = []
+    for piece in pieces:
+        offsets.append(at)
+        at += (int(piece.seconds * backend.sample_rate)
+               if isinstance(piece, Gap) else len(piece))
+    # One past the end, so a result whose audio was empty and which nothing
+    # follows still resolves — it begins where the file ends.
+    offsets.append(at)
+    for result, piece_at in zip(results, starts_at, strict=True):
+        result.start_s = offsets[piece_at] / backend.sample_rate
 
     raw = concatenate([
         np.zeros(int(p.seconds * backend.sample_rate), dtype=np.float32)
@@ -381,20 +381,6 @@ def _unscripted_silence(pieces: list[Audio | Gap], audio: Audio, sample_rate: in
                       if min(end, b) > max(start, a))
         worst = max(worst, (end - start - overlap) / sample_rate)
     return worst
-
-
-def _plan(segments: list[Segment], max_chars: int) -> list[Segment]:
-    """Flatten segments: gaps pass through, texts become chunk-sized Texts."""
-    plan: list[Segment] = []
-    for segment in segments:
-        if isinstance(segment, Gap):
-            plan.append(segment)
-        elif isinstance(segment, Text):
-            plan.extend(Text(piece, voice=segment.voice)
-                        for piece in chunk(segment.text, max_chars))
-        else:  # pragma: no cover - guarded by the type union
-            raise TypeError(f"Not a segment: {segment!r}")
-    return plan
 
 
 def _write(out: Path, audio: Audio, sample_rate: int) -> None:

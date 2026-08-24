@@ -11,13 +11,15 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from narrator.backends.fake import FakeASR, FakeBackend
+from narrator.chunking import plan_segments
 from narrator.preflight import preflight
 from narrator.render import RenderFailed, render
 from narrator.synth import SynthConfig, resolve_reference
-from narrator.types import Gap, Text, Voice
+from narrator.types import Audio, Gap, Text, Voice
 from narrator.verify import MIN_COVERAGE, CoverageVerifier, coverage, normalize
 
 VOICE = Voice(Path("nonexistent.wav"), "reference", "en")
@@ -281,3 +283,81 @@ def test_preflight_and_render_ask_one_question_about_no_speech() -> None:
     # The plain case is unchanged, and a tag beside real speech still passes.
     assert not preflight([Text(atom)], non_speech=(atom,)).clean
     assert preflight([Text(f"{atom} Alpha beta gamma.")], non_speech=(atom,)).clean
+
+
+def test_preflight_chunks_are_render_chunks_on_a_script_that_actually_splits(
+    tmp_path: Path,
+) -> None:
+    """Preflight predicts render's chunks by running render's own walk.
+
+    The two used to walk the segment list separately — preflight looping over
+    segments and calling `chunk` itself, render doing the same in `_plan`. They
+    agreed, but by hand: nothing made them agree, and preflight's entire contract
+    is that it models the render it is predicting. A drift would misnumber every
+    finding after the first multi-chunk segment, which is precisely where a long
+    script lives.
+
+    So this exercises a script that genuinely splits — several chunks from one
+    Text, with Gaps interleaved, since Gaps consume no chunk index — and pins
+    that the two counts and the two numberings are the same.
+    """
+    long_text = " ".join(f"Sentence number {n} carries enough words to matter."
+                         for n in range(40))
+    segments = [Text(long_text), Gap(1.5), Text("Alpha beta gamma delta."),
+                Gap(0.5), Text(long_text)]
+
+    report = preflight(segments)
+    planned = [s for s in plan_segments(segments) if isinstance(s, Text)]
+    assert report.chunks == len(planned) > 5, "the script must really split"
+    assert report.gap_s == 2.0, "gaps are counted, and consume no chunk index"
+
+    backend = FakeBackend()
+    rendered = render(segments, VOICE, backend, tmp_path / "a.wav",
+                      CoverageVerifier(FakeASR(backend)))
+    assert [c.index for c in rendered.chunks] == list(range(report.chunks))
+    assert [c.text for c in rendered.chunks] == [s.text for s in planned]
+
+
+def test_preflight_uses_the_verifiers_gate_not_a_copy_of_it() -> None:
+    """One acceptance policy, asked twice — not two that happen to agree.
+
+    Preflight is the verifier run against an identity transcript, and it used to
+    express that by calling `coverage_detail`, comparing the score against
+    `MIN_COVERAGE` itself, and pulling `worst_sentence` out by hand. That is the
+    gate written a second time: a fail-closed rule added to the VERDICT rather
+    than to the score would have been invisible to the very oracle whose job is
+    to predict it.
+
+    So this asserts the equivalence directly. A `CoverageVerifier` handed an ASR
+    that returns the reference verbatim is a perfect recogniser, which is exactly
+    what preflight models; its verdict must match preflight's finding, chunk for
+    chunk, including the reason string.
+    """
+    class PerfectASR:
+        def __init__(self) -> None:
+            self.text = ""
+
+        def transcribe(self, audio: Audio, lang: str) -> str:
+            return self.text
+
+    asr = PerfectASR()
+    verifier = CoverageVerifier(asr)
+    silence: Audio = np.zeros(1000, dtype=np.float32)
+
+    scripts = [
+        "Two fifty six.",                       # all-numeral: unverifiable
+        "Four.",                                # isolated numeral: comparable
+        "Alpha beta gamma delta epsilon.",      # ordinary speech
+        "Look at the dial. Four.",              # rescued only by the split
+        "256.",
+    ]
+    for script in scripts:
+        asr.text = script
+        verdict = verifier.verify(silence, script, "en")
+        # No sentence-split rescue, so preflight is judging the chunk alone —
+        # the same question the verifier just answered.
+        report = preflight([Text(script)], allow_sentence_split=False)
+
+        assert report.clean == verdict.ok, script
+        if not verdict.ok:
+            assert [u.reason for u in report.unverifiable] == [verdict.dropped_sentence]

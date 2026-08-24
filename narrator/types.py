@@ -230,10 +230,6 @@ class ChunkResult:
     chunks — which is where a real kill lands — while this needs the settled rate
     and the complete piece list. Every result in the returned report has it."""
 
-    @property
-    def words(self) -> int:
-        return len(self.text.split())
-
 
 @dataclass
 class RenderReport:

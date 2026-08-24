@@ -762,3 +762,35 @@ def test_silence_no_gap_asked_for_is_reported(tmp_path: Path) -> None:
     assert report.unscripted_silence_s > 1.0
     # The declared 3 s Gap in SEGMENTS is excluded, so this is not just the gap.
     assert all(c.silence_s < 1.0 for c in report.chunks), "no CHUNK contains it"
+
+
+def test_a_chunk_with_no_audio_at_the_very_end_still_has_a_position(
+    tmp_path: Path,
+) -> None:
+    """The one position the piece list cannot point at directly.
+
+    Every result records where it begins as an index into the stitched piece
+    list. A chunk whose every attempt raised contributes no piece, so it begins
+    at whatever piece follows it — and when nothing follows, that index is one
+    past the end. It resolves to the end of the file, which is exactly the point
+    the chunk would have occupied.
+
+    Pinned because it is the only index the offset table has to invent. The
+    previous shape reached it through a separate side table and a re-sum of
+    every earlier piece; this is the same answer from one pass.
+    """
+    backend = FakeBackend(script={1: Failure.RAISE, 2: Failure.RAISE, 3: Failure.RAISE})
+    cfg = RenderConfig(quarantine=False,
+                       synth=SynthConfig(max_attempts=3, allow_sentence_split=False))
+    report = render(
+        [Text("Alpha beta gamma delta."), Gap(2.0), Text("Epsilon zeta eta theta.")],
+        VOICE, backend, tmp_path / "a.wav", CoverageVerifier(FakeASR(backend)), cfg,
+    )
+
+    shipped, dropped = report.chunks
+    assert shipped.ok and dropped.ok is False
+    assert dropped.audio.size == 0 and dropped.shipped_s == 0.0
+    assert dropped.start_s == report.duration_s, (
+        "a chunk that occupies nothing begins where the file ends"
+    )
+    assert shipped.start_s == 0.0

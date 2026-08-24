@@ -90,24 +90,51 @@ def longest_silent_run(audio: Audio, sample_rate: int,
       first — a 60 s hole on a 12-word chunk is refused by those, and the case
       is pinned by test.
     """
-    frame = int(SILENCE_FRAME_MS / 1000 * sample_rate)
-    if frame <= 0 or audio.size < frame * 2:
+    quiet, frame = _quiet_frames(audio, sample_rate, drop_db)
+    if quiet is None:
         return 0.0
 
-    count = audio.size // frame
-    rms = np.sqrt((audio[: count * frame].reshape(count, frame) ** 2).mean(axis=1) + 1e-20)
-    speech_level = float(np.percentile(rms, 95))
-    if speech_level <= 0.0:
-        return 0.0
-
-    loud = rms > speech_level * (10 ** (-drop_db / 20))
-    voiced = np.nonzero(loud)[0]
+    voiced = np.nonzero(~quiet)[0]
     if voiced.size < 2:
         return 0.0
 
     # Interior only: measure between the first and last voiced frames.
     gaps = np.diff(voiced) - 1
     return float(gaps.max() * frame / sample_rate) if gaps.size else 0.0
+
+
+def _quiet_frames(audio: Audio, sample_rate: int,
+                  drop_db: float) -> tuple[np.ndarray | None, int]:
+    """Per-frame "is this below the speech level", or (None, frame) if unmeasurable.
+
+    The framing, the RMS, the 95th-percentile speech level and the threshold are
+    shared here because both callers must agree on them — they were written
+    twice, identically, and the pair was one edit away from disagreeing about
+    what counts as silence in a chunk versus in the finished file.
+
+    Only the shared half. What each caller does with the frames stays separate
+    and is not interchangeable: `longest_silent_run` counts INTERIOR runs and
+    fails open past ~96% dead air, while `_silent_runs` includes the edges,
+    because a run at the start of a finished file is as unscripted as one in the
+    middle. Both of those are measured boundaries, documented where they live.
+    """
+    frame = int(SILENCE_FRAME_MS / 1000 * sample_rate)
+    if frame <= 0 or audio.size < frame * 2:
+        return None, frame
+    count = audio.size // frame
+    rms = np.sqrt((audio[: count * frame].reshape(count, frame) ** 2).mean(axis=1) + 1e-20)
+    level = float(np.percentile(rms, 95))
+    # `not (level > 0.0)`, so NaN is unmeasurable rather than merely
+    # not-less-than-zero. Today NaN cannot get past here anyway — one NaN frame
+    # makes the percentile NaN, and a NaN threshold makes every comparison
+    # False, which both callers already collapse to "no silence" — but the two
+    # callers collapse it for DIFFERENT reasons, and a review pointed out that
+    # `rms > t` and `~(rms <= t)` stop agreeing the moment a NaN survives to the
+    # comparison. Refusing it here means that agreement no longer rests on how
+    # numpy's percentile treats NaN.
+    if not (level > 0.0):
+        return None, frame
+    return rms <= level * (10 ** (-drop_db / 20)), frame
 
 
 FADE_MS = 8
@@ -183,15 +210,10 @@ def _silent_runs(audio: Audio, sample_rate: int,
     Edges included, unlike `longest_silent_run` — this measures a finished file,
     where a run at the start or end is as unscripted as one in the middle.
     """
-    frame = int(SILENCE_FRAME_MS / 1000 * sample_rate)
-    if frame <= 0 or audio.size < frame * 2:
+    quiet, frame = _quiet_frames(audio, sample_rate, drop_db)
+    if quiet is None:
         return []
-    count = audio.size // frame
-    rms = np.sqrt((audio[: count * frame].reshape(count, frame) ** 2).mean(axis=1) + 1e-20)
-    level = float(np.percentile(rms, 95))
-    if level <= 0.0:
-        return []
-    quiet = rms <= level * (10 ** (-drop_db / 20))
+    count = quiet.size
 
     runs: list[tuple[int, int]] = []
     start: int | None = None
