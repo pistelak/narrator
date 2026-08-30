@@ -71,8 +71,10 @@ def longest_silent_run(audio: Audio, sample_rate: int,
     """Longest stretch BETWEEN speech that sits `drop_db` under the speech level.
 
     Only interior runs count. Leading and trailing silence belongs to
-    `trim_silence`, and an utterance that is silent throughout is already caught
-    by the duration bounds and by coverage — this measures the hole a render can
+    `trim_silence` on UNTRIMMED audio — but only there: the two floors do not
+    meet, so on already-trimmed audio the edges are nobody's and want
+    `longest_silent_run_incl_edges` (issue #42). An utterance that is silent
+    throughout is already caught by the duration bounds and by coverage — this measures the hole a render can
     otherwise ship with every word present and a clean report (issue #18: 18.5 s
     of dead air at `failed=0`, `min coverage 1.0`).
 

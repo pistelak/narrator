@@ -20,7 +20,6 @@ from narrator.verify import (
     content_words,
     coverage,
     coverage_detail,
-    fold,
     is_numberish,
     isolated_numerals,
     normalize,
@@ -1140,23 +1139,29 @@ def test_the_dropped_j_of_the_czech_copula_is_not_a_substitution() -> None:
                     "Včera si to nakonec zvládl.", "cs")[0] >= 0.90
     for written, heard in (("jsem", "sem"), ("jsi", "si"), ("jsme", "sme"),
                            ("jste", "ste"), ("jsou", "sou")):
-        assert fold(written, "cs") == fold(heard, "cs"), written
+        assert normalize(f"a {written} b", "cs") == normalize(f"a {heard} b", "cs")
+    # Sentence-initial too, which is where a script writes it capitalized.
+    assert normalize("Jsi tady.", "cs") == normalize("Si tady.", "cs")
 
 
-def test_the_copula_fold_names_five_words_rather_than_j_before_s() -> None:
-    """The general rule was rejected, and this is what it cost.
+def test_the_copula_rule_is_case_sensitive_and_word_bounded() -> None:
+    """Why it lives in `normalize` rather than in `fold`, which runs after
+    lowercasing.
 
-    `normalize` lowercases first, so the acronym JSON reaches fold() as "json":
-    a word-initial j-before-s rule folds it onto "son" and certifies audio that
-    said neither — the lowercased-acronym false accept this module already
-    refuses for the English negation tables. The nouns jsoucno / jsoucnost are
-    not the auxiliary either, and keep their j.
+    `synth._ACRONYM` spells any 2-6 letter uppercase run as letter names, so the
+    initialism JSI is spoken "jé es í". A case-blind rule scored audio saying
+    "si" at 1.000 against it — the lowercased-acronym false accept this module
+    already refuses for the English negation tables.
+
+    The word boundary carries the rest: the negated "nejsem" DOES pronounce its
+    j, and the nouns jsoucno / jsoucnost are not the auxiliary at all.
     """
-    assert fold("json", "cs") != fold("son", "cs")
-    assert fold("jsoucno", "cs") != fold("soucno", "cs")
+    assert coverage("JSI test.", "si test.", "cs")[0] < 0.90
+    assert normalize("nejsem", "cs") == "nejsem"
+    assert normalize("jsoucno", "cs") == "jsoucno"
 
 
-def test_the_copula_fold_cannot_hide_a_dropped_auxiliary() -> None:
+def test_the_copula_rule_cannot_hide_a_dropped_auxiliary() -> None:
     """Folding makes two spellings of one word match; a missing word is still
     missing, which is what keeps the collision with the reflexive si affordable."""
     assert coverage("Včera jsi to nakonec zvládl.",

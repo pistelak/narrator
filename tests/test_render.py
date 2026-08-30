@@ -728,8 +728,8 @@ class _DeafBandTail(FakeBackend):
     """Ends every chunk with material between the two silence thresholds.
 
     `trim_silence` keeps everything above the chunk's PEAK frame minus TRIM_DB
-    (-42); the interior gate calls silent everything below the chunk's p95 frame
-    minus SILENCE_DROP_DB (-35). On speech those references sit ~0.1 dB apart, so
+    (-42); the gate calls silent everything below the chunk's p95 frame minus
+    SILENCE_DROP_DB (-35). On speech those references sit ~0.1 dB apart, so
     a ~7 dB band exists that survives trimming: the gate ignored it because it
     sits at an edge, and trimming keeps it because it is above the peak-relative
     floor. Nobody owned it until issue #42; the gate now measures trimmed audio

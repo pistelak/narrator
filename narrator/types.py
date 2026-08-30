@@ -201,7 +201,13 @@ class ChunkResult:
     on failure: `SynthConfig.max_silence_s` deliberately refuses just the severe
     class that was measured, so this is the number that tells a caller whether
     the shorter band is real in their material — and the evidence for tightening
-    the threshold later. 0.0 on a reused take, which this run did not measure."""
+    the threshold later. A reused take reports what was stored with it, not 0.0.
+
+    Edges included, because they are what `trim_silence` leaves behind rather
+    than what it removes (issue #42). The one exception is a chunk recovered by
+    sentence-split, which reports the interior measure of the assembly: its edges
+    are measured against the whole assembly's speech level, where a deliberately
+    quiet closing sentence reads as a multi-second run."""
 
     shipped_s: float | None = None
     """Seconds this chunk actually occupies in the written file, or None.

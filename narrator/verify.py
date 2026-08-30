@@ -596,26 +596,6 @@ def fold(word: str, lang: str) -> str:
     if not lang.startswith("cs"):
         return word
     w = word.translate(_FOLD)
-    if w in ("jsem", "jsi", "jsme", "jste", "jsou"):
-        # Czech drops the initial j of the copula in ordinary speech: jsi is said
-        # [si], jsem [sem]. Both pronunciations are correct Czech; the reduced
-        # one is what recognisers write, so a script's "jsi" met the ASR's "si"
-        # and the chunk failed on a substitution that was never in the audio.
-        # Not recoverable by retry — the audio is right — so it quarantined an
-        # otherwise clean episode after 11 attempts (issue #43; 61 occurrences of
-        # the family in one ten-episode project).
-        #
-        # The five finite forms BY NAME, not word-initial j-before-s. The general
-        # rule reaches beyond the copula: normalize() lowercases first, so the
-        # acronym JSON arrives as "json" and would fold onto "son" — audio saying
-        # neither, certified at 1.0 — and the nouns jsoucno / jsoucnost keep
-        # their j.
-        #
-        # The cost, stated as final devoicing states its own below: this merges
-        # the auxiliary jsi with the reflexive si, and jsem with the adverb sem.
-        # Both are frequent, and both genuinely are the same sound — the verifier
-        # argues about sound.
-        w = w[1:]
     # [sx] spelled two ways: the script writes native s+h (shodí), the ASR
     # writes sch (schodí). One spelling before the loanword rule below.
     w = w.replace("sch", "sh")
@@ -715,8 +695,34 @@ _NT_SPECIAL = (
 # same 0.92 it was closed at.
 _APOSTROPHES = re.compile(r"[’‘ʼ＇]")
 
+# Czech drops the initial j of the copula in ordinary speech: "jsi" is said
+# [si], "jsem" [sem]. Both pronunciations are correct Czech; the reduced one is
+# what recognisers write, so a script's "jsi" met the ASR's "si" and the chunk
+# failed on a substitution that was never in the audio. Nothing in the retry
+# ladder can fix audio that is already right: one chunk spent 11 attempts and
+# quarantined an otherwise clean episode (issue #43; 61 occurrences of the
+# family in one ten-episode project).
+#
+# Here rather than in fold(), for the same reason the English tables live here:
+# CASE is the guard, and fold() runs after lowercasing. The uppercase initialism
+# JSI is synthesized as letter names by `synth._ACRONYM`, and a case-blind rule
+# accepted "si" for it at 1.0 — audio that spelled nothing. Matching only "jsi"
+# and sentence-initial "Jsi" keeps every all-caps spelling out.
+#
+# Five finite forms BY NAME. The word boundary is load-bearing twice over: the
+# negated "nejsem" keeps its j and must not match, and the nouns jsoucno /
+# jsoucnost are not the auxiliary.
+#
+# The cost, stated as final devoicing states its own in fold(): this merges the
+# auxiliary "jsi" with the reflexive "si", and "jsem" with the adverb "sem".
+# Both are frequent, and both genuinely are the same sound — the verifier argues
+# about sound.
+_CS_COPULA = re.compile(r"\b[Jj](?=(?:sem|si|sme|ste|sou)\b)")
+
 
 def normalize(text: str, lang: str = "en") -> str:
+    if lang.startswith("cs"):
+        text = _CS_COPULA.sub("", text)
     text = unicodedata.normalize("NFC", text.lower())
     text = _APOSTROPHES.sub("'", text)
     if lang.startswith("en"):

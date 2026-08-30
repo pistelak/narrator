@@ -421,7 +421,7 @@ def test_trailing_dead_air_that_trimming_keeps_is_refused() -> None:
     verifier = CoverageVerifier(FakeASR(backend))
     result = synthesize_chunk(TEXT, 0, backend, verifier, VOICE, cfg)
 
-    assert not result.ok, "9 s of dead air must not ship, trailing or interior"
+    assert not result.ok, "dead air must not ship, trailing or interior"
     assert result.silence_s > cfg.max_silence_s, "and the report must name it"
     # The silence gate is what refused it. Every other cheap check passes on this
     # audio, and the round-trip is perfect — the words are all there.
