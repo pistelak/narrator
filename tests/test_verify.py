@@ -1126,6 +1126,60 @@ def test_assimilated_short_sentences_survive_the_negation_merge() -> None:
     assert coverage(ref, hyp, "cs")[0] >= 0.90
 
 
+def test_the_dropped_j_of_the_czech_copula_is_not_a_substitution() -> None:
+    """Issue #43: the highest-frequency false rejection in a Czech workload.
+
+    Czech says the copula without its initial j — jsi is [si], jsem is [sem] —
+    and the recogniser writes what it hears. The audio is correct, so the retry
+    ladder cannot help: one chunk spent 11 attempts, never recovered, and
+    quarantined an otherwise clean episode. The family occurs 61 times in one
+    ten-episode project.
+    """
+    assert coverage("Včera jsi to nakonec zvládl.",
+                    "Včera si to nakonec zvládl.", "cs")[0] >= 0.90
+    for written, heard in (("jsem", "sem"), ("jsi", "si"), ("jsme", "sme"),
+                           ("jste", "ste"), ("jsou", "sou")):
+        assert normalize(f"a {written} b", "cs") == normalize(f"a {heard} b", "cs")
+    # Sentence-initial too, which is where a script writes it capitalized.
+    assert normalize("Jsi tady.", "cs") == normalize("Si tady.", "cs")
+
+
+def test_the_copula_rule_is_case_sensitive_and_word_bounded() -> None:
+    """Why it lives in `normalize` rather than in `fold`, which runs after
+    lowercasing.
+
+    `synth._ACRONYM` spells any 2-6 letter uppercase run as letter names, so the
+    initialism JSI is spoken "jé es í". A case-blind rule scored audio saying
+    "si" at 1.000 against it — the lowercased-acronym false accept this module
+    already refuses for the English negation tables.
+
+    The word boundary carries the rest: the negated "nejsem" DOES pronounce its
+    j, and the nouns jsoucno / jsoucnost are not the auxiliary at all.
+    """
+    assert coverage("JSI test.", "si test.", "cs")[0] < 0.90
+    assert normalize("nejsem", "cs") == "nejsem"
+    assert normalize("jsoucno", "cs") == "jsoucno"
+
+
+def test_the_copula_rule_keeps_the_vowel_folding_it_runs_before() -> None:
+    """It is the one rule that runs before `fold`, so it spells its own vowels.
+
+    `_FOLD` absorbs vowel length and i/y for every other Czech word. A recogniser
+    writing "jsí" or "jsy" — the same sound — would otherwise keep its j while
+    the script's "jsi" lost one, and the pair would miss on a difference neither
+    side can hear.
+    """
+    for heard in ("jsí", "jsy", "jsém", "jsóu"):
+        assert normalize(f"a {heard} b", "cs") == normalize(f"a {heard[1:]} b", "cs")
+
+
+def test_the_copula_rule_cannot_hide_a_dropped_auxiliary() -> None:
+    """Folding makes two spellings of one word match; a missing word is still
+    missing, which is what keeps the collision with the reflexive si affordable."""
+    assert coverage("Včera jsi to nakonec zvládl.",
+                    "Včera to nakonec zvládl.", "cs")[0] < 0.90
+
+
 def test_case_inflection_is_not_folded() -> None:
     """A deliberate limit. "Lisa" -> "Lise" is Czech dative, a different word form
     that SOUNDS different — unlike i/y or final devoicing, which do not. Folding

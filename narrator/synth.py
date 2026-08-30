@@ -26,12 +26,17 @@ from dataclasses import dataclass, replace
 import numpy as np
 
 from narrator import prosody
-from narrator.audio import SILENCE_DROP_DB, longest_silent_run, trim_silence
+from narrator.audio import (
+    SILENCE_DROP_DB,
+    longest_silent_run,
+    longest_silent_run_incl_edges,
+    trim_silence,
+)
 from narrator.chunking import split_sentences
 from narrator.takes import TakeStore, take_key
 from narrator.types import Audio, Backend, ChunkResult, Verdict, Verifier, Voice
 
-SEMANTICS = 1
+SEMANTICS = 2
 """Version of the ladder's own behaviour, for the take store's key.
 
 Bump it whenever a change here alters which take ships or how one is made —
@@ -126,7 +131,7 @@ class SynthConfig:
     resolves its own markup into segments elsewhere."""
 
     max_silence_s: float = 4.0
-    """Longest interior silence a chunk may contain before it is a defect.
+    """Longest silence a chunk may contain before it is a defect.
 
     Renders emit multi-second holes the script never asked for, and every other
     gate passes them: the words are all there, so coverage stays 1.000, and the
@@ -209,7 +214,7 @@ class _Attempt:
     verdict: Verdict
     hit_cap: bool = False
     silence_s: float = 0.0
-    """Longest interior silence measured on the audio that would ship."""
+    """Longest silence measured on the audio that would ship, edges included."""
     prior_failures: int = 0
     """Failed or raised attempts before success was first secured.
     `recovered_by="retry"` keys off this: with rise selection a later take
@@ -657,9 +662,17 @@ def _best_attempt(
         # Measured on the TRIMMED audio, which is what render actually ships
         # (render.py applies trim_silence before stitching). Measuring the raw
         # buffer would fail chunks for leading or trailing silence that is about
-        # to be removed, and `longest_silent_run` only counts interior runs for
-        # the same reason.
-        silence_s = longest_silent_run(
+        # to be removed.
+        #
+        # EDGES INCLUDED, because after trimming they are nobody else's job.
+        # Interior-only here delegated every edge run to `trim_silence`, whose
+        # floor is peak-relative (-42 dB) where this one is 35 dB under the p95
+        # speech level: residue between the two survives trimming and was never
+        # counted. Issue #42 shipped 9.03 s of trailing dead air at
+        # `silence_s=0.00`, `ok=True`, and the take store then served it to two
+        # later renders. What remains at an edge after trimming is the ~60 ms
+        # guard band (a 30 ms frame plus TRIM_GUARD_MS), 4.0 s below the gate.
+        silence_s = longest_silent_run_incl_edges(
             trim_silence(audio, backend.sample_rate), backend.sample_rate,
             cfg.silence_drop_db,
         )

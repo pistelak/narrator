@@ -195,13 +195,19 @@ class ChunkResult:
     describes how the audio itself was made and that is still true."""
 
     silence_s: float = 0.0
-    """Longest interior silence in this chunk's audio, in seconds.
+    """Longest silence in this chunk's audio, in seconds, edges included.
 
     Appended, for the reason `reused` records above. Always reported, not only
     on failure: `SynthConfig.max_silence_s` deliberately refuses just the severe
     class that was measured, so this is the number that tells a caller whether
     the shorter band is real in their material — and the evidence for tightening
-    the threshold later. 0.0 on a reused take, which this run did not measure."""
+    the threshold later. A reused take reports what was stored with it, not 0.0.
+
+    Edges included, because they are what `trim_silence` leaves behind rather
+    than what it removes (issue #42). The one exception is a chunk recovered by
+    sentence-split, which reports the interior measure of the assembly: its edges
+    are measured against the whole assembly's speech level, where a deliberately
+    quiet closing sentence reads as a multi-second run."""
 
     shipped_s: float | None = None
     """Seconds this chunk actually occupies in the written file, or None.
@@ -251,8 +257,8 @@ class RenderReport:
 
     Reported, not refused, and deliberately so. Renders emit stretches of silence
     the script never declared (issue #21), and the per-chunk gate cannot see one
-    that forms only after stitching — it measures a chunk's interior, while a run
-    at a chunk's EDGE belongs to `trim_silence`.
+    that forms only after stitching — it measures one chunk's trimmed audio, so
+    silence that only exists once two chunks meet belongs to this number alone.
 
     Refusing on this number was implemented and cut. Removing edge material by
     level alone deletes real audio: a whispered clause sits in the same band as

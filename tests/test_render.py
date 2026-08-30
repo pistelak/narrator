@@ -728,10 +728,13 @@ class _DeafBandTail(FakeBackend):
     """Ends every chunk with material between the two silence thresholds.
 
     `trim_silence` keeps everything above the chunk's PEAK frame minus TRIM_DB
-    (-42); the interior gate calls silent everything below the chunk's p95 frame
-    minus SILENCE_DROP_DB (-35). On speech those references sit ~0.1 dB apart, so
-    a ~7 dB band exists that survives trimming AND is invisible to the gate,
-    which ignores edges because they are trimming's job. Nothing owns it.
+    (-42); the gate calls silent everything below the chunk's p95 frame minus
+    SILENCE_DROP_DB (-35). On speech those references sit ~0.1 dB apart, so
+    a ~7 dB band exists that survives trimming: the gate ignored it because it
+    sits at an edge, and trimming keeps it because it is above the peak-relative
+    floor. Nobody owned it until issue #42; the gate now measures trimmed audio
+    with the edges included, so 3 s is seen and reported, and passes only because
+    it is under `max_silence_s`.
     """
 
     def synthesize(self, text, voice, *, max_frames, temperature):
@@ -751,8 +754,9 @@ def test_a_clean_render_reports_no_unscripted_silence(tmp_path: Path) -> None:
 def test_silence_no_gap_asked_for_is_reported(tmp_path: Path) -> None:
     """The defect made visible, which is what this reports.
 
-    The per-chunk gate cannot see it: the run sits at a chunk's EDGE, which the
-    interior detector excludes by design because trimming owns edges.
+    The per-chunk gate now sees a 3 s tail (issue #42) but does not refuse it —
+    it is under `max_silence_s`, which refuses only the severe class. Summed
+    across chunks it is still worth reporting, and the report is what does that.
     """
     backend = _DeafBandTail()
     verifier = CoverageVerifier(FakeASR(backend))
@@ -761,7 +765,9 @@ def test_silence_no_gap_asked_for_is_reported(tmp_path: Path) -> None:
 
     assert report.unscripted_silence_s > 1.0
     # The declared 3 s Gap in SEGMENTS is excluded, so this is not just the gap.
-    assert all(c.silence_s < 1.0 for c in report.chunks), "no CHUNK contains it"
+    for chunk in report.chunks:
+        assert chunk.ok, "3 s is under the gate, which refuses only the severe class"
+        assert chunk.silence_s > 1.0, "but the chunk now measures its own tail"
 
 
 def test_a_chunk_with_no_audio_at_the_very_end_still_has_a_position(

@@ -71,10 +71,13 @@ def longest_silent_run(audio: Audio, sample_rate: int,
     """Longest stretch BETWEEN speech that sits `drop_db` under the speech level.
 
     Only interior runs count. Leading and trailing silence belongs to
-    `trim_silence`, and an utterance that is silent throughout is already caught
-    by the duration bounds and by coverage — this measures the hole a render can
-    otherwise ship with every word present and a clean report (issue #18: 18.5 s
-    of dead air at `failed=0`, `min coverage 1.0`).
+    `trim_silence` on UNTRIMMED audio — but only there: the two floors do not
+    meet, so on already-trimmed audio the edges are nobody's and want
+    `longest_silent_run_incl_edges` (issue #42). An utterance that is silent
+    throughout is already caught by the duration bounds and by coverage — this
+    measures the hole a render can otherwise ship with every word present and a
+    clean report (issue #18: 18.5 s of dead air at `failed=0`,
+    `min coverage 1.0`).
 
     The speech level is a high percentile rather than the maximum, so one loud
     plosive cannot raise the bar, and the hole itself cannot lower it. Measured
@@ -226,6 +229,27 @@ def _silent_runs(audio: Audio, sample_rate: int,
     if start is not None:
         runs.append((start * frame, count * frame))
     return runs
+
+
+def longest_silent_run_incl_edges(audio: Audio, sample_rate: int,
+                                  drop_db: float = SILENCE_DROP_DB) -> float:
+    """`longest_silent_run`, but a run at the START or END counts too.
+
+    For audio that has ALREADY been trimmed, where the edges are no longer
+    trimming's business. The two floors do not meet: `trim_silence` keeps frames
+    above the chunk's PEAK minus TRIM_DB (-42), this calls silent everything
+    below the p95 speech level minus `drop_db` (35), and residue landing between
+    them survives trimming while reading as silence here. On speech the two
+    references sit ~0.1 dB apart, so the band is real and nothing owned it
+    (issue #42: a take with 9.03 s of trailing dead air measured 0.00 s at the
+    gate, shipped, and was cached as verified).
+
+    Not a replacement for `longest_silent_run` on UNTRIMMED audio, where leading
+    and trailing silence is about to be removed and counting it would refuse
+    correct chunks.
+    """
+    runs = _silent_runs(audio, sample_rate, drop_db)
+    return max((end - start for start, end in runs), default=0) / sample_rate
 
 
 def declick(audio: Audio, sample_rate: int) -> Audio:

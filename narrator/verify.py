@@ -41,7 +41,7 @@ from narrator.chunking import split_sentences
 from narrator.takes import _class_id, identity_of
 from narrator.types import ASR, Audio, Verdict, Verifier
 
-SEMANTICS = 6
+SEMANTICS = 8
 """Version of what "correct" means here, for the take store's key.
 
 Bump it on ANY behavioural change to scoring: a new fold, a hard-fail rule, the
@@ -695,8 +695,42 @@ _NT_SPECIAL = (
 # same 0.92 it was closed at.
 _APOSTROPHES = re.compile(r"[’‘ʼ＇]")
 
+# Czech drops the initial j of the copula in ordinary speech: "jsi" is said
+# [si], "jsem" [sem]. Both pronunciations are correct Czech; the reduced one is
+# what recognisers write, so a script's "jsi" met the ASR's "si" and the chunk
+# failed on a substitution that was never in the audio. Nothing in the retry
+# ladder can fix audio that is already right: one chunk spent 11 attempts and
+# quarantined an otherwise clean episode (issue #43; 61 occurrences of the
+# family in one ten-episode project).
+#
+# Here rather than in fold(), for the same reason the English tables live here:
+# CASE is the guard, and fold() runs after lowercasing. The uppercase initialism
+# JSI is synthesized as letter names by `synth._ACRONYM`, and a case-blind rule
+# accepted "si" for it at 1.0 — audio that spelled nothing. Matching only "jsi"
+# and sentence-initial "Jsi" keeps every all-caps spelling out.
+#
+# Five finite forms BY NAME, lowercase or sentence-initial. The word boundary is
+# load-bearing twice over: the negated "nejsem" keeps its j and must not match,
+# and the nouns jsoucno / jsoucnost are not the auxiliary.
+#
+# The vowels are spelled the way `_FOLD` would leave them, because running
+# before it forfeits its work otherwise: a recogniser writing "jsí" or "jsy" —
+# same sound, spelling variance `fold` absorbs for every other Czech word —
+# would keep its j while the script lost one, and the pair would MISS on a
+# difference neither side can hear.
+#
+# The cost, stated as final devoicing states its own in fold(): this merges the
+# auxiliary "jsi" with the reflexive "si", and "jsem" with the adverb "sem".
+# Both are frequent, and both genuinely are the same sound — the verifier argues
+# about sound.
+_CS_COPULA = re.compile(r"\b[Jj](?=(?:s[eé]m|s[iíyý]|sm[eé]|st[eé]|s[oó]u)\b)")
+
 
 def normalize(text: str, lang: str = "en") -> str:
+    if lang.startswith("cs"):
+        # NFC first: this is the one rule that reads the text before it is
+        # lowercased, so it must also be the one that composes its diacritics.
+        text = _CS_COPULA.sub("", unicodedata.normalize("NFC", text))
     text = unicodedata.normalize("NFC", text.lower())
     text = _APOSTROPHES.sub("'", text)
     if lang.startswith("en"):
