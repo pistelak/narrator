@@ -376,6 +376,61 @@ def test_a_short_hole_is_reported_but_not_refused() -> None:
     assert 1.5 < result.silence_s < 2.5, "but the caller is told about it"
 
 
+class _TrailingResidue(FakeBackend):
+    """Ends every chunk with material between the two silence thresholds.
+
+    `trim_silence` keeps everything above the chunk's PEAK frame minus TRIM_DB
+    (-42); the gate calls silent everything below the chunk's p95 frame minus
+    SILENCE_DROP_DB (35). On speech those references sit ~0.1 dB apart, so a
+    ~7 dB band survives trimming and reads as silence — which is exactly what
+    issue #42 shipped, 9.03 s of it, at `silence_s=0.00`.
+
+    4.5 s rather than the observed 9.03 s so the OTHER cheap checks pass on
+    their own: 4.8 s of speech plus this tail is 9.3 s, inside the 2.67-10.5 s
+    duration bounds and under the 9.68 s frame cap for this chunk. A test that
+    passes because the ceiling fired pins nothing.
+    """
+
+    tail_s = 4.5
+
+    def synthesize(self, text, voice, *, max_frames, temperature):
+        import numpy as np
+
+        audio = super().synthesize(text, voice, max_frames=max_frames,
+                                   temperature=temperature)
+        frame = int(0.02 * self.sample_rate)
+        count = len(audio) // frame
+        rms = np.sqrt((audio[: count * frame].reshape(count, frame) ** 2).mean(1) + 1e-20)
+        level = float(np.percentile(rms, 95)) * 10 ** (-38 / 20)
+        band = np.zeros(int(self.tail_s * self.sample_rate), dtype=np.float32)
+        band[::2], band[1::2] = level, -level
+        return np.concatenate([audio, band])
+
+
+def test_trailing_dead_air_that_trimming_keeps_is_refused() -> None:
+    """Issue #42: the gate delegated edges to `trim_silence`, which did not want them.
+
+    A take 20.28 s long carrying 11.25 s of speech reported `silence_s=0.00`,
+    `ok=True` at coverage 1.0, was written to the take store as verified, and was
+    then served to two later renders — so no retry could ever reach it. The
+    episode-level report saw the full 9.12 s, because it measures with the edges
+    included; the gate did not, because it did not.
+    """
+    cfg = SynthConfig(max_attempts=1, allow_sentence_split=False)
+    backend = _TrailingResidue()
+    verifier = CoverageVerifier(FakeASR(backend))
+    result = synthesize_chunk(TEXT, 0, backend, verifier, VOICE, cfg)
+
+    assert not result.ok, "9 s of dead air must not ship, trailing or interior"
+    assert result.silence_s > cfg.max_silence_s, "and the report must name it"
+    # The silence gate is what refused it. Every other cheap check passes on this
+    # audio, and the round-trip is perfect — the words are all there.
+    floor, ceiling = duration_bounds(len(TEXT.split()), cfg)
+    assert floor <= result.duration_s <= ceiling
+    assert result.duration_s < frame_cap(len(TEXT.split()), backend.fps, cfg) / backend.fps
+    assert result.coverage == 1.0
+
+
 def test_a_sentence_gap_at_the_gate_threshold_is_refused_up_front() -> None:
     """The rescue path inserts real zeros, so it must stay under the gate.
 

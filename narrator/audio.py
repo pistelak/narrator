@@ -228,6 +228,27 @@ def _silent_runs(audio: Audio, sample_rate: int,
     return runs
 
 
+def longest_silent_run_incl_edges(audio: Audio, sample_rate: int,
+                                  drop_db: float = SILENCE_DROP_DB) -> float:
+    """`longest_silent_run`, but a run at the START or END counts too.
+
+    For audio that has ALREADY been trimmed, where the edges are no longer
+    trimming's business. The two floors do not meet: `trim_silence` keeps frames
+    above the chunk's PEAK minus TRIM_DB (-42), this calls silent everything
+    below the p95 speech level minus `drop_db` (35), and residue landing between
+    them survives trimming while reading as silence here. On speech the two
+    references sit ~0.1 dB apart, so the band is real and nothing owned it
+    (issue #42: a take with 9.03 s of trailing dead air measured 0.00 s at the
+    gate, shipped, and was cached as verified).
+
+    Not a replacement for `longest_silent_run` on UNTRIMMED audio, where leading
+    and trailing silence is about to be removed and counting it would refuse
+    correct chunks.
+    """
+    runs = _silent_runs(audio, sample_rate, drop_db)
+    return max((end - start for start, end in runs), default=0) / sample_rate
+
+
 def declick(audio: Audio, sample_rate: int) -> Audio:
     """Short fades at both edges, so a join does not click."""
     n = int(sample_rate * FADE_MS / 1000)

@@ -195,7 +195,7 @@ class ChunkResult:
     describes how the audio itself was made and that is still true."""
 
     silence_s: float = 0.0
-    """Longest interior silence in this chunk's audio, in seconds.
+    """Longest silence in this chunk's audio, in seconds, edges included.
 
     Appended, for the reason `reused` records above. Always reported, not only
     on failure: `SynthConfig.max_silence_s` deliberately refuses just the severe
@@ -251,8 +251,8 @@ class RenderReport:
 
     Reported, not refused, and deliberately so. Renders emit stretches of silence
     the script never declared (issue #21), and the per-chunk gate cannot see one
-    that forms only after stitching — it measures a chunk's interior, while a run
-    at a chunk's EDGE belongs to `trim_silence`.
+    that forms only after stitching — it measures one chunk's trimmed audio, so
+    silence that only exists once two chunks meet belongs to this number alone.
 
     Refusing on this number was implemented and cut. Removing edge material by
     level alone deletes real audio: a whispered clause sits in the same band as

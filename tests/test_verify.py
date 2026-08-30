@@ -20,6 +20,7 @@ from narrator.verify import (
     content_words,
     coverage,
     coverage_detail,
+    fold,
     is_numberish,
     isolated_numerals,
     normalize,
@@ -1124,6 +1125,42 @@ def test_assimilated_short_sentences_survive_the_negation_merge() -> None:
     ref = "Množství. Nová známka na každý dopis. Což třídění ztíží. Ne znemožní. Ztíží."
     hyp = "Množství. Nová známka na každý dopis. Což třídění stíží. Neznemožní. Stíží."
     assert coverage(ref, hyp, "cs")[0] >= 0.90
+
+
+def test_the_dropped_j_of_the_czech_copula_is_not_a_substitution() -> None:
+    """Issue #43: the highest-frequency false rejection in a Czech workload.
+
+    Czech says the copula without its initial j — jsi is [si], jsem is [sem] —
+    and the recogniser writes what it hears. The audio is correct, so the retry
+    ladder cannot help: one chunk spent 11 attempts, never recovered, and
+    quarantined an otherwise clean episode. The family occurs 61 times in one
+    ten-episode project.
+    """
+    assert coverage("Včera jsi to nakonec zvládl.",
+                    "Včera si to nakonec zvládl.", "cs")[0] >= 0.90
+    for written, heard in (("jsem", "sem"), ("jsi", "si"), ("jsme", "sme"),
+                           ("jste", "ste"), ("jsou", "sou")):
+        assert fold(written, "cs") == fold(heard, "cs"), written
+
+
+def test_the_copula_fold_names_five_words_rather_than_j_before_s() -> None:
+    """The general rule was rejected, and this is what it cost.
+
+    `normalize` lowercases first, so the acronym JSON reaches fold() as "json":
+    a word-initial j-before-s rule folds it onto "son" and certifies audio that
+    said neither — the lowercased-acronym false accept this module already
+    refuses for the English negation tables. The nouns jsoucno / jsoucnost are
+    not the auxiliary either, and keep their j.
+    """
+    assert fold("json", "cs") != fold("son", "cs")
+    assert fold("jsoucno", "cs") != fold("soucno", "cs")
+
+
+def test_the_copula_fold_cannot_hide_a_dropped_auxiliary() -> None:
+    """Folding makes two spellings of one word match; a missing word is still
+    missing, which is what keeps the collision with the reflexive si affordable."""
+    assert coverage("Včera jsi to nakonec zvládl.",
+                    "Včera to nakonec zvládl.", "cs")[0] < 0.90
 
 
 def test_case_inflection_is_not_folded() -> None:
