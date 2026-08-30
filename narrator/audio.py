@@ -74,9 +74,10 @@ def longest_silent_run(audio: Audio, sample_rate: int,
     `trim_silence` on UNTRIMMED audio — but only there: the two floors do not
     meet, so on already-trimmed audio the edges are nobody's and want
     `longest_silent_run_incl_edges` (issue #42). An utterance that is silent
-    throughout is already caught by the duration bounds and by coverage — this measures the hole a render can
-    otherwise ship with every word present and a clean report (issue #18: 18.5 s
-    of dead air at `failed=0`, `min coverage 1.0`).
+    throughout is already caught by the duration bounds and by coverage — this
+    measures the hole a render can otherwise ship with every word present and a
+    clean report (issue #18: 18.5 s of dead air at `failed=0`,
+    `min coverage 1.0`).
 
     The speech level is a high percentile rather than the maximum, so one loud
     plosive cannot raise the bar, and the hole itself cannot lower it. Measured
