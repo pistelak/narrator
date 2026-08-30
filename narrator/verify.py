@@ -41,7 +41,7 @@ from narrator.chunking import split_sentences
 from narrator.takes import _class_id, identity_of
 from narrator.types import ASR, Audio, Verdict, Verifier
 
-SEMANTICS = 7
+SEMANTICS = 8
 """Version of what "correct" means here, for the take store's key.
 
 Bump it on ANY behavioural change to scoring: a new fold, a hard-fail rule, the
@@ -709,20 +709,28 @@ _APOSTROPHES = re.compile(r"[’‘ʼ＇]")
 # accepted "si" for it at 1.0 — audio that spelled nothing. Matching only "jsi"
 # and sentence-initial "Jsi" keeps every all-caps spelling out.
 #
-# Five finite forms BY NAME. The word boundary is load-bearing twice over: the
-# negated "nejsem" keeps its j and must not match, and the nouns jsoucno /
-# jsoucnost are not the auxiliary.
+# Five finite forms BY NAME, lowercase or sentence-initial. The word boundary is
+# load-bearing twice over: the negated "nejsem" keeps its j and must not match,
+# and the nouns jsoucno / jsoucnost are not the auxiliary.
+#
+# The vowels are spelled the way `_FOLD` would leave them, because running
+# before it forfeits its work otherwise: a recogniser writing "jsí" or "jsy" —
+# same sound, spelling variance `fold` absorbs for every other Czech word —
+# would keep its j while the script lost one, and the pair would MISS on a
+# difference neither side can hear.
 #
 # The cost, stated as final devoicing states its own in fold(): this merges the
 # auxiliary "jsi" with the reflexive "si", and "jsem" with the adverb "sem".
 # Both are frequent, and both genuinely are the same sound — the verifier argues
 # about sound.
-_CS_COPULA = re.compile(r"\b[Jj](?=(?:sem|si|sme|ste|sou)\b)")
+_CS_COPULA = re.compile(r"\b[Jj](?=(?:s[eé]m|s[iíyý]|sm[eé]|st[eé]|s[oó]u)\b)")
 
 
 def normalize(text: str, lang: str = "en") -> str:
     if lang.startswith("cs"):
-        text = _CS_COPULA.sub("", text)
+        # NFC first: this is the one rule that reads the text before it is
+        # lowercased, so it must also be the one that composes its diacritics.
+        text = _CS_COPULA.sub("", unicodedata.normalize("NFC", text))
     text = unicodedata.normalize("NFC", text.lower())
     text = _APOSTROPHES.sub("'", text)
     if lang.startswith("en"):

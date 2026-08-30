@@ -1161,6 +1161,18 @@ def test_the_copula_rule_is_case_sensitive_and_word_bounded() -> None:
     assert normalize("jsoucno", "cs") == "jsoucno"
 
 
+def test_the_copula_rule_keeps_the_vowel_folding_it_runs_before() -> None:
+    """It is the one rule that runs before `fold`, so it spells its own vowels.
+
+    `_FOLD` absorbs vowel length and i/y for every other Czech word. A recogniser
+    writing "jsí" or "jsy" — the same sound — would otherwise keep its j while
+    the script's "jsi" lost one, and the pair would miss on a difference neither
+    side can hear.
+    """
+    for heard in ("jsí", "jsy", "jsém", "jsóu"):
+        assert normalize(f"a {heard} b", "cs") == normalize(f"a {heard[1:]} b", "cs")
+
+
 def test_the_copula_rule_cannot_hide_a_dropped_auxiliary() -> None:
     """Folding makes two spellings of one word match; a missing word is still
     missing, which is what keeps the collision with the reflexive si affordable."""
