@@ -167,12 +167,17 @@ class ChunkResult:
     text: str
     audio: Audio
     duration_s: float
-    """Length of the RAW synthesis, NOT the length in the written file.
+    """Length of the RAW synthesis, NOT the length of `audio` or of the file.
 
     The duration bounds were checked against this, so it keeps its diagnostic
-    value — but `render` trims before stitching, so a chunk reported here at
-    27.3 s can occupy 14.5 s of the file. Use `shipped_s` for the in-file length
-    and `start_s` to locate it."""
+    value — but synth trims the take before verifying it, and `audio` is that
+    trimmed take, so a chunk reported here at 27.3 s can occupy 14.5 s of the
+    file. Use `shipped_s` for the in-file length and `start_s` to locate it.
+
+    One exception: a chunk recovered by sentence-split reports the ASSEMBLY's
+    length, gaps included. No bound was ever checked against that aggregate —
+    each sentence was bounded on its own raw take — so for those chunks this
+    equals `len(audio) / sample_rate` and carries no raw-length evidence."""
 
     attempts: int
     ok: bool
@@ -216,10 +221,12 @@ class ChunkResult:
     silently rebound every positional constructor call by one, which a review
     caught here.
 
-    `duration_s` is the RAW synthesis length, measured before `render` trims, so
+    `duration_s` is the RAW synthesis length, measured before synth trims, so
     a chunk reported at 27.3 s can ship at 14.5 s and accumulating `duration_s`
     to locate a chunk drifts by every silence trimmed before it. That cost a real
-    investigation in issue #21.
+    investigation in issue #21. This equals `len(audio) / sample_rate` once
+    measured: `render` ships `audio` as verified, with only an edge fade and
+    the voice's declared gain applied.
 
     None means "not measured" — a result that never went through `render`, or one
     restored from the take store before render overwrites it. Not 0.0, because
@@ -262,10 +269,13 @@ class RenderReport:
 
     Refusing on this number was implemented and cut. Removing edge material by
     level alone deletes real audio: a whispered clause sits in the same band as
-    an unwanted tail, and since verification runs BEFORE trimming, the recogniser
-    credits words that removal then takes out of the shipped file — silent
-    content loss, which is the failure this library exists to prevent. Measured:
-    1.5-2.0 s of a quiet opening removed after being verified.
+    an unwanted tail, and at the time verification ran BEFORE trimming, so the
+    recogniser credited words that removal then took out of the shipped file —
+    silent content loss, which is the failure this library exists to prevent.
+    Measured: 1.5-2.0 s of a quiet opening removed after being verified. That
+    ordering is gone (synth now trims once, before the ASR, and the verified
+    buffer ships untouched — see `_best_attempt`), but the lesson is not: any
+    level-based removal added AFTER verification reopens the same hole.
 
     So this measures and says so. Declared `Gap` spans are excluded, because
     those are exactly the silence the caller asked for. Once there is data on

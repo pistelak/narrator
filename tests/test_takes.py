@@ -305,6 +305,42 @@ def test_a_rise_wanting_chunk_is_not_stored(tmp_path: Path) -> None:
     assert [c.reused for c in report.chunks] == [False, True]
 
 
+def test_a_take_certified_by_the_untrimmed_ladder_is_not_reused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """synth.SEMANTICS 2 -> 3: takes were stored raw and verified raw.
+
+    Under 3 the ladder trims before the ASR and `render` trims nothing, so a v2
+    take served as-is would ship its synthesis padding with a verdict about a
+    buffer this version never presents. The key must miss.
+    """
+    import narrator.synth as synth
+
+    takes = tmp_path / "takes"
+    monkeypatch.setattr(synth, "SEMANTICS", 2)
+    render_with(tmp_path, takes, out="a.wav")
+    monkeypatch.undo()
+    assert synth.SEMANTICS == 3
+    backend, report = render_with(tmp_path, takes, out="b.wav")
+    assert backend.calls == 2 and not any(c.reused for c in report.chunks)
+
+
+def test_the_stored_take_is_the_verified_buffer(tmp_path: Path) -> None:
+    """A stored take comes back sample-identical, and render ships it at that length.
+
+    Round-trip only: that the stored buffer is the one the ASR heard is pinned
+    in test_synth (`test_the_verifier_hears_the_take_that_ships`); this proves
+    the store and render preserve it, so the two together cover the path.
+    """
+    takes = tmp_path / "takes"
+    _, first = render_with(tmp_path, takes, out="a.wav")
+    _, second = render_with(tmp_path, takes, out="b.wav")
+    for a, b in zip(first.chunks, second.chunks, strict=True):
+        assert b.reused
+        assert np.array_equal(a.audio, b.audio)
+        assert b.shipped_s == a.shipped_s == b.audio.size / 24000
+
+
 # ------------------------------------------------------------ integrity
 
 def test_a_corrupt_take_is_a_miss_not_a_crash(tmp_path: Path) -> None:

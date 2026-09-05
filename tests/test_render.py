@@ -154,6 +154,70 @@ def test_trim_leaves_all_silence_alone() -> None:
     assert trim_silence(silence, 24000).size == silence.size
 
 
+def test_trim_deletes_a_quiet_spoken_edge() -> None:
+    """The mechanism behind "verify what ships": trimming is peak-relative.
+
+    One second of tone at amplitude 0.001 followed by one at 0.5 is 54 dB of
+    range, and the floor sits 42 dB under the peak, so the first second is
+    "silence" to `trim_silence` even though it is signal. Synthetic on purpose
+    (a sine, not a recording): this pins the deletion path, not its incidence
+    in real speech. It is why synth now trims BEFORE the ASR hears the take and
+    `render` never trims — a quiet edge is either heard and shipped, or trimmed
+    and refused, never credited by the ASR and deleted afterwards.
+    """
+    sr = 24000
+    t = np.arange(sr) / sr
+    tone = np.sin(2 * np.pi * 220 * t)
+    audio = np.concatenate([0.001 * tone, 0.5 * tone]).astype(np.float32)
+    trimmed = trim_silence(audio, sr)
+    assert 1.0 < trimmed.size / sr < 1.1
+
+
+class _SilentTail(FakeBackend):
+    """Ends every take with 0.5 s of digital silence — see the twin in test_synth."""
+
+    def synthesize(self, text, voice, *, max_frames, temperature):
+        audio = super().synthesize(text, voice, max_frames=max_frames,
+                                   temperature=temperature)
+        return np.concatenate([audio, np.zeros(self.sample_rate // 2, dtype=np.float32)])
+
+
+def test_render_ships_the_verified_buffer_without_trimming_it(tmp_path: Path) -> None:
+    """`shipped_s` is the length of `audio` exactly: render no longer trims.
+
+    It used to trim again here, against the chunk's own peak — for a
+    sentence-split assembly a LOUDER reference than any one sentence saw — on
+    the far side of verification. Whatever that removed was gone from the file
+    and present in the verdict.
+    """
+    backend = _SilentTail()
+    verifier = CoverageVerifier(FakeASR(backend))
+    report = render(SEGMENTS, VOICE, backend, tmp_path / "s.wav", verifier)
+    for chunk in report.chunks:
+        assert chunk.shipped_s == chunk.audio.size / backend.sample_rate
+        assert chunk.shipped_s < chunk.duration_s, "the tail was trimmed, in synth"
+
+
+def test_a_quiet_final_sentence_survives_render_after_sentence_split(tmp_path: Path) -> None:
+    """The louder-reference case: `render`'s former trim measured the ASSEMBLY.
+
+    Three sentences rendered alone, the last at -46 dB relative to the others.
+    Each verified against its own peak; the old outer trim then judged the
+    whole assembly against the loudest sentence's peak, where -46 dB is under
+    the -42 dB floor, and cut the quiet sentence off the end of a chunk the
+    report called clean. Nothing on the far side of verification trims now, so
+    the assembly ships at exactly its verified length.
+    """
+    backend = FakeBackend(script={i: Failure.DROP_SENTENCE for i in range(3)},
+                          amplitude_script={5: 0.1 * 10 ** (-46 / 20)})
+    verifier = CoverageVerifier(FakeASR(backend))
+    report = render(SEGMENTS[:1], VOICE, backend, tmp_path / "q.wav", verifier)
+    chunk = report.chunks[0]
+    assert chunk.recovered_by == "sentence-split"
+    assert chunk.shipped_s == chunk.audio.size / backend.sample_rate
+    assert chunk.shipped_s == pytest.approx(chunk.duration_s)
+
+
 def test_declick_fades_both_edges() -> None:
     audio = np.ones(24000, dtype=np.float32)
     faded = declick(audio, 24000)
@@ -646,9 +710,10 @@ def test_a_chunk_that_is_only_atoms_is_refused(tmp_path: Path) -> None:
 def test_the_reported_chunk_spans_add_up_to_the_file(tmp_path: Path) -> None:
     """The invariant that was broken: the parts must sum to the whole.
 
-    `duration_s` is the raw synthesis length and `render` trims before
-    stitching, so accumulating it drifts by every silence removed before a given
-    chunk. `RenderReport.duration_s` is measured on the finished audio, so the
+    `duration_s` is the raw synthesis length and the take is trimmed before it
+    ships (in synth now; in `render` when this was found), so accumulating it
+    drifts by every silence removed before a given chunk.
+    `RenderReport.duration_s` is measured on the finished audio, so the
     total was right while the parts did not reach it — the confusing direction,
     and it cost a real investigation in issue #21.
 
