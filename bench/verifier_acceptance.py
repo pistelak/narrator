@@ -38,11 +38,9 @@ import numpy as np
 
 from narrator.asr import WhisperASR
 from narrator.backends.higgs import HiggsBackend
-from narrator.chunking import chunk
+from narrator.chunking import chunk, split_sentences
 from narrator.types import Voice
 from narrator.verify import CoverageVerifier
-
-SENTENCE_END = re.compile(r'(?<=[.!?])["”’\')\]]*\s+')
 
 
 @dataclass
@@ -54,10 +52,6 @@ class Case:
     coverage: float
     transcript: str
     note: str = ""
-
-
-def sentences(text: str) -> list[str]:
-    return [s.strip() for s in SENTENCE_END.split(text.strip()) if s.strip()]
 
 
 def spoken_lines(path: Path) -> str:
@@ -80,7 +74,9 @@ def corrupt(audio: np.ndarray, kind: str, n_sentences: int, rng: random.Random) 
     if n_sentences < 2:
         return audio
     bounds = [round(i * len(audio) / n_sentences) for i in range(n_sentences + 1)]
-    pick = rng.randrange(n_sentences)
+    # A swap needs a successor. The old guards left 20/20 two-sentence trials
+    # and 5/20 three-sentence trials unchanged (seeds 0-19), logged as false accepts.
+    pick = rng.randrange(n_sentences - 1 if kind == "swap" else n_sentences)
     start, end = bounds[pick], bounds[pick + 1]
 
     if kind == "drop":
@@ -89,7 +85,7 @@ def corrupt(audio: np.ndarray, kind: str, n_sentences: int, rng: random.Random) 
         return np.concatenate([audio[:end], audio[start:end], audio[end:]])
     if kind == "truncate":
         return audio[: int(len(audio) * 2 / 3)]
-    if kind == "swap" and n_sentences >= 3 and pick + 2 <= n_sentences:
+    if kind == "swap":
         a, b, c = bounds[pick], bounds[pick + 1], bounds[pick + 2]
         return np.concatenate([audio[:a], audio[b:c], audio[a:b], audio[c:]])
     return audio
@@ -114,7 +110,7 @@ def main() -> int:
     verifier = CoverageVerifier(WhisperASR(source_rate=backend.sample_rate))
 
     chunks = chunk(spoken_lines(args.script), 250)
-    chunks = [c for c in chunks if len(sentences(c)) >= 2][: args.limit]
+    chunks = [c for c in chunks if len(split_sentences(c)) >= 2][: args.limit]
     print(f"{len(chunks)} multi-sentence chunks from {args.script.name} (lang={args.lang})\n")
 
     cases: list[Case] = []
@@ -131,7 +127,7 @@ def main() -> int:
             continue   # only corrupt audio the verifier already trusts
 
         for kind in ("drop", "duplicate", "truncate", "swap"):
-            bad = corrupt(audio, kind, len(sentences(text)), rng)
+            bad = corrupt(audio, kind, len(split_sentences(text)), rng)
             if bad.size == audio.size and kind != "swap":
                 continue
             verdict = verifier.verify(bad, text, args.lang)

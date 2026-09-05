@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Which recogniser should be the primary verification oracle?
 
-asr_crosscheck.py adjudicated *rejected* chunks only — a sample selected
-precisely where ASR is struggling, so it can't rank the models overall. This
-runs both recognisers over EVERY chunk of an episode, on the same freshly
-synthesized audio, and buckets each chunk by who accepted what:
+Adjudicating only the *rejected* chunks of a render — the first version of this
+tool — samples precisely where ASR is struggling, so it cannot rank the models
+overall. This runs both recognisers over EVERY chunk of an episode, on the same
+freshly synthesized audio, and buckets each chunk by who accepted what:
 
   both accept                    -> uninformative for ranking (the common case)
   only whisper rejects           -> parakeet rescued it: whisper false-rejection
@@ -18,6 +18,10 @@ rejections, so the primary's false ACCEPTS are the one unreviewed path. Neither
 bucket measures false accepts directly (no ground truth without ears), so the
 report prints every disagreement for manual reading.
 
+Canary (`onnx_asr`, declared in no extra) is a third opinion when installed and
+silently absent otherwise; the two-recogniser buckets need only the `[higgs]`
+and `[parakeet]` extras. RESULTS.md records the Canary run of 2026-08-14.
+
 Run with the narrator venv:
     .venv-higgs/bin/python bench/asr_headtohead.py <report.json> [more.json ...] \
         [--lang cs] [--out bench/outputs/asr_headtohead.cs.json]
@@ -26,6 +30,7 @@ Run with the narrator venv:
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import time
 from pathlib import Path
@@ -40,7 +45,7 @@ from narrator.verify import MIN_COVERAGE, NullVerifier, coverage
 _HERE = Path(__file__).parent
 
 THRESHOLD = MIN_COVERAGE
-MUTUAL = 0.80      # same bar asr_crosscheck.py uses for "the transcripts agree"
+MUTUAL = 0.80      # coverage between the two transcripts at which "they agree"
 
 
 class CanaryASR:
@@ -84,7 +89,13 @@ def main() -> int:
     backend = HiggsBackend()
     whisper = WhisperASR(source_rate=backend.sample_rate)
     parakeet = ParakeetASR(source_rate=backend.sample_rate)
-    canary = CanaryASR(source_rate=backend.sample_rate)
+    # Only the missing PACKAGE is optional. A failure inside onnx_asr while
+    # loading the model is an error to see, not a configuration to run without.
+    if importlib.util.find_spec("onnx_asr") is None:
+        canary: CanaryASR | None = None
+        print("onnx_asr not installed: running whisper vs parakeet only", flush=True)
+    else:
+        canary = CanaryASR(source_rate=backend.sample_rate)
     scfg = SynthConfig()
 
     def checkpoint() -> None:
@@ -125,10 +136,10 @@ def main() -> int:
             audio = attempt.audio
             w = whisper.transcribe(audio, args.lang)
             p = parakeet.transcribe(audio, args.lang)
-            c = canary.transcribe(audio, args.lang)
+            c = canary.transcribe(audio, args.lang) if canary is not None else ""
             w_score = coverage(text, w, args.lang)[0]
             p_score = coverage(text, p, args.lang)[0]
-            c_score = coverage(text, c, args.lang)[0]
+            c_score = coverage(text, c, args.lang)[0] if canary is not None else 0.0
             mutual = coverage(w, p, args.lang)[0]
             bucket = classify(w_score, p_score, mutual)
 
@@ -139,7 +150,8 @@ def main() -> int:
             records.append(rec)
             checkpoint()
             flag = "" if bucket == "both_accept" else f"  <- {bucket}"
-            print(f"[{r['i']:3d}] w {w_score:.2f} | p {p_score:.2f} | c {c_score:.2f} | "
+            c_col = f"c {c_score:.2f} | " if canary is not None else ""
+            print(f"[{r['i']:3d}] w {w_score:.2f} | p {p_score:.2f} | {c_col}"
                   f"mutual {mutual:.2f} ({synth_s:4.1f}s synth){flag}", flush=True)
 
     buckets: dict[str, list[dict]] = {}
@@ -153,22 +165,23 @@ def main() -> int:
           f"passed cheap checks; {n} reached ASR, threshold {THRESHOLD}\n")
     w_rej = sum(1 for r in scored if r["w_score"] < THRESHOLD)
     p_rej = sum(1 for r in scored if r["p_score"] < THRESHOLD)
-    c_rej = sum(1 for r in scored if r["c_score"] < THRESHOLD)
     print(f"  whisper rejects  {w_rej:3d}  ({w_rej / n * 100:.0f}%)")
     print(f"  parakeet rejects {p_rej:3d}  ({p_rej / n * 100:.0f}%)")
-    print(f"  canary rejects   {c_rej:3d}  ({c_rej / n * 100:.0f}%)")
-    rescued = sum(1 for r in scored
-                  if r["bucket"].startswith("both_reject") and r["c_score"] >= THRESHOLD)
-    solo = sum(1 for r in scored
-               if r["c_score"] < THRESHOLD
-               and r["w_score"] >= THRESHOLD and r["p_score"] >= THRESHOLD)
-    any_rej = sum(1 for r in scored
-                  if r["w_score"] < THRESHOLD and r["p_score"] < THRESHOLD
-                  and r["c_score"] < THRESHOLD)
-    print(f"  canary accepts a chunk w+p both rejected     {rescued:3d}")
-    print(f"  canary-only reject (w+p both accepted)       {solo:3d}")
-    print(f"  rejected by all three oracles                {any_rej:3d}  "
-          f"({any_rej / n * 100:.0f}%)")
+    if canary is not None:
+        c_rej = sum(1 for r in scored if r["c_score"] < THRESHOLD)
+        print(f"  canary rejects   {c_rej:3d}  ({c_rej / n * 100:.0f}%)")
+        rescued = sum(1 for r in scored
+                      if r["bucket"].startswith("both_reject") and r["c_score"] >= THRESHOLD)
+        solo = sum(1 for r in scored
+                   if r["c_score"] < THRESHOLD
+                   and r["w_score"] >= THRESHOLD and r["p_score"] >= THRESHOLD)
+        any_rej = sum(1 for r in scored
+                      if r["w_score"] < THRESHOLD and r["p_score"] < THRESHOLD
+                      and r["c_score"] < THRESHOLD)
+        print(f"  canary accepts a chunk w+p both rejected     {rescued:3d}")
+        print(f"  canary-only reject (w+p both accepted)       {solo:3d}")
+        print(f"  rejected by all three oracles                {any_rej:3d}  "
+              f"({any_rej / n * 100:.0f}%)")
     for key, label in (
         ("both_accept", "both accept"),
         ("whisper_only_reject", "whisper-only reject (parakeet rescues)"),
@@ -183,12 +196,14 @@ def main() -> int:
     for rec in records:
         if rec["bucket"] in ("both_accept", "cheap_fail"):
             continue
+        c_col = f" c {rec['c_score']:.2f}" if canary is not None else ""
         print(f"\n[{rec['episode']} #{rec['i']}] {rec['bucket']}  "
-              f"w {rec['w_score']:.2f} p {rec['p_score']:.2f} c {rec['c_score']:.2f}")
+              f"w {rec['w_score']:.2f} p {rec['p_score']:.2f}{c_col}")
         print(f"  script  : {rec['text'][:100]}")
         print(f"  whisper : {rec['whisper'][:100]}")
         print(f"  parakeet: {rec['parakeet'][:100]}")
-        print(f"  canary  : {rec['canary'][:100]}")
+        if canary is not None:
+            print(f"  canary  : {rec['canary'][:100]}")
     return 0
 
 

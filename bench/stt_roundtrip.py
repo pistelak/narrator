@@ -11,7 +11,6 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-INPUTS_DIR = ROOT / "inputs"
 OUTPUTS_DIR = ROOT / "outputs"
 
 LANGUAGE_BY_PREFIX = {

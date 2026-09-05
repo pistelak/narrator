@@ -327,6 +327,34 @@ _NUMBER_WORDS_CS.update(_CS_FUSED)
 # actually produces, so the sentinel is per spoken form.
 
 
+def _numberish(word: str, lang: str, quote_foreign: bool) -> bool:
+    """`is_numberish`, plus — under `quote_foreign` — a non-ASCII token the value
+    table knows. One definition for both numeral walks below: it was a closure
+    written twice, and the two copies were one edit away from disagreeing about
+    which tokens are numerals."""
+    if is_numberish(word, lang):
+        return True
+    return quote_foreign and not word.isascii() and word in _NUMERAL_VALUES
+
+
+def _typed_numeral(word: str, lang: str) -> int | str:
+    """One isolated numeral's element for the multiset comparison.
+
+    An exact int for canonical ASCII digits and determinate word forms, else
+    the "?<folded token>" sentinel — see `isolated_numerals` for why every
+    token must yield exactly one element. Canonical means str(int(t)) == t:
+    "04" is an ASR's digit-by-digit "oh four", which one value cannot confirm.
+    Capped at 18 digits because int() itself raises past 4300 and a verifier
+    crash mid-render is worse than any refusal. The FULL folded token, never a
+    truncation: sentinels compare by equality, and truncating to a prefix made
+    two 19-digit numbers differing past the cut identical (gate review).
+    """
+    if _plain_digits(word) and len(word) <= 18 and str(int(word)) == word:
+        return int(word)
+    value = _NUMERAL_VALUES.get(word)
+    return value if value is not None else "?" + fold(word, lang)
+
+
 def numeral_multiset(
     sentences: list[list[str]], lang: str = "en", quote_foreign: bool = False,
 ) -> list[int | str] | None:
@@ -352,25 +380,15 @@ def numeral_multiset(
     to exclude. Narrowing the unreadable set is the real fix, i.e. a full Czech
     number grammar; filed separately rather than half-built here.
     """
-    def numberish(word: str) -> bool:
-        if is_numberish(word, lang):
-            return True
-        return quote_foreign and not word.isascii() and word in _NUMERAL_VALUES
-
-    def value_of(word: str) -> int | None:
-        if _plain_digits(word) and len(word) <= 18 and str(int(word)) == word:
-            return int(word)
-        return _NUMERAL_VALUES.get(word)
-
     out: list[int | str] = []
     for words in sentences:
         index = 0
         while index < len(words):
-            if not numberish(words[index]):
+            if not _numberish(words[index], lang, quote_foreign):
                 index += 1
                 continue
             start = index
-            while index < len(words) and numberish(words[index]):
+            while index < len(words) and _numberish(words[index], lang, quote_foreign):
                 index += 1
             run = words[start:index]
 
@@ -378,8 +396,7 @@ def numeral_multiset(
                 # Identical to isolated_numerals, sentinel included, so an
                 # unvalued form still yields exactly one element rather than
                 # vanishing from the comparison (three gate reviews on that).
-                value = value_of(run[0])
-                out.append(value if value is not None else "?" + fold(run[0], lang))
+                out.append(_typed_numeral(run[0], lang))
                 continue
 
             if lang.startswith("cs"):
@@ -419,30 +436,15 @@ def isolated_numeral_positions(
     """isolated_numerals with each element's token index, for the weld
     rescue, which must know a missing numeral's NEIGHBORS to decide whether
     a merged transcript token could really be that numeral's weld."""
-    def numberish(w: str) -> bool:
-        if is_numberish(w, lang):
-            return True
-        return quote_foreign and not w.isascii() and w in _NUMERAL_VALUES
-
     values: list[tuple[int, int | str]] = []
     for i, word in enumerate(words):
-        if not numberish(word):
+        if not _numberish(word, lang, quote_foreign):
             continue
-        prev_num = i > 0 and numberish(words[i - 1])
-        next_num = i + 1 < len(words) and numberish(words[i + 1])
+        prev_num = i > 0 and _numberish(words[i - 1], lang, quote_foreign)
+        next_num = i + 1 < len(words) and _numberish(words[i + 1], lang, quote_foreign)
         if prev_num or next_num:
             continue          # part of a compound; ambiguous, so skip
-        if _plain_digits(word) and len(word) <= 18 and str(int(word)) == word:
-            values.append((i, int(word)))
-        elif word in _NUMERAL_VALUES:
-            values.append((i, _NUMERAL_VALUES[word]))
-        else:
-            # The FULL folded token, never a truncation: sentinels compare by
-            # equality, and truncating to a prefix made two 19-digit numbers
-            # differing past the cut identical (gate review). Pathological
-            # length only ever reaches the refusal message, where it is noise,
-            # not a verdict.
-            values.append((i, "?" + fold(word, lang)))
+        values.append((i, _typed_numeral(word, lang)))
     return values
 
 

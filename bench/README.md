@@ -31,13 +31,20 @@ No web UI, no Docker, no paid APIs. Everything runs locally.
 
 ```
 bench/
-├── bench_piper.py        # Piper ONNX benchmark — fast Czech-only
-├── bench_supertonic.py   # Supertonic 3 ONNX benchmark — multilingual, 44.1 kHz
-├── bench_xtts.py         # Coqui XTTS-v2 benchmark — multilingual + voice cloning
-├── stt_roundtrip.py      # mlx-whisper round-trip — objective intelligibility
-├── inputs/               # one .txt per test sentence/paragraph
-├── outputs/              # generated *.wav, *.stt.txt, and results.csv
-├── .voices/piper/        # downloaded Piper ONNX voice files
+├── bench_higgs.py          # Higgs Audio v3 (MLX) — the engine narrator ships
+├── bench_piper.py          # Piper ONNX benchmark — fast Czech-only
+├── bench_supertonic.py     # Supertonic 3 ONNX benchmark — multilingual, 44.1 kHz
+├── bench_xtts.py           # Coqui XTTS-v2 benchmark — multilingual + voice cloning
+├── stt_roundtrip.py        # mlx-whisper round-trip — objective intelligibility
+├── asr_headtohead.py       # which recogniser should verify: whisper vs parakeet (vs canary)
+├── verifier_acceptance.py  # false-accept measurement: corrupt real audio, re-verify
+├── intonation_probe.py     # terminal F0 contour on rendered questions (RESULTS §11)
+├── cs_numeral_audit.py     # rerun before touching narrator/cs_numerals.py
+├── cs_numeral_acceptor.py  # the audit's independent parser
+├── inputs/                 # one .txt per test sentence/paragraph
+├── outputs/                # generated *.wav, *.stt.txt, and results.csv (gitignored)
+├── intonation_probe/<tag>/ # per-run probe data (gitignored)
+├── .voices/                # Piper voices and operator reference clips (gitignored)
 ├── README.md
 └── RESULTS.md
 ```
@@ -167,7 +174,7 @@ python bench_xtts.py --speaker "Andrew Chipper"
 ## Reference clips
 
 Cloning-backend probes (`intonation_probe.py`, `verifier_acceptance.py`,
-`asr_crosscheck.py`, `asr_headtohead.py` — every script with a `--voice`
+`asr_headtohead.py` — every script with a `--voice`
 flag) take an operator-supplied reference clip with its exact
 transcript in a `.txt` sidecar of the same basename. Keep clips under
 `bench/.voices/ref/` — the directory is gitignored because a person's voice
