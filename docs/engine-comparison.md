@@ -134,5 +134,5 @@ round-trip cannot measure. Listening pass done 2026-08-11 on
 measured intelligibility gap was only ~1 CER point, naturalness is what decides it,
 and it decides for Higgs.
 
-Adoption requires the chunking, validation and retry work in `LONGFORM-PLAN.md` —
+Adoption requires the chunking, validation and retry work in the [long-form plan](long-form.md) —
 without it the silent-failure mode makes long-form renders untrustworthy.

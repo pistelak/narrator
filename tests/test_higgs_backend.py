@@ -9,6 +9,7 @@ rate). Those are where a wrapper goes wrong.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -176,10 +177,12 @@ def test_unexpected_sample_rate_is_refused(voice: Voice) -> None:
         b.synthesize("Hello.", voice, max_frames=250, temperature=0.4)
 
 
-def test_missing_extra_names_the_torch_surprise() -> None:
+def test_missing_extra_names_the_torch_surprise(monkeypatch: pytest.MonkeyPatch) -> None:
     """The error must mention torch — it took a runtime failure to discover that
     an 'MLX' backend needs it, and nobody should discover it twice."""
-    import narrator.backends.higgs as mod
-    src = Path(mod.__file__).read_text()
-    assert "narrator[higgs]" in src
-    assert "torch is required" in src
+    monkeypatch.setitem(sys.modules, "mlx_audio.tts", None)
+    with pytest.raises(RuntimeError) as exc:
+        HiggsBackend().load()
+    assert "narrator[higgs]" in str(exc.value)
+    assert "torch is required" in str(exc.value)
+    assert isinstance(exc.value.__cause__, ImportError)

@@ -5,7 +5,7 @@
 catastrophic above ~450–500 characters. The failure is **silent** — plausible
 waveform, plausible duration, wrong content. A 25-minute episode is ~57 chunks at
 current sizing, ~94 at the recommended sizing.
-**Companion:** `RESULTS-higgs.md` (the engine comparison and measurements)
+**Companion:** [Engine comparison and measurements](engine-comparison.md)
 
 Evidence tags: **[measured]** benchmark, study, or verified here ·
 **[shipping]** a real tool's production constant · **[inference]** reasoning from
@@ -342,8 +342,9 @@ already does. If pydub is ever introduced, `append(crossfade=0)` is mandatory.
 
 ### 12. Master and encode
 
-- One normalization pass **on the final file only**. See `pipeline-research.md` §7 for
-  the mono LUFS offset — the short version is `TARGET_LUFS` should be −19 for mono.
+- One normalization pass **on the final file only**. The mono LUFS offset is documented
+  on `MasterConfig.channels` in `narrator/audio.py` — the short version is that dual-mono
+  at −16 measures as the published target, and a mono file wants −19.
 - **Never concatenate encoded MP3s** — LAME's 576-sample delay plus frame padding
   injects 10–50 ms per join. Keep float32/WAV throughout, encode once. **[measured]**
 - If the ffmpeg chain is ever used instead of `pyloudnorm`: **pin `-ar 24000` after
@@ -362,7 +363,7 @@ failure** (a bad chunk must never become context), batch size 1.
 
 **Recommendation: don't.** The field report says it "tends to **flatten** output in
 all cases" — the *xerox effect*. Prosodic variation is the best-evidenced lever
-against listener fatigue over 25 minutes (see `pipeline-research.md` §9), so flattening
+against listener fatigue over 25 minutes, so flattening
 is precisely the wrong trade for this content.
 
 ### 14. Drift diagnostic

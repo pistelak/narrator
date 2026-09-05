@@ -102,6 +102,22 @@ class FakeBackend:
     is what refuses it rather than the runaway or duration gates firing first —
     a test that passes for the wrong reason pins nothing."""
 
+    tail_s: float = 0.0
+    """Seconds of low-level residue appended after the speech. Appended, per the
+    note above. Zero means none.
+
+    The residue sits 38 dB under the chunk's p95 speech level — BETWEEN the two
+    silence floors. `trim_silence` keeps everything above the chunk's PEAK frame
+    minus TRIM_DB (-42); the gate calls silent everything below p95 minus
+    SILENCE_DROP_DB (35). On speech those references sit ~0.1 dB apart, so a
+    ~7 dB band exists that survives trimming while reading as silence at the
+    gate. Nobody owned it until issue #42: a take with 9.03 s of trailing dead
+    air measured `silence_s=0.00`, shipped at coverage 1.0, and was cached as
+    verified. The gate now measures trimmed audio with its edges included, so
+    a tail here is seen and reported — and refused only above `max_silence_s`,
+    which is why the tests use both a 3 s tail (reported, passes) and a 4.5 s
+    one (refused, with every other cheap check still passing on its own)."""
+
     @property
     def identity(self) -> str:
         """For the take store: what this fake was CONFIGURED to do, never what it
@@ -124,6 +140,7 @@ class FakeBackend:
             sorted((str(v), a) for v, a in self._levels().items()),
             self.hole_s,
             list(self.consumes),   # ORDER matters: removal is sequential
+            self.tail_s,
         ])
 
     def frames_per_second(self) -> int:
@@ -180,6 +197,14 @@ class FakeBackend:
             hole = np.zeros(int(self.hole_s * self.sample_rate), dtype=np.float32)
             middle = samples // 2
             audio = np.concatenate([audio[:middle], hole, audio[middle:]])
+        if self.tail_s:
+            frame = int(0.02 * self.sample_rate)
+            count = len(audio) // frame
+            rms = np.sqrt((audio[: count * frame].reshape(count, frame) ** 2).mean(1) + 1e-20)
+            level = float(np.percentile(rms, 95)) * 10 ** (-38 / 20)
+            tail = np.zeros(int(self.tail_s * self.sample_rate), dtype=np.float32)
+            tail[::2], tail[1::2] = level, -level
+            audio = np.concatenate([audio, tail])
         audio[0] = self._stamp(index)
         self._spoken[index] = spoken
         return audio
