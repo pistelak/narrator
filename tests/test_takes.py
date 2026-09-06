@@ -325,6 +325,26 @@ def test_a_take_certified_by_the_untrimmed_ladder_is_not_reused(
     assert backend.calls == 2 and not any(c.reused for c in report.chunks)
 
 
+def test_a_take_certified_under_reusable_evidence_is_not_reused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """verify.SEMANTICS 8 -> 9: the rescues now spend transcript evidence once.
+
+    A take that passed only because a repeated word or short sentence reused
+    one occurrence is certified by a policy that no longer exists; its key
+    must miss.
+    """
+    import narrator.verify as verify
+
+    takes = tmp_path / "takes"
+    monkeypatch.setattr(verify, "SEMANTICS", 8)
+    render_with(tmp_path, takes, out="a.wav")
+    monkeypatch.undo()
+    assert verify.SEMANTICS == 9
+    backend, report = render_with(tmp_path, takes, out="b.wav")
+    assert backend.calls == 2 and not any(c.reused for c in report.chunks)
+
+
 def test_the_stored_take_is_the_verified_buffer(tmp_path: Path) -> None:
     """A stored take comes back sample-identical, and render ships it at that length.
 

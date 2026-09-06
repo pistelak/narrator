@@ -273,8 +273,9 @@ class RenderReport:
     recogniser credited words that removal then took out of the shipped file —
     silent content loss, which is the failure this library exists to prevent.
     Measured: 1.5-2.0 s of a quiet opening removed after being verified. That
-    ordering is gone (synth now trims once, before the ASR, and the verified
-    buffer ships untouched — see `_best_attempt`), but the lesson is not: any
+    ordering is gone (synth now trims once, before the ASR, and nothing after
+    verification removes a span — declick, gain and mastering change sample
+    values, never length; see `_best_attempt`), but the lesson is not: any
     level-based removal added AFTER verification reopens the same hole.
 
     So this measures and says so. Declared `Gap` spans are excluded, because

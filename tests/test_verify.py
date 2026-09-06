@@ -1098,6 +1098,88 @@ def test_boundary_rescue_still_cannot_resurrect_a_dropped_sentence() -> None:
                     "The sign says it burns brightly.")[0] == 0.0
 
 
+def test_two_split_compounds_are_both_rescued() -> None:
+    """Genuinely repeated split forms: enough evidence, so both pass, and
+    neither surfaces in the diagnostics (the second used to, as insertions)."""
+    detail = coverage_detail("The coworkers met the coworkers today.",
+                             "The co-worker's met the co-worker's today.")
+    assert detail.score == 1.0
+    assert detail.word_diagnostics == ()
+
+
+def test_one_occurrence_cannot_rescue_two_repeats() -> None:
+    """ADVERSARIAL MUTATION of the measured co-worker's case, not a recording.
+
+    "coworkers" twice in the script, "co workers" once in the transcript: the
+    rescue tested `word in <all unclaimed text>` and let the second repeat
+    reuse the first's occurrence, so a dropped word scored 1.0 with no
+    diagnostic. Evidence is spent once now; the drop is named.
+    """
+    detail = coverage_detail("The coworkers help other coworkers every day.",
+                             "The co workers help other every day.")
+    assert detail.score < 0.90
+    assert "d:coworkers" in detail.word_diagnostics
+
+
+def test_the_short_sentence_rescue_cannot_reuse_what_a_word_rescue_spent() -> None:
+    """ADVERSARIAL MUTATION (council review): "Coworkers. Coworkers." against
+    "co workers." scored 1.0. The word rescue took the two tokens for the first
+    sentence, then the short-sentence rescue rebuilt its leftovers from the
+    alignment alone, saw them unclaimed, and rescued the second sentence from
+    the same evidence. One owner mask serves both rescues now.
+    """
+    detail = coverage_detail("Coworkers. Coworkers.", "co workers.")
+    assert detail.score == 0.0
+    assert detail.worst_sentence == "Coworkers."
+    # ...while a sentence may still restate its OWN words at sentence grain, so
+    # the measured Czech merge keeps passing with two genuine occurrences.
+    assert coverage("Ne znemožní. Ne znemožní.", "Neznemožní. Neznemožní.", "cs")[0] == 1.0
+
+
+def test_a_dropped_sentence_cannot_hide_inside_another_sentences_word() -> None:
+    """SYNTHETIC (Codex review): ownership alone is not attribution.
+
+    "Heating." dropped, and "cheat" heard as "cheating": with the rescue free
+    to look anywhere, the absent "heating" found itself inside "cheating",
+    the miss moved onto "cheat", one miss in eleven words passed the gate and
+    the dropped sentence scored 1.0. Same in the mirror image with "Heating."
+    first — ordering only chooses which word takes the token. A word may now
+    spend only the evidence its own alignment block put in its place, and a
+    word in a delete block has none.
+    """
+    body = "They cheat whenever the teacher leaves the classroom during the examination."
+    heard = "They cheating whenever the teacher leaves the classroom during the examination."
+    for ref in (f"{body} Heating.", f"Heating. {body}"):
+        detail = coverage_detail(ref, heard)
+        assert detail.score == 0.0
+        assert detail.worst_sentence == "Heating."
+        assert "d:heating" in detail.word_diagnostics
+
+
+def test_words_of_one_block_are_claimed_in_spoken_order() -> None:
+    """SYNTHETIC (Codex review): "Chat terms. Hatter." heard "Chatterms. Hat
+    ter." is one replace block, "chattermshatter". Longest first found
+    "hatter" inside "chatterms" and refused all three words; left to right,
+    as spoken, each finds its own."""
+    detail = coverage_detail("Chat terms. Hatter.", "Chatterms. Hat ter.")
+    assert detail.score == 1.0
+    assert detail.word_diagnostics == ()
+
+
+def test_fragments_either_side_of_a_matched_word_are_not_one_word() -> None:
+    """Joining ALL unclaimed tokens invented adjacency: "co" before a matched
+    word and "work" after it read as "cowork" and covered the reference word.
+    Regions are real transcript adjacency, so a word cannot straddle a claimed
+    token. The verdict alone would not pin this — the precision check refused
+    the same shape before, as "[inserted content]" with NO word named — so the
+    diagnostics are asserted: the refusal now says which word broke and where.
+    """
+    detail = coverage_detail("Alpha beta cowork gamma.", "Alpha beta co gamma work.")
+    assert detail.score < 0.90
+    assert detail.worst_sentence == "Alpha beta cowork gamma."
+    assert detail.word_diagnostics == ("s:cowork/co", "i:work")
+
+
 # --------------- Czech orthographic folding (measured over 201 real chunks)
 
 @pytest.mark.parametrize("script,heard", [

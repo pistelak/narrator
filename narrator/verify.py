@@ -41,7 +41,7 @@ from narrator.chunking import split_sentences
 from narrator.takes import _class_id, identity_of
 from narrator.types import ASR, Audio, Verdict, Verifier
 
-SEMANTICS = 8
+SEMANTICS = 9
 """Version of what "correct" means here, for the take store's key.
 
 Bump it on ANY behavioural change to scoring: a new fold, a hard-fail rule, the
@@ -50,6 +50,13 @@ the verdict it was given, so without this a fix to a false acceptance would leav
 every take that false acceptance produced reusable — certified clean by a policy
 that no longer exists. Cheap to bump, silent to forget, which is why it is named
 next to the threshold rather than hidden in the store.
+
+9: transcript evidence is spent once. The word-boundary rescue and the
+short-sentence rescue now share one owner mask over the unclaimed transcript,
+so a repeated reference word or a repeated short sentence cannot be rescued
+twice from a single occurrence — "coworkers … coworkers" against one
+"co workers", and "Coworkers. Coworkers." against "co workers.", both passed
+at 1.0 under 8 and are refusals now.
 """
 
 MIN_COVERAGE = 0.90
@@ -777,6 +784,117 @@ def content_words(text: str, lang: str = "en") -> list[str]:
     return [w for w in normalize(text, lang).split() if not is_numberish(w, lang)]
 
 
+class _Unclaimed:
+    """The transcript text no alignment claimed, as evidence that is spent once.
+
+    Maximal runs of ADJACENT unclaimed hypothesis tokens, each squashed into
+    one string with a per-character owner: the reference index that rescued
+    it, or None while free. Adjacency is real adjacency in the transcript —
+    two fragments separated by a claimed word are two regions and can never
+    be read as one word, which the old whole-transcript join allowed.
+
+    Allocation trusts the alignment and is greedy, not a search. Three shapes
+    are known to refuse correct audio that the old join passed by accident
+    (Codex review, all synthetic): a short sentence whose merged token a
+    neighbouring sentence's word rescue landed inside ("Is it? Sit." heard
+    "Isit? Si t."); an initial alignment that matched a word to the wrong
+    sentence's token so the plural's "s" is stranded in its own region
+    ("Coworker. Coworkers." heard "Co-worker. Coworker's."); and an alignment
+    that tied the first of two repeats to the last token, leaving the rest of
+    the sentence in a delete block ("Coworkers help workers. Coworkers." heard
+    "co-worker's helpworkers coworkers"). All are refusals — the fail-closed
+    direction — on transcripts no recogniser has produced here; the retry
+    ladder absorbs a refusal, and reconsidering the alignment is a different,
+    larger change. The alternative, letting a word look anywhere, is how a
+    dropped sentence hid inside another word (see `coverage_detail`).
+    """
+
+    def __init__(self, hyp_words: list[str], hyp_claimed: list[bool]) -> None:
+        self._regions: list[tuple[list[int], list[tuple[int, int]], str, list[int | None]]] = []
+        self._region_of: dict[int, int] = {}
+        j = 0
+        while j < len(hyp_words):
+            if hyp_claimed[j]:
+                j += 1
+                continue
+            indices: list[int] = []
+            spans: list[tuple[int, int]] = []
+            text = ""
+            while j < len(hyp_words) and not hyp_claimed[j]:
+                spans.append((len(text), len(text) + len(hyp_words[j])))
+                text += hyp_words[j]
+                self._region_of[j] = len(self._regions)
+                indices.append(j)
+                j += 1
+            self._regions.append((indices, spans, text, [None] * len(text)))
+        # Where the next word rescue in each region starts looking: words of
+        # one block are claimed left to right, as they were spoken.
+        self._cursor: list[int] = [0] * len(self._regions)
+
+    def take_word(self, word: str, owner: int, at_token: int) -> bool:
+        """Claim the first FREE occurrence of `word` in the region holding
+        hypothesis token `at_token` — the one the alignment put in its place.
+
+        Substring, deliberately: the measured case is the script's "coworkers"
+        inside the transcript's "co"+"worker"+"s", and a Czech merge is the
+        same in reverse. Free means no character of the occurrence has been
+        spent — a repeat of the same reference word needs its own occurrence.
+        """
+        region = self._region_of.get(at_token)
+        if region is None:
+            return False
+        _, _, text, owned = self._regions[region]
+        at = text.find(word, self._cursor[region])
+        while at != -1:
+            end = at + len(word)
+            if all(o is None for o in owned[at:end]):
+                owned[at:end] = [owner] * (end - at)
+                self._cursor[region] = end
+                return True
+            at = text.find(word, at + 1)
+        return False
+
+    def take_sentence(self, needle: list[str], start: int, end: int) -> bool:
+        """Claim one whole-token, boundary-respecting occurrence of `needle`.
+
+        Available tokens are those wholly free or already owned by a reference
+        word in [start, end) — this sentence's own words. A run of available
+        tokens is searched with `_bounded_matches`, so merges and splits inside
+        the run are tolerated and nothing straddles an unavailable token.
+        """
+        def available(owned: list[int | None], span: tuple[int, int]) -> bool:
+            return all(o is None or start <= o < end for o in owned[span[0]:span[1]])
+
+        for _, spans, text, owned in self._regions:
+            run_start = 0
+            while run_start < len(spans):
+                if not available(owned, spans[run_start]):
+                    run_start += 1
+                    continue
+                run_end = run_start
+                while run_end < len(spans) and available(owned, spans[run_end]):
+                    run_end += 1
+                run = [text[a:b] for a, b in spans[run_start:run_end]]
+                matches = _bounded_matches(run, needle)
+                if matches:
+                    first, last = matches[0]
+                    lo = spans[run_start + first][0]
+                    hi = spans[run_start + last - 1][1]
+                    owned[lo:hi] = [start] * (hi - lo)
+                    return True
+                run_start = run_end
+        return False
+
+    def spent(self, j: int) -> bool:
+        """Whether any character of hypothesis token `j` was consumed."""
+        region = self._region_of.get(j)
+        if region is None:
+            return False
+        indices, spans, _, owned = self._regions[region]
+        lo, hi = spans[indices.index(j)]
+        return any(o is not None for o in owned[lo:hi])
+
+
 def _bounded_matches(hyp_words: list[str], needle_words: list[str]) -> list[tuple[int, int]]:
     """Occurrences of `needle_words` in `hyp_words` as (start, end) index spans,
     allowing the words to have merged or split in the transcript but not to
@@ -1060,12 +1178,6 @@ def coverage_detail(
         for k in range(j, j + size):
             hyp_claimed[k] = True
 
-    # Diagnostic bookkeeping lives on COPIES, never on the arrays the score
-    # reads. Marking `hyp_claimed` for a rescue would change `leftover` below
-    # and could flip a short-sentence verdict — the diagnostics must describe
-    # the decision, not participate in it.
-    hyp_diag_claimed = list(hyp_claimed)
-
     # Recall alone is not enough, and this was the library's worst blind spot.
     # Marking only reference words made everything the engine ADDED invisible:
     # "The key is safe." rendered as "The key is not safe." scored a perfect 1.0,
@@ -1091,31 +1203,62 @@ def coverage_detail(
     # Restricted to UNCLAIMED hypothesis text, so a word cannot be rescued by an
     # occurrence that another sentence already matched. That restriction is what
     # keeps a genuinely dropped sentence detectable.
-    unclaimed_spans: list[tuple[int, int, int]] = []   # (hyp index, start, end)
-    offset = 0
-    for j, (w, taken) in enumerate(zip(hyp_words, hyp_claimed, strict=True)):
-        if not taken:
-            unclaimed_spans.append((j, offset, offset + len(w)))
-            offset += len(w)
-    unclaimed = "".join(hyp_words[j] for j, _, _ in unclaimed_spans)
-    consumed: dict[str, int] = {}
+    #
+    # And SPENT ONCE. The evidence lives in `_Unclaimed`: maximal runs of
+    # adjacent unclaimed transcript tokens, each character owned by the
+    # reference word (or short sentence) it rescued, or free. Both rescues in
+    # this function read and write that one mask, and the diagnostics are
+    # derived from it afterwards — the score and the diagnostics describe the
+    # same allocation by construction. Three failures forced this shape:
+    #   * A bare `word in "".join(unclaimed tokens)` let every repeat of a
+    #     reference word reuse one occurrence: "The coworkers help other
+    #     coworkers every day." against "The co workers help other every day."
+    #     scored 1.0 with one coworkers gone. A per-word cursor was tried and
+    #     kept only for the diagnostics, with a fall-back search from the
+    #     start, so it never reached the verdict.
+    #   * Joining ALL unclaimed tokens invented adjacency: two fragments on
+    #     either side of a matched word read as one word. Regions cannot.
+    #   * The short-sentence rescue below rebuilt its leftovers from
+    #     `hyp_claimed`, which no rescue updated, so "Coworkers. Coworkers."
+    #     against "co workers." rescued the first as a word and the second as
+    #     a sentence from the SAME two tokens (council review, adversarial
+    #     mutation of the measured co-worker's case).
+    # The consumed tokens are accounted for in the diagnostics: the script's
+    # "coworkers" rescued from the transcript's "co worker s" must not then
+    # report i:co, i:worker, i:s — a false alarm beside a passing score — and
+    # the second of two rescued pairs must not either (found in review).
+    unclaimed = _Unclaimed(hyp_words, hyp_claimed)
+    # WHERE a word may look is decided by the alignment, not by the whole
+    # transcript. A `replace` opcode pairs a run of reference words with the
+    # run of transcript tokens that stands in their place; that run is exactly
+    # one region, and it is the only evidence those words may spend. A word in
+    # a `delete` opcode has no tokens standing in for it and is never rescued:
+    # the recogniser heard nothing there, and a look-alike elsewhere is not it.
+    # Without this, ownership alone still hid a dropped sentence (Codex
+    # review, synthetic): "They cheat whenever the teacher leaves the
+    # classroom during the examination. Heating." heard without its last
+    # sentence as "They cheating whenever ..." — the dropped "heating" found
+    # itself inside "cheating", the miss moved onto "cheat", one miss in
+    # eleven words passed, and the absent sentence scored 1.0. Any ordering
+    # of the rescues merely chooses WHICH of the two takes the token; only
+    # position says "heating" was never there.
+    #
+    # Within a block, reference order, each word searching FORWARD of the
+    # last one's evidence: a replace block is speech in spoken order, so the
+    # script's "chat terms" and "hatter" heard as "chatterms hat ter" are
+    # chat, terms, hatter left to right — and a longest-first rule, tried
+    # first, found "hatter" inside "chatterms", refusing all three (Codex
+    # review, synthetic). A genuine conflict inside one block costs one miss
+    # whichever word takes the token.
+    block_of: dict[int, int] = {}        # reference index -> first hyp token of its block
+    for tag, i1, i2, j1, _ in matcher.get_opcodes():
+        if tag == "replace":
+            for k in range(i1, i2):
+                block_of[k] = j1
     for k, word in enumerate(ref_words):
-        if not covered[k] and len(word) > 2 and word in unclaimed:
+        if (not covered[k] and len(word) > 2 and k in block_of
+                and unclaimed.take_word(word, k, block_of[k])):
             covered[k] = True
-            # The hypothesis tokens this rescue consumed are accounted for in
-            # the diagnostics too: the script's "coworkers" rescued from the
-            # transcript's "co worker s" must not then report i:co, i:worker,
-            # i:s — a false alarm beside a passing score. Each repeat of the
-            # same word consumes the NEXT occurrence: searching from the start
-            # every time claimed one span twice, so the second of two rescued
-            # co-worker's pairs still surfaced as insertions (found in review).
-            at = unclaimed.find(word, consumed.get(word, 0))
-            if at == -1:
-                at = unclaimed.find(word)
-            consumed[word] = at + len(word)
-            for j, s, e in unclaimed_spans:
-                if s < at + len(word) and e > at:
-                    hyp_diag_claimed[j] = True
 
     worst, worst_sentence, pos = 1.0, "", 0
     unverifiable: list[str] = []
@@ -1185,20 +1328,20 @@ def coverage_detail(
             # word_diagnostics=() — a refusal that named nothing (found in
             # review). Skipping the whole block at 1.0 changes no verdict and
             # lets the duplicate surface as the i: codes it is.
+            # Searched in the SAME evidence the word rescue spends, so tokens a
+            # word from another sentence already consumed are not available
+            # here — tokens this sentence's own words consumed still are, since
+            # the sentence is only restating its own claim at a coarser grain.
             if score < 1.0:
-                leftover_idx = [j for j, claimed in enumerate(hyp_claimed) if not claimed]
-                leftover = [hyp_words[j] for j in leftover_idx]
-                matches = _bounded_matches(leftover, [_fold(w) for w in content_words(sentence, lang)])
+                needle = [_fold(w) for w in content_words(sentence, lang)]
                 # `or score > 0` used to turn ANY partial coverage into a pass, so a
                 # two-word sentence rendered as one word scored 1.0. Only genuine
                 # containment rescues a short sentence now.
-                if matches:
+                if unclaimed.take_sentence(needle, pos - n, pos):
                     # A rescued sentence is right, so its words must not surface in
-                    # the diagnostics — mark its reference range and the hypothesis
-                    # tokens its first match consumed, both on the diagnostic copies.
+                    # the diagnostics — mark its reference range on the diagnostic
+                    # copy; the transcript side is read off the owner mask below.
                     short_rescued.append((pos - n, pos))
-                    for j in range(*matches[0]):
-                        hyp_diag_claimed[leftover_idx[j]] = True
                     score = 1.0
 
         if score < worst:
@@ -1215,6 +1358,8 @@ def coverage_detail(
     covered_diag = list(covered)
     for start, end in short_rescued:
         covered_diag[start:end] = [True] * (end - start)
+    hyp_diag_claimed = [taken or unclaimed.spent(j)
+                        for j, taken in enumerate(hyp_claimed)]
     codes: list[str] = []
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "delete":
