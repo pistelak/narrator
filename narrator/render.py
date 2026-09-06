@@ -24,7 +24,6 @@ from narrator.audio import (
     concatenate,
     declick,
     master,
-    trim_silence,
 )
 from narrator.chunking import MAX_CHARS, plan_segments
 from narrator.synth import SynthConfig, resolve_reference, synthesize_chunk
@@ -252,14 +251,18 @@ def render(
             # offset between reference clips belongs to the speaker, not to a
             # chunk, so every chunk of that voice moves by the same amount and
             # the performance inside each one is left as synthesised.
-            trimmed = declick(trim_silence(result.audio, backend.sample_rate), backend.sample_rate)
-            # Measured HERE, on the buffer that actually ships. synth cannot
-            # compute it: the sentence-split path is trimmed per sentence and
-            # then trimmed AGAIN at the assembly's outer edges, against a
-            # threshold relative to the whole assembly, so only this trim's
-            # output is the true length.
-            result.shipped_s = len(trimmed) / backend.sample_rate
-            pieces.append(apply_gain(trimmed, chunk_voice.gain_db))
+            # NOT trimmed here. `result.audio` is the buffer the verifier
+            # certified — synth trims once, before the ASR, and the take store
+            # files that same buffer. A second, peak-relative trim on this side
+            # of verification is exactly how a quiet spoken edge the ASR had
+            # credited got deleted after certification. Declick only fades the
+            # outer ~5 ms; it removes no material and creates no silence.
+            shipped = declick(result.audio, backend.sample_rate)
+            # Measured HERE rather than in synth because a take restored from
+            # the store has not been through this loop yet — None means "not
+            # measured", and the field's contract says so.
+            result.shipped_s = len(shipped) / backend.sample_rate
+            pieces.append(apply_gain(shipped, chunk_voice.gain_db))
         else:
             # No audio, so no piece appended — and nothing else to record, since
             # `starts_at` already holds the position it would have occupied.

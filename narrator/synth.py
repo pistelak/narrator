@@ -36,13 +36,18 @@ from narrator.chunking import split_sentences
 from narrator.takes import TakeStore, take_key
 from narrator.types import Audio, Backend, ChunkResult, Verdict, Verifier, Voice
 
-SEMANTICS = 2
+SEMANTICS = 3
 """Version of the ladder's own behaviour, for the take store's key.
 
 Bump it whenever a change here alters which take ships or how one is made —
 ranking, attempt budget, the split fallback, the cheap checks. The config fields
 are keyed on automatically; this covers the code around them, so that a fix
 re-renders rather than certifying old audio as if this version had produced it.
+
+3: the take is trimmed BEFORE verification and stored trimmed. A v2 take is the
+raw buffer, verified raw, and `render` no longer trims — served under v3 it would
+ship with its synthesis padding intact and with a verdict that credited audio
+this version never presents to the ASR.
 """
 
 
@@ -641,6 +646,9 @@ def _best_attempt(
             failures += 1
             continue
 
+        # RAW length, on purpose: the floor, the ceiling and the cap are claims
+        # about what the engine generated, and trimming would hide a runaway's
+        # tail or a stalled take's silence from all three.
         duration = len(audio) / backend.sample_rate
         # Reaching the cap means generation was still going when it was stopped.
         # This must be its own signal: for typical chunk lengths the cap lands
@@ -659,11 +667,23 @@ def _best_attempt(
             and duration >= (cap / backend.frames_per_second()) - 1e-6
         )
         duration_ok = floor <= duration <= ceiling
-        # Measured on the TRIMMED audio, which is what render actually ships
-        # (render.py applies trim_silence before stitching). Measuring the raw
-        # buffer would fail chunks for leading or trailing silence that is about
-        # to be removed.
-        #
+        # Trimmed ONCE, here, and everything downstream — the silence gate, the
+        # ASR, the rise check, the take store, sentence assembly, `render` —
+        # sees this one buffer. Trimming used to happen three times: a copy
+        # here for the silence gate, per sentence in `_sentence_split`, and
+        # again in `render` on whatever synth returned, while the ASR was
+        # handed the RAW buffer. `trim_silence` is peak-relative, so a quiet
+        # spoken edge can fall under its floor: 1 s of speech at amplitude
+        # 0.001 before 1 s at 0.5 trims from 2.00 s to 1.05 s (test_render).
+        # Under the old order the ASR credited that second and the trim then
+        # deleted it after certification — the take store filed the raw
+        # buffer with a verdict about audio that never shipped. The same
+        # shape was measured once already on real audio, 1.5-2.0 s of a quiet
+        # opening removed after being verified, when a level-based refusal was
+        # tried and cut (`RenderReport.unscripted_silence_s`). Now what is
+        # verified is what ships, and a quiet edge the trim removes is a
+        # refusal the ASR sees, not a deletion nobody measures.
+        prepared = trim_silence(audio, backend.sample_rate)
         # EDGES INCLUDED, because after trimming they are nobody else's job.
         # Interior-only here delegated every edge run to `trim_silence`, whose
         # floor is peak-relative (-42 dB) where this one is 35 dB under the p95
@@ -673,8 +693,7 @@ def _best_attempt(
         # later renders. What remains at an edge after trimming is the ~60 ms
         # guard band (a 30 ms frame plus TRIM_GUARD_MS), 4.0 s below the gate.
         silence_s = longest_silent_run_incl_edges(
-            trim_silence(audio, backend.sample_rate), backend.sample_rate,
-            cfg.silence_drop_db,
+            prepared, backend.sample_rate, cfg.silence_drop_db,
         )
         silence_ok = silence_s <= cfg.max_silence_s
         # Only pay for verification when the cheap checks already passed. The
@@ -682,11 +701,11 @@ def _best_attempt(
         # where verification is an ASR call, and coverage is structurally blind
         # to this defect anyway — silence between words contains no words.
         verdict = (
-            verifier.verify(audio, reference, voice.lang)
+            verifier.verify(prepared, reference, voice.lang)
             if duration_ok and silence_ok and not hit_cap
             else Verdict(False, 0.0)
         )
-        attempt = _Attempt(audio, duration, duration_ok, verdict, hit_cap,
+        attempt = _Attempt(prepared, duration, duration_ok, verdict, hit_cap,
                            silence_s=silence_s,
                            prior_failures=failures, calls_spent=number)
 
@@ -696,7 +715,7 @@ def _best_attempt(
             # F0 runs ONLY here: on a verified take of a rise-wanting chunk.
             # Failed takes and statements never pay for it.
             try:
-                delta = rise_check(audio, backend.sample_rate)
+                delta = rise_check(prepared, backend.sample_rate)
             except Exception:
                 delta = None
             if first_ok is not None:
@@ -806,14 +825,17 @@ def _sentence_split(
             # as 0.22 s at the settled rate.
             gap = np.zeros(int(cfg.sentence_gap_s * backend.sample_rate), dtype=np.float32)
         attempts += attempt.calls_spent
-        # Trimmed before assembly, so the audio that ships IS the audio the
-        # checks measured. Joining the raw buffer let a sentence carry a long
-        # trailing pad through: the silence check measured a trimmed copy and
-        # passed, then the pad was embedded inside the assembled chunk, reported
-        # clean, and stored for reuse. `render`'s own trim only reaches the
-        # assembled chunk's outer edges, so it could never remove an interior
-        # one.
-        pieces.extend([trim_silence(attempt.audio, backend.sample_rate), gap])
+        # Joined as verified: `_best_attempt` already trimmed the sentence
+        # before the ASR heard it, so the audio that ships IS the audio the
+        # checks measured. Two earlier orderings both went wrong here. Joining
+        # the raw buffer let a sentence carry a long trailing pad through — the
+        # silence check measured a trimmed copy and passed, then the pad was
+        # embedded inside the assembly, reported clean, and stored for reuse.
+        # Trimming AGAIN here, after verification, could delete a quiet spoken
+        # edge the ASR had just credited; and `render`'s former outer trim did
+        # the same against the whole assembly's peak, a louder reference than
+        # any single sentence's.
+        pieces.extend([attempt.audio, gap])
         worst = min(worst, attempt.verdict.coverage)
 
     return np.concatenate(pieces[:-1]), worst, attempts

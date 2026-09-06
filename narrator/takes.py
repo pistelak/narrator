@@ -223,9 +223,10 @@ def take_key(
 class TakeStore:
     """A directory of verified takes, addressed by content.
 
-    Audio is stored as `synthesize_chunk` returns it — before `trim_silence`,
-    `declick`, `apply_gain` and `master`. Those are deterministic and cheap, so
-    they are recomputed every run, and a level or mastering change costs nothing.
+    Audio is stored as `synthesize_chunk` returns it — already trimmed, because
+    that is the buffer the verifier certified, and before `declick`,
+    `apply_gain` and `master`. Those are deterministic and cheap, so they are
+    recomputed every run, and a level or mastering change costs nothing.
     Float WAV rather than .npy on both counts that matter: float32 round-trips
     exactly, where PCM_16 would make a reused take audibly equal but not bit-equal
     to a fresh render, and an individual take can be listened to, which is how this

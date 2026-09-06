@@ -241,6 +241,12 @@ class FakeBackend:
     # An id in the first sample survives trimming and concatenation well enough
     # for tests, and keeps the pair honest: the ASR cannot see the request, only
     # the audio, exactly as a real one cannot.
+    #
+    # It survives trimming ONLY because the tone is loud from sample 0, so
+    # `trim_silence` keeps the start (synth trims before the ASR hears the
+    # take). A mode that prepends a quiet lead-in would trim the stamp away
+    # and every chunk would verify as "" — stamp after the lead-in, or the
+    # whole suite fails for a reason that has nothing to do with what it pins.
     @staticmethod
     def _stamp(index: int) -> np.float32:
         return np.float32((index + 1) * 1e-4)

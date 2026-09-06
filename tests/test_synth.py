@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from narrator.backends.fake import Failure, FakeASR, FakeBackend
@@ -204,6 +205,92 @@ def test_split_is_disabled_when_configured() -> None:
     cfg = SynthConfig(max_attempts=1, allow_sentence_split=False)
     result, backend = run({0: Failure.DROP_SENTENCE}, cfg=cfg)
     assert not result.ok and backend.calls == 1
+
+
+# ------------------------------------- the take that ships is the take verified
+
+class _SilentTail(FakeBackend):
+    """Ends every take with 0.5 s of digital silence.
+
+    Under `trim_silence`'s floor, unlike `tail_s`, so the trimmed buffer differs
+    from the raw one by exactly this tail — which is what lets a test tell
+    "the ASR heard the trimmed take" from "the ASR heard the raw take". Real
+    engines pad like this; the plan's motivating case is the opposite edge, a
+    QUIET spoken onset that trimming deletes, which this fake cannot stage
+    (the stamp lives in sample 0) — `test_trim_deletes_a_quiet_spoken_edge`
+    in test_render pins that mechanism on a synthetic signal instead.
+    """
+
+    # Not `tail_s`: that is the parent's dataclass field for the ABOVE-floor
+    # residue, and the parent's __init__ would overwrite a same-named override.
+    PAD_S = 0.5
+
+    def synthesize(self, text, voice, *, max_frames, temperature):
+        audio = super().synthesize(text, voice, max_frames=max_frames,
+                                   temperature=temperature)
+        pad = np.zeros(int(self.PAD_S * self.sample_rate), dtype=np.float32)
+        return np.concatenate([audio, pad])
+
+
+class _Recording:
+    """A verifier that keeps every buffer it was asked about."""
+
+    def __init__(self, inner: CoverageVerifier) -> None:
+        self.inner = inner
+        self.heard: list[np.ndarray] = []
+
+    @property
+    def identity(self) -> str:
+        return self.inner.identity
+
+    def verify(self, audio, text, lang):
+        self.heard.append(np.array(audio, copy=True))
+        return self.inner.verify(audio, text, lang)
+
+
+def _recorded(script=None, cfg: SynthConfig = CFG):
+    backend = _SilentTail(script=script or {})
+    verifier = _Recording(CoverageVerifier(FakeASR(backend)))
+    result = synthesize_chunk(TEXT, 0, backend, verifier, VOICE, cfg)
+    return result, verifier, backend
+
+
+def test_the_verifier_hears_the_take_that_ships() -> None:
+    """Before this, the ASR was handed the RAW buffer and the trimmed one shipped.
+
+    `trim_silence` is peak-relative, so the two can differ by more than
+    padding — a quiet spoken edge falls under the floor — and the store filed a
+    verdict about audio that never left synth. Now there is one buffer.
+    """
+    result, verifier, backend = _recorded()
+    assert result.ok and len(verifier.heard) == 1
+    assert np.array_equal(result.audio, verifier.heard[0])
+    # The tail is gone from BOTH, and `duration_s` still reports the raw length.
+    assert result.duration_s - result.audio.size / backend.sample_rate == pytest.approx(
+        _SilentTail.PAD_S, abs=0.1)
+
+
+def test_a_retried_chunk_ships_the_buffer_its_last_verdict_was_about() -> None:
+    result, verifier, _ = _recorded({0: Failure.DROP_SENTENCE})
+    assert result.ok and result.recovered_by == "retry"
+    # A dropped sentence fails the duration floor before any ASR call, so the
+    # count of buffers heard is not asserted — only that the LAST one shipped.
+    assert np.array_equal(result.audio, verifier.heard[-1])
+
+
+def test_sentence_recovery_joins_the_sentences_as_verified() -> None:
+    """Each sentence is trimmed before its ASR call and joined untouched after.
+
+    So the assembly is the verified sentences plus the configured gaps and
+    nothing else — no per-sentence pad inside it, no second trim of its edges.
+    """
+    result, verifier, backend = _recorded({i: Failure.DROP_SENTENCE for i in range(3)})
+    assert result.ok and result.recovered_by == "sentence-split"
+    sentences = verifier.heard[-3:]         # one verified take per sentence
+    assert len(verifier.heard) >= 3
+    gap = np.zeros(int(CFG.sentence_gap_s * backend.sample_rate), dtype=np.float32)
+    expected = np.concatenate([sentences[0], gap, sentences[1], gap, sentences[2]])
+    assert np.array_equal(result.audio, expected)
 
 
 # -------------------------------------------------------------- reporting
