@@ -41,7 +41,7 @@ from narrator.chunking import split_sentences
 from narrator.takes import _class_id, identity_of
 from narrator.types import ASR, Audio, Verdict, Verifier
 
-SEMANTICS = 9
+SEMANTICS = 10
 """Version of what "correct" means here, for the take store's key.
 
 Bump it on ANY behavioural change to scoring: a new fold, a hard-fail rule, the
@@ -57,6 +57,13 @@ so a repeated reference word or a repeated short sentence cannot be rescued
 twice from a single occurrence — "coworkers … coworkers" against one
 "co workers", and "Coworkers. Coworkers." against "co workers.", both passed
 at 1.0 under 8 and are refusals now.
+
+10: comparable numerals keep their place. Values were compared as a sorted,
+chunk-wide multiset, so equal values in swapped roles passed: "four credits
+… five digits" against "five credits … four digits", and "The four teachers
+gave five students books" against "The teachers gave four students five
+books" — the latter with the numeral ORDER intact — both scored 1.0 under 9
+and hard-fail now.
 """
 
 MIN_COVERAGE = 0.90
@@ -437,6 +444,125 @@ def numeral_multiset(
     return out
 
 
+def _placeholder_stream(
+    text: str, lang: str, fold_word: Callable[[str], str],
+) -> list[tuple[str, int]] | None:
+    """The whole text's tokens with every readable numeral run as ONE placeholder,
+    each paired with how many CONTENT words precede it.
+
+    Content in the alignment's sense (`content_words`: not `is_numberish`),
+    which is not this walk's sense: a quoted foreign numeral is a placeholder
+    here (quote_foreign) but a content word there, so it advances the count
+    once it is recorded — otherwise every numeral after "čtyři" would sit one
+    index short of the alignment it is checked against.
+
+    The same walk as `numeral_multiset` — same `_numberish` with quote_foreign,
+    same single-token typing, same Czech phrase lookup — so a run is readable
+    here exactly when it is readable there. None on an unreadable run, for the
+    same reason: comparing nothing is the documented refusal to guess. Content
+    tokens are folded with the caller's `fold_word` (sound-alike pairs
+    included) so this view agrees with the coverage alignment about which
+    words are the same word. ONE flat stream, clauses and sentences rejoined:
+    composition stops at a clause break (inside `_numeral_groups`), but a
+    neighbourhood does not — the script's "šestnácti; slovo" came back as
+    "šestnácti. Slovo" from a real render, and a sentence edge treated as a
+    neighbour refused the correct audio. Punctuation is not content the audio
+    can be held to; the words either side of a numeral are.
+    """
+    tokens: list[tuple[str, int]] = []
+    count = 0
+    for words in _numeral_groups(text, lang):
+        index = 0
+        while index < len(words):
+            if not _numberish(words[index], lang, True):
+                tokens.append((fold_word(words[index]), count))
+                count += 1
+                index += 1
+                continue
+            start = index
+            while index < len(words) and _numberish(words[index], lang, True):
+                index += 1
+            run = words[start:index]
+            if len(run) == 1:
+                tokens.append((f"#{_typed_numeral(run[0], lang)}", count))
+            else:
+                value = cs_numerals.phrases().get(tuple(run)) if lang.startswith("cs") else None
+                if value is None:
+                    return None
+                tokens.append((f"#{value}", count))
+            count += sum(1 for w in run if not is_numberish(w, lang))
+    return tokens
+
+
+def _numerals_out_of_place(
+    reference: str, hypothesis: str, lang: str, fold_word: Callable[[str], str],
+    anchors: dict[int, tuple[int, int]], hyp_len: int,
+) -> list[str]:
+    """Reference numerals whose value does not stand in the transcript where
+    the content alignment says it should, as their values. Empty when every
+    one found its twin.
+
+    Callers run this only after the values already balance as a multiset, so
+    what is checked is ATTACHMENT, and the evidence for attachment is the
+    content alignment the verdict already rests on. `anchors` maps a
+    reference content index to the transcript tokens standing for it — one
+    token for an aligned word, the span it consumed for a rescued one
+    (`_Unclaimed.anchors`): a rescued "coworkers" is evidence of where the
+    audio said it, and without it "four coworkers five" and "five co workers
+    four" shared one interval between "gave" and "books" (Codex review). A
+    reference numeral stands after its nearest anchored word on the left and
+    before its nearest anchored word on the right; its twin must stand
+    strictly between those words' transcript tokens. Pairing walks both
+    sides IN ORDER: the next transcript numeral must be this one's twin, of
+    this value, in this interval — so two values inside one interval cannot
+    trade places either.
+
+    Two cheaper rules were tried and each accepted a move (Codex review, all
+    synthetic). A global alignment of placeholder streams matched a moved
+    "four" while calling the noun it moved past an insertion. Immediate
+    neighbours, with "a word the other side never says" excused as a
+    mishearing, let "He has four books and she has books" become "He has
+    books and she has four books" — both spots read (has, books) — and let a
+    split "cre dits" excuse both wrong neighbours of a swapped pair. Nearest
+    ALIGNED words carry neither weakness: a misheard, split or inserted
+    neighbour is simply skipped over to the next aligned one, so "four bytes"
+    heard "four bites", "four blackbirds" heard "four black birds" and a
+    filler beside the numeral all stay in place, while a value that moved
+    past a real word lands outside its interval.
+
+    Known limit: twelve repeats of "four bytes" with the first heard "bites"
+    shift the content alignment by one and the last 4 finds no interval —
+    a refusal of correct audio on a shape no script here has. Sentence
+    boundaries play no part: a real render came back with the script's
+    "šestnácti; slovo" as "šestnácti. Slovo", and the words either side of a
+    numeral are what the audio can be held to, not the punctuation.
+    """
+    ref = _placeholder_stream(reference, lang, fold_word)
+    hyp = _placeholder_stream(hypothesis, lang, fold_word)
+    if ref is None or hyp is None:
+        return []
+
+    def spots(stream: list[tuple[str, int]]) -> list[tuple[str, int]]:
+        """(value, content words before it) for each placeholder."""
+        return [(t[1:], before) for t, before in stream if t.startswith("#")]
+
+    ref_spots, hyp_spots = spots(ref), spots(hyp)
+    ref_len = len(content_words(reference, lang))
+
+    def interval(before: int) -> tuple[int, int]:
+        left = next((anchors[k][1] for k in range(before - 1, -1, -1) if k in anchors), -1)
+        right = next((anchors[k][0] for k in range(before, ref_len) if k in anchors), hyp_len)
+        return left, right
+
+    moved: list[str] = []
+    for (value, before), (twin, at) in zip(ref_spots, hyp_spots, strict=True):
+        left, right = interval(before)
+        if twin != value or not left < at <= right:
+            if value not in moved:
+                moved.append(value)
+    return moved
+
+
 def isolated_numeral_positions(
     words: list[str], lang: str = "en", quote_foreign: bool = False,
 ) -> list[tuple[int, int | str]]:
@@ -807,6 +933,15 @@ class _Unclaimed:
     ladder absorbs a refusal, and reconsidering the alignment is a different,
     larger change. The alternative, letting a word look anywhere, is how a
     dropped sentence hid inside another word (see `coverage_detail`).
+
+    One false ACCEPT is known and older than this class (Codex review,
+    synthetic; the whole-transcript join accepted it too): when one replace
+    block spans a sentence boundary, "Heating. Cheat whenever the teacher
+    leaves the classroom during the examination today." heard without its
+    first sentence as "Cheating whenever …" lets "heating" claim inside
+    "cheating" first, in reference order, and the miss lands on "cheat" —
+    one in eleven, under the gate. Position confines a word to its block;
+    it does not say which of two look-alikes in one block the audio spoke.
     """
 
     def __init__(self, hyp_words: list[str], hyp_claimed: list[bool]) -> None:
@@ -854,8 +989,11 @@ class _Unclaimed:
             at = text.find(word, at + 1)
         return False
 
-    def take_sentence(self, needle: list[str], start: int, end: int) -> bool:
-        """Claim one whole-token, boundary-respecting occurrence of `needle`.
+    def take_sentence(
+        self, needle: list[str], start: int, end: int, at_tokens: set[int],
+    ) -> bool:
+        """Claim one whole-token, boundary-respecting occurrence of `needle`
+        in a region holding one of `at_tokens` — the alignment's stand-ins.
 
         Available tokens are those wholly free or already owned by a reference
         word in [start, end) — this sentence's own words. A run of available
@@ -865,7 +1003,9 @@ class _Unclaimed:
         def available(owned: list[int | None], span: tuple[int, int]) -> bool:
             return all(o is None or start <= o < end for o in owned[span[0]:span[1]])
 
-        for _, spans, text, owned in self._regions:
+        regions = {self._region_of[j] for j in at_tokens if j in self._region_of}
+        for r in sorted(regions):
+            _, spans, text, owned = self._regions[r]
             run_start = 0
             while run_start < len(spans):
                 if not available(owned, spans[run_start]):
@@ -880,10 +1020,34 @@ class _Unclaimed:
                     first, last = matches[0]
                     lo = spans[run_start + first][0]
                     hi = spans[run_start + last - 1][1]
-                    owned[lo:hi] = [start] * (hi - lo)
+                    # Owned WORD by word, not by the sentence: the matched run
+                    # is the needle's words joined, so each word's characters
+                    # are known, and each keeps its own reference index. One
+                    # owner for the whole span made `anchors` place the whole
+                    # sentence at its first word, and a numeral inside a
+                    # rescued "PC four offline." heard "P C four off line."
+                    # was refused as moved (Codex review, synthetic).
+                    assert hi - lo == sum(len(w) for w in needle)
+                    at = lo
+                    for k, word in enumerate(needle):
+                        owned[at:at + len(word)] = [start + k] * len(word)
+                        at += len(word)
                     return True
                 run_start = run_end
         return False
+
+    def anchors(self) -> dict[int, tuple[int, int]]:
+        """Owner -> (first, last) hypothesis token it consumed, for every
+        rescued word — the sentence rescue owns word by word too. A rescued
+        word is evidence of WHERE the audio said it, so it anchors a numeral's
+        neighbourhood as an aligned word does."""
+        out: dict[int, tuple[int, int]] = {}
+        for indices, spans, _, owned in self._regions:
+            for j, (lo, hi) in zip(indices, spans, strict=True):
+                for owner in {o for o in owned[lo:hi] if o is not None}:
+                    first, last = out.get(owner, (j, j))
+                    out[owner] = (min(first, j), max(last, j))
+        return out
 
     def spent(self, j: int) -> bool:
         """Whether any character of hypothesis token `j` was consumed."""
@@ -1159,10 +1323,17 @@ def coverage_detail(
                 and hyp_composed is not None
             )
             if comparable:
+                # In ORDER: a reference that is only numerals has nothing but
+                # their order to be right about, and "Four. Five." against
+                # "Five. Four." passed as a sorted multiset (Codex review).
+                if ref_composed == hyp_composed:
+                    return CoverageDetail(1.0, "")
                 ref_nums = sorted(ref_composed, key=str)
                 hyp_nums = sorted(hyp_composed, key=str)
                 if ref_nums == hyp_nums:
-                    return CoverageDetail(1.0, "")
+                    return CoverageDetail(
+                        0.0, f"[numeral moved: {', '.join(map(str, ref_composed))} "
+                             f"became {', '.join(map(str, hyp_composed))}]")
                 return CoverageDetail(
                     0.0, f"[numeral changed: {ref_nums} became {hyp_nums}]")
             return CoverageDetail(
@@ -1334,10 +1505,18 @@ def coverage_detail(
             # the sentence is only restating its own claim at a coarser grain.
             if score < 1.0:
                 needle = [_fold(w) for w in content_words(sentence, lang)]
+                # And in the SAME place the word rescue may look: the regions
+                # the alignment put in this sentence's stead. A sentence in a
+                # delete block has no stand-in and is not rescued from a
+                # look-alike elsewhere — "Heating." dropped, with "cheat"
+                # heard as "heat ing", was rescued from that free split run
+                # at whole-token grain (Codex review, synthetic; the parent
+                # accepted it too). The measured merges are replace blocks.
+                blocks = {block_of[k] for k in range(pos - n, pos) if k in block_of}
                 # `or score > 0` used to turn ANY partial coverage into a pass, so a
                 # two-word sentence rendered as one word scored 1.0. Only genuine
                 # containment rescues a short sentence now.
-                if unclaimed.take_sentence(needle, pos - n, pos):
+                if unclaimed.take_sentence(needle, pos - n, pos, blocks):
                     # A rescued sentence is right, so its words must not surface in
                     # the diagnostics — mark its reference range on the diagnostic
                     # copy; the transcript side is read off the owner mask below.
@@ -1511,6 +1690,36 @@ def coverage_detail(
         if missing or extra:
             return CoverageDetail(
                 0.0, f"[numeral changed: {ref_nums} became {hyp_nums}]", word_diagnostics)
+    elif not unreadable and ref_nums:
+        # The values balance. Do they also stand where the script put them?
+        # A sorted multiset cannot tell "four credits and five digits" from
+        # "five credits and four digits", and a value SEQUENCE cannot tell
+        # "The four teachers gave five students books" from "The teachers
+        # gave four students five books" — same values, same order, wrong
+        # nouns (council review; both reproduced at 1.0). Position is what
+        # number-blinding threw away, so it is recovered here, on a stream
+        # the blinding never sees: each sentence's tokens, with every readable
+        # numeral run replaced by one typed placeholder and the words folded
+        # as the content alignment folds them. Every reference numeral must
+        # find a twin of its value between the transcript counterparts of
+        # its nearest ALIGNED words on either side — the alignment this
+        # verdict already rests on; the rule and the two it replaced are on
+        # `_numerals_out_of_place`. A misheard neighbour cannot strand a
+        # numeral: "four bytes" heard "four bites" skips to the next aligned
+        # word.
+        #
+        # Only when no weld rescue was needed: a welded numeral lives inside
+        # a non-numeral token, so its place cannot be read off a placeholder.
+        # A swap and a weld in one chunk is a known limit of this check, not
+        # of the value check above, which still runs.
+        anchors = {i + o: (j + o, j + o) for i, j, size in matcher.get_matching_blocks()
+                   for o in range(size)}
+        anchors.update(unclaimed.anchors())
+        moved = _numerals_out_of_place(reference, hypothesis, lang, _fold,
+                                       anchors, len(hyp_words))
+        if moved:
+            return CoverageDetail(
+                0.0, f"[numeral moved: {', '.join(moved)}]", word_diagnostics)
 
     # A meaning-inverting token that appears or disappears fails outright,
     # regardless of how good the surrounding coverage looks. Tokens the

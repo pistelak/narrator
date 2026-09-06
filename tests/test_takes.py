@@ -317,10 +317,9 @@ def test_a_take_certified_by_the_untrimmed_ladder_is_not_reused(
     import narrator.synth as synth
 
     takes = tmp_path / "takes"
-    monkeypatch.setattr(synth, "SEMANTICS", 2)
+    monkeypatch.setattr(synth, "SEMANTICS", synth.SEMANTICS - 1)
     render_with(tmp_path, takes, out="a.wav")
     monkeypatch.undo()
-    assert synth.SEMANTICS == 3
     backend, report = render_with(tmp_path, takes, out="b.wav")
     assert backend.calls == 2 and not any(c.reused for c in report.chunks)
 
@@ -328,19 +327,22 @@ def test_a_take_certified_by_the_untrimmed_ladder_is_not_reused(
 def test_a_take_certified_under_reusable_evidence_is_not_reused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """verify.SEMANTICS 8 -> 9: the rescues now spend transcript evidence once.
+    """A verifier-semantics bump invalidates every stored take.
 
-    A take that passed only because a repeated word or short sentence reused
-    one occurrence is certified by a policy that no longer exists; its key
-    must miss.
+    Written for 8 -> 9, when the rescues began spending transcript evidence
+    once: a take that passed only because a repeated word reused one
+    occurrence was certified by a policy that no longer existed. It pins the
+    mechanism against whatever the current version is, so each later bump
+    (10: numerals keep their place) is covered without rewriting it.
     """
     import narrator.verify as verify
 
     takes = tmp_path / "takes"
-    monkeypatch.setattr(verify, "SEMANTICS", 8)
+    # The PREVIOUS version, whatever it is now: each bump's story lives in
+    # the SEMANTICS docstring, and this pins that a bump invalidates at all.
+    monkeypatch.setattr(verify, "SEMANTICS", verify.SEMANTICS - 1)
     render_with(tmp_path, takes, out="a.wav")
     monkeypatch.undo()
-    assert verify.SEMANTICS == 9
     backend, report = render_with(tmp_path, takes, out="b.wav")
     assert backend.calls == 2 and not any(c.reused for c in report.chunks)
 
