@@ -1075,6 +1075,174 @@ def test_compound_numerals_are_skipped_symmetrically() -> None:
     assert coverage("Použije ša dvě stě padesát šest dnes.", "Použije ša 256 dnes.", "cs")[0] == 1.0
 
 
+# ------------------------------ numerals keep their place (council review)
+
+def test_swapped_numerals_with_balanced_values_are_refused() -> None:
+    """TRANSCRIPT-LEVEL PROBES, not recordings: the multiset was sorted and
+    chunk-wide, so equal values in swapped roles passed at 1.0 in both
+    languages. The refusal names the values that stood elsewhere."""
+    detail = coverage_detail(
+        "The account has four credits and the password has five digits.",
+        "The account has five credits and the password has four digits.")
+    assert detail.score == 0.0
+    assert detail.worst_sentence == "[numeral moved: 4, 5]"
+    detail = coverage_detail(
+        "Částku dvacet korun pošlete prvnímu a třicet korun druhému.",
+        "Částku třicet korun pošlete prvnímu a dvacet korun druhému.", "cs")
+    assert detail.score == 0.0
+    assert detail.worst_sentence == "[numeral moved: 20, 30]"
+
+
+def test_numerals_in_the_same_order_but_on_the_wrong_nouns_are_refused() -> None:
+    """Order alone is not attachment (Codex, council review): the numeral
+    SEQUENCE is [4, 5] on both sides, and after number-blinding the content
+    words are identical, so neither the multiset nor an ordered compare could
+    see it. The placeholder alignment can: the 4 stands before "teachers" in
+    the script and before "students" in the transcript."""
+    detail = coverage_detail("The four teachers gave five students books.",
+                             "The teachers gave four students five books.")
+    assert detail.score == 0.0
+    assert detail.worst_sentence == "[numeral moved: 4, 5]"
+
+
+def test_a_numeral_moved_past_one_noun_is_refused() -> None:
+    """SYNTHETIC (Codex review): a global alignment of the placeholder streams
+    matched the moved 4 and called "teachers" an insertion, so "four teachers
+    books" became "teachers four books" at 1.0. Judged by immediate
+    neighbours it cannot: (gave, teachers) is not (teachers, books). Same
+    across a sentence boundary the words moved past."""
+    detail = coverage_detail("He gave four teachers books.", "He gave teachers four books.")
+    assert detail.score == 0.0
+    assert detail.worst_sentence == "[numeral moved: 4]"
+    assert coverage("Four cats. Dogs.", "Cats. Four dogs.")[0] == 0.0
+
+
+def test_an_all_numeral_reference_must_keep_its_order() -> None:
+    """The all-numeral early return compared a sorted multiset, so "Four.
+    Five." against "Five. Four." was 1.0 — with nothing but order to be
+    right about (Codex review, synthetic)."""
+    detail = coverage_detail("Four. Five.", "Five. Four.")
+    assert detail.score == 0.0
+    assert detail.worst_sentence == "[numeral moved: 4, 5 became 5, 4]"
+    assert coverage("Four. Five.", "4. 5.")[0] == 1.0
+
+
+def test_a_repeated_value_moved_onto_another_noun_is_refused() -> None:
+    detail = coverage_detail("Four cats and four dogs and five birds.",
+                             "Four cats and five dogs and four birds.")
+    assert detail.score == 0.0
+    assert detail.worst_sentence == "[numeral moved: 4, 5]"
+
+
+def test_numerals_in_place_still_pass_through_every_supported_spelling() -> None:
+    """What the place check must not touch: digit/word equivalence, repeated
+    equal values, a composed Czech compound against its digits, and the
+    unreadable English compound whose refusal-to-guess is documented on
+    `numeral_multiset` — still compared as nothing, still passing."""
+    assert coverage("The account has four credits and the password has five digits.",
+                    "The account has 4 credits and the password has 5 digits.")[0] == 1.0
+    assert coverage("Four cats and four dogs and five birds.",
+                    "4 cats and 4 dogs and 5 birds.")[0] == 1.0
+    assert coverage("Bylo tam dvacet pět lidí a tři psi.",
+                    "Bylo tam 25 lidí a 3 psi.", "cs")[0] == 1.0
+    assert coverage("Bylo tam dvacet pět lidí a tři psi.",
+                    "Bylo tam 3 lidí a 25 psi.", "cs")[0] == 0.0
+    assert coverage("It costs two fifty six dollars today.",
+                    "It costs 256 dollars today.")[0] == 1.0
+
+
+def test_a_numeral_moved_between_identical_neighbours_is_refused() -> None:
+    """SYNTHETIC (Codex review): "has four books … has books" against "has
+    books … has four books" reads (has, books) at both spots, so a rule on
+    immediate neighbours accepted it. The content alignment knows which
+    "has" is which: the 4 must stand between the counterparts of ITS
+    neighbours, and the transcript's stands six words later."""
+    detail = coverage_detail("He has four books and she has books.",
+                             "He has books and she has four books.")
+    assert detail.score == 0.0
+    assert detail.worst_sentence == "[numeral moved: 4]"
+
+
+def test_a_split_neighbour_cannot_excuse_a_swap() -> None:
+    """SYNTHETIC (Codex review): a swap with one noun split, "five cre dits …
+    four digits". A rule that excused any neighbour the other side never
+    says took "cre" as a mishearing and passed the swap; the nearest ALIGNED
+    word on each side is what places a numeral, and "and" is aligned."""
+    detail = coverage_detail(
+        "The account has four credits and the password has five digits.",
+        "The account has five cre dits and the password has four digits.")
+    assert detail.score == 0.0
+    assert detail.worst_sentence == "[numeral moved: 4, 5]"
+
+
+def test_a_split_neighbour_beside_a_numeral_in_place_is_tolerated() -> None:
+    """SYNTHETIC (Codex review), the positive twin: "four blackbirds" heard
+    "four black birds", with "black" and "blackbirds" both said elsewhere so
+    no vocabulary trick applies. The split word is unaligned and skipped; the
+    4 sits between "saw" and "beside" on both sides, and the boundary rescue
+    keeps the score at 1.0."""
+    ref = ("We saw four blackbirds beside the black fence and the blackbirds "
+           "stayed there until sunset.")
+    assert coverage(ref, ref.replace("four blackbirds", "four black birds"))[0] == 1.0
+
+
+def test_a_rescued_word_anchors_the_numerals_around_it() -> None:
+    """SYNTHETIC (Codex review): "four coworkers five" heard "five co workers
+    four". The split "coworkers" is rescued, not aligned, so with aligned
+    words as the only anchors both numerals shared the interval between
+    "gave" and "books" and the swap passed. A rescue says where the audio
+    said the word, so the tokens it consumed anchor too — and pairing walks
+    both sides in order, so equal values cannot slide past it either."""
+    detail = coverage_detail("We gave four coworkers five books.",
+                             "We gave five co workers four books.")
+    assert detail.score == 0.0
+    assert detail.worst_sentence == "[numeral moved: 4, 5]"
+    detail = coverage_detail("We gave four coworkers four books.",
+                             "We gave co four workers four books.")
+    assert detail.score == 0.0
+    assert detail.worst_sentence == "[numeral moved: 4]"
+    # The split alone, numerals in place: the rescue and the place check agree.
+    assert coverage("We gave four coworkers five books.",
+                    "We gave four co workers five books.")[0] == 1.0
+
+
+def test_a_numeral_inside_a_rescued_short_sentence_keeps_its_place() -> None:
+    """SYNTHETIC (Codex review): "PC four offline." heard "P C four off line."
+    is a short sentence rescued at sentence grain. The rescue used to own the
+    whole span under the sentence's first word, so the anchor for "pc"
+    stretched over "line" and the 4 read as moved. Owned word by word, "pc"
+    ends before the 4 and "offline" starts after it — and the same anchors
+    refuse the 4 when it really moved."""
+    assert coverage("PC four offline.", "P C four off line.")[0] == 1.0
+    detail = coverage_detail("PC four offline.", "P C off line four.")
+    assert detail.score == 0.0
+    assert detail.worst_sentence == "[numeral moved: 4]"
+
+
+def test_a_quoted_foreign_numeral_does_not_shift_the_numerals_after_it() -> None:
+    """A quoted "čtyři" is a placeholder to the numeral walk (quote_foreign)
+    but a content word to the alignment, so the stream must count it as one
+    content word once recorded — or every numeral after it sits one index
+    short of the alignment it is checked against, and a swap behind it would
+    be judged against the wrong neighbours."""
+    ref = "The Czech word čtyři means four cats and five dogs."
+    assert coverage(ref, "The Czech word čtyři means 4 cats and 5 dogs.")[0] == 1.0
+    detail = coverage_detail(ref, "The Czech word čtyři means five cats and four dogs.")
+    assert detail.score == 0.0
+    assert detail.worst_sentence == "[numeral moved: 4, 5]"
+
+
+def test_a_misheard_neighbour_does_not_strand_a_numeral() -> None:
+    """The place check aligns the placeholder on its own, so one wrong word
+    beside a correct numeral is the ordinary soft miss it always was — not a
+    hard "moved" refusal. Long enough that the miss passes the gate."""
+    detail = coverage_detail(
+        "Please send exactly four bytes to the main server before the deadline today.",
+        "Please send exactly four bites to the main server before the deadline today.")
+    assert detail.score >= 0.90
+    assert "numeral" not in detail.worst_sentence
+
+
 # ------------------- word-boundary disagreement (found by the acceptance run)
 
 def test_hyphenated_compound_is_not_a_drop() -> None:
@@ -1164,6 +1332,20 @@ def test_words_of_one_block_are_claimed_in_spoken_order() -> None:
     detail = coverage_detail("Chat terms. Hatter.", "Chatterms. Hat ter.")
     assert detail.score == 1.0
     assert detail.word_diagnostics == ()
+
+
+def test_a_dropped_short_sentence_is_not_rescued_from_a_split_look_alike() -> None:
+    """SYNTHETIC (Codex review): the sentence rescue tolerates splits, so a
+    dropped "Heating." found "heat"+"ing" — the recogniser's split of the
+    misheard "cheat" — as a free whole-token run and rescued itself from it.
+    The sentence is in a delete block: nothing stands in for it, so nothing
+    may rescue it. The measured Czech merges are replace blocks and still do.
+    """
+    detail = coverage_detail(
+        "They cheat whenever the teacher leaves the classroom during the examination. Heating.",
+        "They heat ing whenever the teacher leaves the classroom during the examination.")
+    assert detail.score == 0.0
+    assert detail.worst_sentence == "Heating."
 
 
 def test_fragments_either_side_of_a_matched_word_are_not_one_word() -> None:
