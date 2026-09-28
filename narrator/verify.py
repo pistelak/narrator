@@ -41,7 +41,7 @@ from narrator.chunking import split_sentences
 from narrator.takes import _class_id, identity_of
 from narrator.types import ASR, Audio, Verdict, Verifier
 
-SEMANTICS = 11
+SEMANTICS = 12
 """Version of what "correct" means here, for the take store's key.
 
 Bump it on ANY behavioural change to scoring: a new fold, a hard-fail rule, the
@@ -393,16 +393,45 @@ def numeral_multiset(
     a compound never spans a sentence and reading a flat token list is how
     "Dvacet. Pět." became 25.
 
-    KNOWN HOLE, and it is the cost of refusing to guess. None erases BOTH sides,
-    so an unreadable run also stops any UNRELATED numeral in that sentence being
-    checked: "sto tisíc korun a pět aut" against "...a devět aut" passes. The
-    obvious repair does not work — emitting a per-run sentinel instead would
-    refuse a CORRECT transcript, because the script writes a compound and the ASR
-    writes one digit token, so the two sides do not have matching run structure
-    to exclude. Narrowing the unreadable set is the real fix, i.e. a full Czech
-    number grammar; filed separately rather than half-built here.
+    None still erases both sides for the caller that asks this way, and the cost
+    is a known hole (issue #23) — but it is no longer the Czech one that issue
+    names. The phrase lookup below closed that: "dvacet tisíc" against a
+    transcript's "30000" now refuses at 0.000, and so does "dvacet jedna" against
+    "22". What remains is every language without such a table, English included:
+    "Two fifty six" against "257" and "twenty thousand" against "30000" both score
+    1.000, because the script's run is unreadable, the transcript's single value is
+    readable, and two sides that disagree about run structure compare nothing.
+
+    What the erasure must NOT do is reach past the run that caused it. It used to:
+    the comparison runs once per CHUNK, so one short decimal anywhere in it left
+    every other number unchecked — "Verze 2.1 je nová. Paměť má 8 GB." heard as
+    "9 GB" scored 1.000, where the second sentence alone refuses at 0.000.
+    `coverage_detail` now compares the unreadable runs themselves first and
+    cancels the ones both sides present identically; see the comment there. The
+    repair considered and rejected here was a different one — emitting a per-run
+    sentinel to exclude by structure — which refuses a CORRECT transcript,
+    because the script writes a compound where the ASR writes one digit token and
+    the two sides then have no matching run structure to exclude.
+
+    An earlier illustration of the hole, "sto tisíc korun a pět aut" against
+    "...a devět aut", no longer demonstrates it: phrase lookup composes "sto
+    tisíc", so that run is readable and the sentence refuses at 0.000.
+    """
+    values, unreadable = _numeral_scan(sentences, lang, quote_foreign)
+    return None if unreadable else values
+
+
+def _numeral_scan(
+    sentences: list[list[str]], lang: str = "en", quote_foreign: bool = False,
+) -> tuple[list[int | str], list[tuple[str, ...]]]:
+    """Every readable value, and every run that could not be read.
+
+    The walk lives here once. `numeral_multiset` is its None-returning view,
+    which is what most callers want; `coverage_detail` needs to know WHICH runs
+    were unreadable, because runs both sides present identically cancel.
     """
     out: list[int | str] = []
+    unreadable: list[tuple[str, ...]] = []
     for words in sentences:
         index = 0
         while index < len(words):
@@ -448,8 +477,9 @@ def numeral_multiset(
             # refusal. The refusal costs a known hole — "dvacet tisíc" against a
             # transcript's "30000" passes (issue #23) — and that hole is
             # visible, bounded, and has never certified a wrong ordinary word.
-            return None
-    return out
+            unreadable.append(tuple(run))
+    return out, unreadable
+
 
 
 def _placeholder_stream(
@@ -1619,19 +1649,27 @@ def coverage_detail(
     # the [2,50,6]-vs-[256] ambiguity compound suppression exists to avoid.
     ref_tokens = _numeral_tokens(reference, lang)
     # A run of adjacent numerals is COMPOSED into its value where the language
-    # makes that unambiguous, and suppressed where it does not. `None` from
-    # either side means some run could not be read, and both sides then compare
-    # nothing — the previous behaviour, reproduced rather than approximated.
+    # makes that unambiguous, and suppressed where it does not. Suppression is
+    # symmetric on purpose: "two fifty six" is three adjacent numerals in the
+    # script and collapses to the single isolated "256" in the transcript, so an
+    # asymmetric rule reads a correct transcription as a changed number.
     #
-    # Skipped if EITHER side compounds, and symmetric on purpose: "two fifty six"
-    # is three adjacent numerals in the script and collapses to the single
-    # isolated "256" in the transcript, so an asymmetric rule reads a correct
-    # transcription as a changed number.
-    ref_composed = numeral_multiset(
+    # But the runs are compared BEFORE the values they suppress. Suppression used
+    # to erase the comparison for the whole chunk on the first unreadable run, and
+    # that erasure reached every other number in it: "Verze 2.1 je nová. Paměť má
+    # 8 GB." heard as "9 GB" scored 1.000, where the second sentence alone refuses
+    # at 0.000 — a changed figure certified because a version number shared the
+    # paragraph. Runs the two sides present identically, in the same order, are
+    # the same text twice rather than ambiguous evidence, so they cancel and the
+    # remaining values stay comparable. Runs that DIFFER suppress exactly as
+    # before, which is the "two fifty six" case suppression exists for. Order
+    # matters: a reordered pair of unreadable runs falls back to the erasure,
+    # because nothing here can tell a reordering from a coincidence.
+    ref_composed, ref_unreadable = _numeral_scan(
         _numeral_groups(reference, lang), lang, quote_foreign=True)
-    hyp_composed = numeral_multiset(
+    hyp_composed, hyp_unreadable = _numeral_scan(
         _numeral_groups(hypothesis, lang), lang, quote_foreign=True)
-    unreadable = ref_composed is None or hyp_composed is None
+    unreadable = ref_unreadable != hyp_unreadable
     ref_nums = [] if unreadable else sorted(ref_composed, key=str)
     hyp_nums = [] if unreadable else sorted(hyp_composed, key=str)
     if ref_nums != hyp_nums:
@@ -1640,8 +1678,10 @@ def coverage_detail(
         # token is no longer numberish, so the value vanishes from the hyp
         # side of a correct transcription. A value missing from hyp is
         # accounted for if one of its word forms survives inside a
-        # non-numberish hyp token. Extra hyp values are never excused, and a
-        # numeral that is genuinely gone has no containing token to hide in.
+        # non-numberish hyp token. A numeral that is genuinely gone has no
+        # containing token to hide in. An EXTRA hyp value is excused only by the
+        # split rescue further down, and only where rejoining it reconstructs a
+        # reference word the alignment left unmatched.
         missing = list(ref_nums)
         for v in hyp_nums:
             if v in missing:
@@ -1696,6 +1736,16 @@ def coverage_detail(
             def _accents(w: str) -> str:
                 return w.translate(_FOLD) if lang.startswith("cs") else w
             forms = [
+                # The DIGIT spelling as well as the word forms. An ASR that
+                # glues "8 GB" into "8GB" welded a numeral to its follower
+                # exactly as the one that wrote "dvaze" for "dva z" did, and
+                # searching word forms alone left that weld unrescued: the value
+                # vanished from the hyp side of a CORRECT transcript and the
+                # chunk hard-failed at 0.000, in Czech and in English. A
+                # sentinel needs no guard here — it is "?" + fold(word) and no
+                # transcript token begins with "?", so str() of one is inert.
+                _accents(str(v)),
+            ] + [
                 _accents(w) for w, val in _NUMERAL_VALUES.items()
                 if val == v and is_numberish(w, lang)
             ]
@@ -1711,6 +1761,18 @@ def coverage_detail(
                 if not ft.startswith(ff) or ft == ff:
                     return False
                 rest = ft[len(ff):]
+                if ff.isdigit():
+                    # A DIGIT form's remainder must be the follower exactly.
+                    # Prefix-loose, the transcript's "8x9 x" excused the script's
+                    # "8 x" — the remainder "x9" starts with the follower "x" —
+                    # and certified a multiplier the audio never spoke (0.000 ->
+                    # 0.955, council review). Demanding the whole follower keeps
+                    # every weld this is for, units that carry a digit of their
+                    # own included: "8 m2" heard as "8m2" leaves "m2", which a
+                    # rule against digits in the remainder would have refused
+                    # (independent review). The word forms below keep the
+                    # prefix-loose remainder they were measured with.
+                    return any(rest == nb for nb in followers if nb)
                 # One direction only: the weld swallowed the WHOLE follower,
                 # possibly plus a stray vowel ("ze" for the script's "z").
                 # The reverse — the remainder as a mere prefix of the
@@ -1727,6 +1789,99 @@ def coverage_detail(
                     welded.remove(t)
                     missing.remove(v)
                     break
+        if extra:
+            # Split rescue, the MIRROR of the weld above. The ASR sometimes
+            # SPLITS a reference word so a piece looks like a numeral — the
+            # adverb "najednou" comes back as "na jednou" — and a value appears
+            # on the hyp side where the script has no number at all. Observed on
+            # a real render: 11 attempts, never recovered, episode quarantined,
+            # audio correct (issue #53). An extra value is accounted for when
+            # rejoining its token with an ADJACENT one, in transcript order,
+            # reconstructs a reference word the alignment did not match.
+            #
+            # Three restrictions, each pinned to an accept it prevents, and each
+            # the same restriction the weld rescue states above:
+            #
+            # WHOLE token, not a prefix: the rejoined pair must BE the reference
+            # word. Prefix-loose matching is what lets an inserted number attach
+            # itself to whatever it happens to sit beside.
+            #
+            # IN PLACE: the reference word's neighbours must survive around the
+            # pair — BOTH of them where the reference has both. Without the
+            # restriction at all, a transcript that MOVED "sto krát" to the end
+            # of the sentence scored 0.900, and one that dropped the script's
+            # "Someone" while inserting an unrelated "one" scored 0.938 (council
+            # review, both). Satisfying EITHER side was still not enough: a
+            # second "objelo" later in the sentence supplied the follower for the
+            # first "stokrát", so a hundred repetitions moved from circling the
+            # house to circling the square and scored 0.909 (independent review).
+            # Spelling is all this can compare — the numeral stream has no
+            # alignment of its own — so it demands every neighbour the reference
+            # offers rather than one of them.
+            #
+            # CONSUMED, on both sides: the reference occurrence and the
+            # transcript tokens are each spent once. Keyed by spelling alone, an
+            # already-matched second "stokrát" donated the context that excused a
+            # genuinely inserted "sto" elsewhere in the chunk (0.000 -> 0.900).
+            hyp_stream = _numeral_tokens(hypothesis, lang)
+            ref_stream = _numeral_tokens(reference, lang)
+
+            def _acc(w: str) -> str:
+                return w.translate(_FOLD) if lang.startswith("cs") else w
+
+            def _at(stream: list[str], k: int) -> str | None:
+                return _acc(stream[k]) if 0 <= k < len(stream) else None
+
+            # Coverage is recorded against content words, which number-blinding
+            # already stripped of numerals; the numeral stream keeps them. So the
+            # two are walked together to learn whether THIS occurrence was
+            # matched, rather than whether the spelling appears anywhere.
+            unmatched: list[tuple[str, str | None, str | None]] = []
+            seen = 0
+            for k, word in enumerate(ref_stream):
+                if is_numberish(word, lang):
+                    continue
+                if seen < len(covered) and not covered[seen]:
+                    unmatched.append(
+                        (_acc(word), _at(ref_stream, k - 1), _at(ref_stream, k + 1)))
+                seen += 1
+            spent: set[int] = set()
+            for v in list(extra):
+                spellings = {
+                    _acc(w) for w, val in _NUMERAL_VALUES.items()
+                    if val == v and is_numberish(w, lang)
+                }
+                spellings.add(_acc(str(v)))
+                rescued = False
+                for i, token in enumerate(hyp_stream):
+                    if i in spent or _acc(token) not in spellings:
+                        continue
+                    candidates = []
+                    if i and i - 1 not in spent:
+                        candidates.append((
+                            _acc(hyp_stream[i - 1]) + _acc(token), i - 1,
+                            _at(hyp_stream, i - 2), _at(hyp_stream, i + 1)))
+                    if i + 1 < len(hyp_stream) and i + 1 not in spent:
+                        candidates.append((
+                            _acc(token) + _acc(hyp_stream[i + 1]), i + 1,
+                            _at(hyp_stream, i - 1), _at(hyp_stream, i + 2)))
+                    for join, partner, before, after in candidates:
+                        for occurrence in unmatched:
+                            word, previous, following = occurrence
+                            if word != join:
+                                continue
+                            if (previous is None or previous == before) and (
+                                    following is None or following == after) and (
+                                    previous is not None or following is not None):
+                                unmatched.remove(occurrence)
+                                spent.update((i, partner))
+                                extra.remove(v)
+                                rescued = True
+                                break
+                        if rescued:
+                            break
+                    if rescued:
+                        break
         if missing or extra:
             return CoverageDetail(
                 0.0, f"[numeral changed: {ref_nums} became {hyp_nums}]", word_diagnostics)

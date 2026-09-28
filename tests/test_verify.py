@@ -2074,3 +2074,206 @@ def test_numeral_grouping_keeps_numbers_out_of_each_others_clauses() -> None:
     }
     for (text, lang), groups in expected.items():
         assert _numeral_groups(text, lang) == groups, (text, lang)
+
+
+# --- the erasure that reached past its own run ------------------------------
+#
+# Composition runs once per chunk, so before this the FIRST unreadable run
+# suppressed the value comparison for everything in it. All four of the accepts
+# below scored 1.000 and were certified on the commit before this test existed.
+
+def test_a_decimal_elsewhere_may_not_erase_a_changed_figure() -> None:
+    # The motivating shape, and the ordinary one: a version number and a memory
+    # figure in the same chunk. The memory sentence alone always refused; with
+    # "Verze 2.1" in front of it the changed figure shipped.
+    alone = coverage_detail("Paměť má 8 GB.", "Paměť má 9 GB.", "cs")
+    assert alone.score == 0.0
+    together = coverage_detail(
+        "Verze 2.1 je nová. Paměť má 8 GB.",
+        "Verze 2.1 je nová. Paměť má 9 GB.", "cs")
+    assert together.score == 0.0
+    assert "8" in together.worst_sentence and "9" in together.worst_sentence
+    # Two unreadable runs cancel as readily as one, and an INSERTED number is
+    # caught the same way. Both were 1.000.
+    assert coverage_detail(
+        "Verze 2.1 a verze 3.5 jsou nové. Paměť má 8 GB.",
+        "Verze 2.1 a verze 3.5 jsou nové. Paměť má 9 GB.", "cs").score == 0.0
+    assert coverage_detail(
+        "Verze 2.1 je nová. Auto stojí u domu.",
+        "Verze 2.1 je nová. Auto stojí u domu 100.", "cs").score == 0.0
+    # Not a Czech accident: the same erasure existed in English.
+    assert coverage_detail(
+        "Version 2.1 is new. Memory is 8 GB.",
+        "Version 2.1 is new. Memory is 9 GB.", "en").score == 0.0
+
+
+def test_an_identical_unreadable_run_cancels_and_a_differing_one_suppresses() -> None:
+    # Cancellation may not cost a correct transcript anything. The same decimal
+    # on both sides, and a separator the recogniser spells differently, both
+    # verify exactly as before.
+    for hypothesis in ("Verze 2.1 je nová. Paměť má 8 GB.",
+                       "Verze 2,1 je nová. Paměť má 8 GB."):
+        assert coverage_detail(
+            "Verze 2.1 je nová. Paměť má 8 GB.", hypothesis, "cs").score == 1.0
+    # And where the two sides' runs DIFFER, suppression stands: this is the
+    # compound-versus-digits case it exists for.
+    assert coverage_detail("Máme dvacet tisíc korun.", "Máme 20000 korun.",
+                           "cs").score == 1.0
+    assert coverage_detail("Two fifty six is the limit.", "256 is the limit.",
+                           "en").score == 1.0
+    # And the hole that buys it, which is no longer the Czech one #23 names: the
+    # phrase lookup composes "dvacet tisíc", so a wrong Czech compound refuses.
+    assert coverage_detail("Máme dvacet tisíc korun.", "Máme 30000 korun.",
+                           "cs").score == 0.0
+    assert coverage_detail("Máme dvacet jedna korun.", "Máme 22 korun.",
+                           "cs").score == 0.0
+    # It survives wherever there is no such table. English has none, so a script
+    # run the transcript writes as one value is still not compared at all.
+    assert coverage_detail("Two fifty six is the limit.", "257 is the limit.",
+                           "en").score == 1.0
+    assert coverage_detail("We have twenty thousand crowns.",
+                           "We have 30000 crowns.", "en").score == 1.0
+
+
+# --- the same weld, the other spelling -------------------------------------
+
+def test_a_numeral_glued_to_its_unit_is_the_weld_the_rescue_already_knows() -> None:
+    # "8 GB" heard as "8GB" is the weld that produced "dvaze" for "dva z", in
+    # digits. The value left the hyp side of a CORRECT transcript and the chunk
+    # hard-failed at 0.000 in both languages.
+    cs = coverage_detail(
+        "Tento model vyžaduje alespoň 8 GB paměti a funguje na běžném počítači.",
+        "Tento model vyžaduje alespoň 8GB paměti a funguje na běžném počítači.",
+        "cs")
+    assert cs.score > MIN_COVERAGE
+    en = coverage_detail(
+        "This model needs at least 8 GB of memory and runs on a laptop.",
+        "This model needs at least 8GB of memory and runs on a laptop.", "en")
+    assert en.score > MIN_COVERAGE
+    # A spelled unit letter welds the same way. Exactly at the gate, and that is
+    # the arithmetic rather than a coincidence: one substituted content word in
+    # ten is 0.900, so the chunk passes and an ELEVENTH word would not save a
+    # second miss.
+    assert coverage_detail(
+        "Rozlišení je osm K a vypadá to velmi dobře na stěně.",
+        "Rozlišení je 8K a vypadá to velmi dobře na stěně.",
+        "cs").score >= MIN_COVERAGE
+
+
+def test_a_digit_weld_may_not_swallow_a_second_number() -> None:
+    # The remainder of a DIGIT form may carry no digits. Without that, the
+    # transcript's "8x9 x" excused the script's "8 x" through the follower "x"
+    # and certified a multiplier the audio never spoke: 0.955, accepted.
+    correct = "Délka desky je 8 x 10 centimetrů a další hodnoty měříme pravítkem."
+    assert coverage_detail(correct, correct, "cs").score == 1.0
+    assert coverage_detail(
+        correct,
+        "Délka desky je 8x9 x 10 centimetrů a další hodnoty měříme pravítkem.",
+        "cs").score == 0.0
+    # The rule is "the follower, exactly", NOT "no digits in the remainder": a
+    # unit can carry a digit of its own, and refusing those refused a real weld
+    # (independent review). "8 m2" heard as "8m2" is rescued and costs the one
+    # substitution the glued spelling owes.
+    assert coverage_detail(
+        "Plocha pokoje je přibližně 8 m2 a okna jsou velká a světlá.",
+        "Plocha pokoje je přibližně 8m2 a okna jsou velká a světlá.",
+        "cs").score >= MIN_COVERAGE
+
+
+# --- and the mirror: a reference word the recogniser split ------------------
+
+def test_a_word_split_into_a_numeral_is_not_a_changed_numeral() -> None:
+    # Issue #53, observed on a real render: 11 attempts, never recovered, an
+    # episode quarantined, and the audio correct — no retry can change what the
+    # recogniser writes. "najednou" is the adverb "at once", not a number.
+    long_enough = coverage_detail(
+        "Odnesme si obě části najednou a pak se vrátíme domů zpátky.",
+        "Odnesme si obě části na jednou a pak se vrátíme domů zpátky.", "cs")
+    assert long_enough.score > MIN_COVERAGE
+    # The hard 0.000 becomes an ordinary soft miss, so a short sentence still
+    # refuses — the reference word is still missing acoustic evidence.
+    short = coverage_detail("Odnesme si obě části najednou.",
+                            "Odnesme si obě části na jednou.", "cs")
+    assert 0.0 < short.score < MIN_COVERAGE
+    # A name whose digit the recogniser split off is the same shape — the value
+    # the split invented is excused, and "utf8" itself still owes the one
+    # substitution that leaves this exactly at the gate.
+    assert coverage_detail(
+        "Kódování utf8 je dnes standardem pro všechny naše nové dokumenty.",
+        "Kódování utf 8 je dnes standardem pro všechny naše nové dokumenty.",
+        "cs").score >= MIN_COVERAGE
+
+
+def test_a_split_rescue_is_confined_to_where_the_script_put_the_word() -> None:
+    # Each of these certified audio that says something else while the rescue
+    # matched a reference word wherever its pieces happened to appear — the
+    # mistake the weld rescue's own comments record for "onealpha".
+    #
+    # The transcript MOVED "sto krát" to the end and dropped it from its place.
+    assert coverage_detail(
+        "Auto stokrát objelo ten dům a pak konečně zastavilo u brány.",
+        "Auto objelo ten dům a pak konečně zastavilo u brány sto krát.",
+        "cs").score == 0.0
+    # An inserted "sto" beside a word that is not its neighbour.
+    assert coverage_detail(
+        "Toto století přináší pokrok a ptáci letí nad naším domem.",
+        "Toto přináší pokrok a ptáci sto letí nad naším domem.", "cs").score == 0.0
+    # English: "Someone" dropped at the start, an unrelated "one" inserted in
+    # the middle. 0.938 and accepted.
+    assert coverage_detail(
+        "Someone carefully reviewed all the available reports and selected some"
+        " examples for the next public presentation.",
+        "Carefully reviewed all the available reports and selected some one"
+        " examples for the next public presentation.", "en").score == 0.0
+    # One legitimate split AND one insertion in the same chunk: the second
+    # "stokrát" is matched, so it may not donate the context that excuses the
+    # inserted "sto". Keyed by spelling alone this scored 0.900.
+    assert coverage_detail(
+        "Program stokrát opakoval test a potom stokrát opakoval kontrolu výsledků.",
+        "Program sto krát opakoval test a potom stokrát opakoval kontrolu sto"
+        " výsledků.", "cs").score == 0.0
+    # A second occurrence later in the sentence must not supply the neighbour the
+    # first one lost: here the hundred repetitions move from circling the house to
+    # circling the square, and the second "objelo" is what made that 0.909 while
+    # only ONE neighbour was required (independent review).
+    assert coverage_detail(
+        "Auto stokrát objelo ten velký dům a pak znovu objelo celé náměstí.",
+        "Auto objelo ten velký dům a pak znovu sto krát objelo celé náměstí.",
+        "cs").score == 0.0
+    # The rescue in place still works, and twice over when the ASR splits both.
+    assert coverage_detail(
+        "Auto stokrát objelo ten dům a pak konečně zastavilo.",
+        "Auto sto krát objelo ten dům a pak konečně zastavilo.", "cs").score > 0.0
+    assert coverage_detail(
+        "Auto stokrát objelo dům a potom auto stokrát objelo dům.",
+        "Auto sto krát objelo dům a potom auto sto krát objelo dům.",
+        "cs").score > 0.0
+
+
+def test_a_split_rescue_spends_each_side_of_its_evidence_once() -> None:
+    # Each restriction below was measured with itself removed and nothing else,
+    # because a guard whose removal changes no score is decoration.
+    #
+    # WHOLE word, not a prefix: relaxing `word == join` to `startswith` let the
+    # transcript's "three so" excuse a value against the reference's "threesome"
+    # and scored 0.938.
+    assert coverage_detail(
+        "The threesome carefully reviewed all the available reports and selected"
+        " examples for the next public presentation.",
+        "The three so carefully reviewed all the available reports and selected"
+        " examples for the next public presentation.", "en").score == 0.0
+    # The REFERENCE occurrence is spent once: one "stokrát" in the script cannot
+    # excuse two split pairs in the transcript, the second of which is an
+    # insertion. Without consuming it: 0.889.
+    assert coverage_detail(
+        "Auto stokrát objelo dům a potom auto objelo dům.",
+        "Auto sto krát objelo dům a potom auto sto krát objelo dům.",
+        "cs").score == 0.0
+    # And the TRANSCRIPT tokens are spent once: one split pair cannot satisfy two
+    # unmatched occurrences while a stray "sto" elsewhere goes unexamined. Without
+    # consuming them: 0.800 instead of a refusal.
+    for hypothesis in ("Auto sto krát objelo dům a potom auto objelo dům sto.",
+                       "Auto sto krát objelo dům a potom auto objelo sto dům."):
+        assert coverage_detail(
+            "Auto stokrát objelo dům a potom auto stokrát objelo dům.",
+            hypothesis, "cs").score == 0.0
