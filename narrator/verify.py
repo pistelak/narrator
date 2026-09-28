@@ -41,7 +41,7 @@ from narrator.chunking import split_sentences
 from narrator.takes import _class_id, identity_of
 from narrator.types import ASR, Audio, Verdict, Verifier
 
-SEMANTICS = 10
+SEMANTICS = 11
 """Version of what "correct" means here, for the take store's key.
 
 Bump it on ANY behavioural change to scoring: a new fold, a hard-fail rule, the
@@ -64,6 +64,14 @@ chunk-wide multiset, so equal values in swapped roles passed: "four credits
 gave five students books" against "The teachers gave four students five
 books" — the latter with the numeral ORDER intact — both scored 1.0 under 9
 and hard-fail now.
+
+11: a caller's sound-alike pair is counted in normalize space, so a pair whose
+spoken form is "numeral + word" no longer collapses onto its own numeral-free
+remainder. ("7B","sedm bé") together with ("8B","osm bé") made 7B and 8B one
+word and scored a changed model size 1.000 under 10 — declaring the
+pronunciation of two model sizes silently deleted the check between them.
+("H100","há sto") with ("H200","há dvě stě"), and the digit-free
+("dvakrát","dva krát") with ("třikrát","tři krát"), did the same. All refuse now.
 """
 
 MIN_COVERAGE = 0.90
@@ -1195,16 +1203,48 @@ def coverage_detail(
     # form, the ASR writes what it hears, and the script holds the written form.
     # Applied in fold space so general rules and project vocabulary compose;
     # multi-word forms are skipped (the boundary rescue already covers merges).
+    # GATED on the normalize-token count, then valued in content space as
+    # before. The gate is the guard, and the two spaces are not interchangeable:
+    # `content_words` drops numerals, so counting the pair there let a pair whose
+    # SPOKEN form is "numeral + word" through as though it named one word. The
+    # documented lexicon entries ("7B", "sedm bé") and ("8B", "osm bé") reduced to
+    # ("7b", "bé") and ("8b", "bé") — one equivalence class through the shared
+    # spoken token — and the two model sizes became the same word:
+    # coverage("Rodina 7B je novější.", "Rodina 8B je novější.", "cs") scored
+    # 1.000 under those pairs where the undeclared pair scores 0.750, and 1.000 in
+    # prose too. Declaring the pronunciation of two model sizes silently deleted
+    # the check between them, and on a quantization script that is the ordinary
+    # thing to declare. ("H100","há sto") with ("H200","há dvě stě") collapsed the
+    # same way, and so did the digit-free ("dvakrát","dva krát") with
+    # ("třikrát","tři krát") — the shared token need not contain a digit at all.
+    #
+    # A SINGLE such entry was already unsound, which is why this is not a
+    # two-entry collision check: ("H100","há sto") alone folded the script's
+    # "H100" onto the transcript's bare "há", so a transcript that had DROPPED
+    # "sto" scored 1.000 and now scores 0.750. A pair may declare that one word is
+    # heard as another; it may not declare that part of the audio is optional.
+    #
+    # `_sound_alike_classes` has always counted normalize tokens for this reason;
+    # the two builders were meant to agree and did not. The gate only REFUSES —
+    # the pair's values still come from content space, so no pair that acts today
+    # acts differently. Admitting new ones was tried and reverted: it pulled a
+    # numeral-side pair like ("fore","four") into the fold map, and the reference's
+    # folded "four" could then not be rescued from a transcript that split the
+    # written form ("fo re"), taking correct audio from 1.000 to 0.800.
     alike_pairs = []
     for written, spoken in sound_alikes:
+        if (len(normalize(written, lang).split()) != 1
+                or len(normalize(spoken, lang).split()) != 1):
+            continue
         wf = [fold(w, lang) for w in content_words(written, lang)]
         sf = [fold(w, lang) for w in content_words(spoken, lang)]
         if len(wf) == 1 and len(sf) == 1 and wf[0] != sf[0]:
             alike_pairs.append((wf[0], sf[0]))
 
     def _fold(word: str) -> str:
-        # WHOLE-WORD, not substring. A pair is a single content word on each
-        # side by construction (the guard above), so substring application is
+        # WHOLE-WORD, not substring. A pair is one normalize token per side
+        # carrying a single content word (the guard above), so substring
+        # application is
         # broader than what the caller declared: it rewrites EVERY token
         # containing the written form. Two ways that bites, both measured.
         #

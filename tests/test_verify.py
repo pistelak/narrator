@@ -14,6 +14,7 @@ import pytest
 
 from narrator.types import Audio
 from narrator.verify import (
+    MIN_COVERAGE,
     CascadeVerifier,
     CoverageVerifier,
     NullVerifier,
@@ -942,6 +943,62 @@ def test_sound_alike_pairs_apply_to_whole_words_not_substrings() -> None:
     swapped = named.replace("juliett", "bobcat")
     assert (coverage(named, swapped, sound_alikes=(("cat", "caterpillar"),))[0]
             == coverage(named, swapped)[0])
+
+
+def test_a_declared_pair_may_not_delete_the_number_it_names() -> None:
+    """Two lexicon entries for two model sizes used to make them one word.
+
+    The pronunciation lexicon doubles as the verifier's sound-alike list, and
+    this builder counted `content_words`, which drops numerals. So
+    ("7B", "sedm bé") reduced to the pair ("7b", "bé") and ("8B", "osm bé") to
+    ("8b", "bé") — one equivalence class through the shared spoken token — and a
+    changed model size scored a clean 1.000. Declaring the pronunciation of two
+    model sizes silently deleted the check between them, which on a quantization
+    script is the ordinary thing to declare. The builder is now GATED on the
+    normalize-token count, as `_sound_alike_classes` always has been.
+    """
+    sizes = (("7B", "sedm bé"), ("8B", "osm bé"))
+    short = ("Rodina 7B je novější.", "Rodina 8B je novější.")
+    prose = ("Vezměme model 7B a porovnejme jeho výkon s ostatními.",
+             "Vezměme model 8B a porovnejme jeho výkon s ostatními.")
+    # Both scored 1.000 before; the undeclared scores are what they return to.
+    assert coverage(*short, "cs", sound_alikes=sizes)[0] == coverage(*short, "cs")[0]
+    assert coverage(*prose, "cs", sound_alikes=sizes)[0] == coverage(*prose, "cs")[0]
+    assert coverage(*short, "cs", sound_alikes=sizes)[0] < MIN_COVERAGE
+
+    # The same collapse with the digits on the LETTER side, which no digit-first
+    # rule would ever see: both spoken forms share "há".
+    gpus = (("H100", "há sto"), ("H200", "há dvě stě"))
+    pair = ("Rodina H100 je novější.", "Rodina H200 je novější.")
+    assert coverage(*pair, "cs", sound_alikes=gpus)[0] == coverage(*pair, "cs")[0]
+
+    # And with no digit anywhere: "dva krát" and "tři krát" share "krát".
+    times = (("dvakrát", "dva krát"), ("třikrát", "tři krát"))
+    counted = ("Zkusil to dvakrát.", "Zkusil to třikrát.")
+    assert coverage(*counted, "cs", sound_alikes=times)[0] == coverage(*counted, "cs")[0]
+
+    # A SINGLE entry was already unsound, which is why the gate is not a
+    # two-entry collision check (independent review of this change): the pair
+    # folded the script's "H100" onto the transcript's bare "há", so a transcript
+    # that had DROPPED "sto" scored 1.000. A pair may say one word is heard as
+    # another; it may not say that part of the audio is optional.
+    dropped = ("Rodina H100 je novější.", "Rodina há je novější.")
+    assert coverage(*dropped, "cs", sound_alikes=(("H100", "há sto"),))[0] == 0.75
+
+    # Single-token pairs are untouched — the ones a caller actually relies on.
+    assert coverage("Soubor má osm gigabajtů.", "Soubor má 8 GB.", "cs",
+                    sound_alikes=(("gigabajtů", "GB"),))[0] == 1.0
+    assert coverage("Zvolíme typ ká, variantu em.", "Zvolíme typ K, variantu M.", "cs",
+                    sound_alikes=(("ká", "K"), ("em", "M")))[0] == 1.0
+    assert coverage("Four.", "fore", sound_alikes=(("Four", "fore"),))[0] == 1.0
+
+    # The gate only REFUSES: pair values still come from content space, so a
+    # numeral-side pair stays out of the fold map exactly as before. Counting the
+    # pair in normalize space instead ADMITTED it, and the reference's folded
+    # "four" could then not be rescued from a transcript that split the written
+    # form — correct audio at 1.000 became 0.800 (independent review).
+    split = ("The fore ships sailed home.", "The fo re ships sailed home.")
+    assert coverage(*split, sound_alikes=(("fore", "four"),))[0] == 1.0
 
 
 def test_bare_contraction_spellings_stay_meaning_critical() -> None:
