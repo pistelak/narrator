@@ -50,9 +50,25 @@ class RenderFailed(RuntimeError):
 
     def __init__(self, report: RenderReport, takes: Path | None = None,
                  cached: int = 0) -> None:
+        self.report = report
+        self._takes = takes
+        self._cached = cached
+        super().__init__(self.explain("Pass quarantine=False to write anyway."))
+
+    def explain(self, remedy: str, first: int = 0) -> str:
+        """The refusal, worded for whoever reads it.
+
+        The library's reader passes `quarantine=False` and counts chunks from 0,
+        as `RenderConfig.reroll` does. The CLI's reader passes `--write-anyway`
+        and counts from 1, as its progress lines and `--reroll` do. One wording
+        for both told CLI users to set a keyword they cannot reach, and printed
+        chunk numbers one below the `--reroll` numbers they would be copied into
+        — so a copied number rerolled the chunk before the one that failed.
+        """
+        report = self.report
         failures = report.failures
         detail = "\n".join(
-            f"  chunk {c.index}: coverage {c.coverage:.2f}"
+            f"  chunk {c.index + first}: coverage {c.coverage:.2f}"
             + (f", dropped {c.dropped_sentence!r}" if c.dropped_sentence else "")
             + f" :: {c.text[:60]}..."
             + (f"\n    {format_word_diagnostics(c.word_diagnostics)}"
@@ -71,14 +87,13 @@ class RenderFailed(RuntimeError):
         # Promising reuse that will not happen sends someone into a 25-minute
         # render expecting a 20-second one.
         resume = ""
-        if takes is not None and cached:
-            resume = (f"\n{cached} of this render's chunks are cached in {takes}; "
+        if self._takes is not None and self._cached:
+            resume = (f"\n{self._cached} of this render's chunks are cached in {self._takes}; "
                       "re-running after a fix re-synthesises only what changed.")
-        super().__init__(
+        return (
             f"{len(failures)} of {len(report.chunks)} chunks failed verification:\n{detail}\n"
-            "No file written. Pass quarantine=False to write anyway." + resume
+            f"No file written. {remedy}" + resume
         )
-        self.report = report
 
 
 @dataclass(frozen=True)

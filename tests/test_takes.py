@@ -674,6 +674,22 @@ def test_reroll_past_the_end_of_the_render_is_refused(tmp_path: Path) -> None:
                RenderConfig(reroll=frozenset({999})))
 
 
+def test_cli_reroll_past_the_end_is_refused_in_the_users_numbers(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """render() refuses this as "reroll=[2] ... (0..1)" for a typed `--reroll 3`,
+    and only after the model loads. The CLI checks first, in its own numbers;
+    the voice file does not exist, so reaching a model would fail differently."""
+    from narrator.cli import main
+
+    script = tmp_path / "s.txt"
+    script.write_text("Not the keeper.\n\nNot a stranger.", encoding="utf-8")
+    code = main([str(script), str(tmp_path / "o.wav"), "--voice", "absent.wav",
+                 "--voice-text", "x", "--reroll", "3"])
+    assert code == 2
+    assert "(1..2)" in capsys.readouterr().err
+
+
 def test_a_single_sentence_chunk_asks_the_intent_policy_once(tmp_path: Path) -> None:
     """One question about the chunk, and no speculation about its sentences."""
     from narrator.synth import resolve_rise_intent

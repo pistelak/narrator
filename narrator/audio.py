@@ -167,7 +167,9 @@ class MasterConfig:
     the second channel nearly free.
 
     Set channels=1 to match an existing mono back-catalogue — mixing the two in
-    one series produces an audible 3 dB step between episodes.
+    one series produces an audible 3 dB step between episodes. channels=1 alone
+    keeps target_lufs at -16, which matches a catalogue mastered to -16 mono;
+    one mastered to the mono -19 convention needs target_lufs=-19 as well.
     """
 
 

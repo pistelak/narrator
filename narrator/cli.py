@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 from narrator.audio import MasterConfig
-from narrator.chunking import MAX_CHARS
+from narrator.chunking import MAX_CHARS, plan_segments
 from narrator.render import RenderConfig, RenderFailed, render
 from narrator.types import ChunkResult, Gap, Segment, Text, Voice
 from narrator.verify import format_word_diagnostics
@@ -43,7 +43,11 @@ def _progress(result: ChunkResult, total: int) -> None:
             note += f", dropped: {result.dropped_sentence[:50]}..."
         if result.word_diagnostics:
             note += f", {format_word_diagnostics(result.word_diagnostics)}"
-    print(f"  [{result.index + 1}/{total}] {mark} {result.duration_s:5.1f}s{note}", flush=True)
+    # The length the chunk occupies in the written file, not the raw synthesis:
+    # `duration_s` is measured before trimming, so a chunk shown at 27.3 s could
+    # ship at 14.5 s (issue #21). Raw only when nothing was shipped to measure.
+    seconds = result.shipped_s if result.shipped_s is not None else result.duration_s
+    print(f"  [{result.index + 1}/{total}] {mark} {seconds:5.1f}s{note}", flush=True)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -58,9 +62,15 @@ def main(argv: list[str] | None = None) -> int:
     # exactly the setup it exists to run before.
     parser.add_argument("--voice", type=Path, help="reference clip (wav); required unless --preflight")
     parser.add_argument("--voice-text", help="transcript of the reference clip; required unless --preflight")
-    parser.add_argument("--lang", default="en")
-    parser.add_argument("--paragraph-gap", type=float, default=0.35)
-    parser.add_argument("--max-chars", type=int, default=MAX_CHARS)
+    parser.add_argument("--lang", default="en",
+                        help="language of the script and the voice (e.g. cs); drives "
+                             "number reading and verification. Default: en")
+    parser.add_argument("--paragraph-gap", type=float, default=0.35,
+                        help="seconds of silence for each blank-line paragraph break. "
+                             "Default: 0.35")
+    parser.add_argument("--max-chars", type=int, default=MAX_CHARS,
+                        help=f"character budget per chunk sent to the engine; a single "
+                             f"unbreakable token may exceed it. Default: {MAX_CHARS}")
     parser.add_argument("--mono", action="store_true",
                         help="mono output; use to match an existing mono back-catalogue")
     parser.add_argument("--preflight", action="store_true",
@@ -141,8 +151,19 @@ def main(argv: list[str] | None = None) -> int:
         report = preflight(segments, lang=args.lang, max_chars=args.max_chars)
         print(report.summary())
         for u in report.unverifiable:
-            print(f"  chunk {u.index}: {u.reason} :: {u.text[:60]}...", file=sys.stderr)
+            # 1-based, like the progress lines and --reroll.
+            print(f"  chunk {u.index + 1}: {u.reason} :: {u.text[:60]}...", file=sys.stderr)
         return 0 if report.clean else 1
+
+    # render() refuses this too, but in its own 0-based terms ("reroll=[5] ...
+    # (0..4)" for a typed `--reroll 6`), and only after the model has loaded.
+    # Checked here it costs nothing and speaks in the numbers the user typed.
+    if reroll:
+        total = sum(1 for s in plan_segments(segments, args.max_chars) if isinstance(s, Text))
+        if max(reroll) >= total:
+            print(f"--reroll {args.reroll} names chunks this script does not have: it has "
+                  f"{total} (1..{total})", file=sys.stderr)
+            return 2
 
     from narrator.backends.higgs import HiggsBackend
     from narrator.verify import NullVerifier
@@ -164,7 +185,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         report = render(segments, voice, backend, args.out, verifier, cfg)
     except RenderFailed as exc:
-        print(f"\n{exc}", file=sys.stderr)
+        print(f"\n{exc.explain('Pass --write-anyway to write it anyway.', first=1)}",
+              file=sys.stderr)
         return 1
     except ValueError as exc:
         # A configuration the library refuses — a reroll naming chunks this

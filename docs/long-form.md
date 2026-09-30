@@ -7,6 +7,28 @@ waveform, plausible duration, wrong content. A 25-minute episode is ~57 chunks a
 current sizing, ~94 at the recommended sizing.
 **Companion:** [Engine comparison and measurements](engine-comparison.md)
 
+> **Status (added 2026-09-30): this is the plan, preserved as written — not a
+> description of the library.** It was drafted for the pipeline narrator was
+> extracted from; `synthesize.py`, `prompt.py` and `roundtrip_compare.py` below
+> are that pipeline's files, and `stt-lab` a sibling project — none is in this
+> repo. The measurements stand. Many steps shipped as planned; these did not,
+> and the code is authoritative:
+>
+> | Plan | Shipped |
+> |---|---|
+> | §1 frame cap `expected × 1.6 × 25` | `max(expected × 1.6 + 2 s, 4 s) × fps` — a pure multiplier truncated every short sentence (`SynthConfig.frame_headroom_s`) |
+> | §3 skip the ceiling for ≥3-digit words; tail-RMS check | not built; a per-chunk silence gate was added instead (README, "Silence is checked separately") |
+> | §5 `pysbd` segmentation; merge orphans under 20 words | regex splitter (`chunking.split_sentences` says why); orphans merged under `MIN_WORDS = 3` |
+> | §6 `[PAUSE n]` markers | narrator learns no markup: callers pass `Gap` segments |
+> | §7 RAS port, EOC suppression, `generation.py` patches | not built; the Higgs backend sets temperature (0.4) and the frame cap only |
+> | §8 Whisper alone; fail at `num_errors > ceil(words/10)` | with the `[parakeet]` extra, Parakeet v3 first and Whisper on its rejections, accept if either confirms (Whisper alone without it); per-sentence coverage ≥ 0.90 plus hard-fail rules (`narrator/verify.py`) |
+> | §9 trim instead of retry | not built |
+> | §10 escalating ladder (seed, `min_frames`, split at best boundary) | `max_attempts = 3` plain retries, best take kept, then sentence-by-sentence split |
+> | §11.3 per-chunk loudness matching | not built, and speaker level is declared, never inferred (`AGENTS.md`) |
+> | §11.4 boundary silences 0.3 / 0.6 / 0.9 / 2.0 s | 0.12 s between split sentences; every other pause is a caller's `Gap` (the CLI's paragraph gap is 0.35 s) |
+> | §12 "a mono file wants −19" | mono output keeps the −16 target; −19 must be set explicitly (`MasterConfig.channels`) |
+> | §14 drift diagnostic | not built |
+
 Evidence tags: **[measured]** benchmark, study, or verified here ·
 **[shipping]** a real tool's production constant · **[inference]** reasoning from
 mechanism · **[folklore]** no evidence found.
@@ -344,7 +366,8 @@ already does. If pydub is ever introduced, `append(crossfade=0)` is mandatory.
 
 - One normalization pass **on the final file only**. The mono LUFS offset is documented
   on `MasterConfig.channels` in `narrator/audio.py` — the short version is that dual-mono
-  at −16 measures as the published target, and a mono file wants −19.
+  at −16 measures as the published target, and a mono file wants −19. *(Correction
+  2026-09-30: `channels=1` does not retarget to −19 by itself; set `target_lufs`.)*
 - **Never concatenate encoded MP3s** — LAME's 576-sample delay plus frame padding
   injects 10–50 ms per join. Keep float32/WAV throughout, encode once. **[measured]**
 - If the ffmpeg chain is ever used instead of `pyloudnorm`: **pin `-ar 24000` after
