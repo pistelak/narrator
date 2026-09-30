@@ -93,6 +93,31 @@ def test_a_verification_refusal_keeps_the_trimmed_take_the_asr_heard() -> None:
     assert len(r.audio) < round(r.duration_s * backend.sample_rate) - backend.sample_rate // 4
 
 
+class _OneBuffer(FakeBackend):
+    """Returns the SAME array every call, overwritten in place — legal for an
+    engine that recycles its output buffer."""
+
+    def synthesize(self, text, voice, *, max_frames, temperature):
+        fresh = super().synthesize(text, voice, max_frames=max_frames,
+                                   temperature=temperature)
+        if not hasattr(self, "_buf"):
+            self._buf = np.zeros(10 * 60 * self.sample_rate, dtype=np.float32)
+        out = self._buf[:len(fresh)]
+        out[:] = fresh
+        return out
+
+
+def test_a_recycled_engine_buffer_cannot_rewrite_the_evidence() -> None:
+    """The refused take must still be the refused take after the next call."""
+    backend = _OneBuffer(script={0: Failure.TRUNCATE})
+    result, _ = run(cfg=NO_SPLIT, backend=backend)
+    assert result.ok
+    [r] = result.rejected
+    assert r.reason == "duration", "the raw buffer is the one held directly"
+    # The stamp in sample 0 names the call that made the audio.
+    assert round(float(r.audio[0]) / 1e-4) - 1 == 0
+
+
 def test_split_sentences_record_their_own_ladder_and_reference() -> None:
     """On the split path the assembly carries no transcript, so each sentence's
     refusal must say which sentence it was checked against."""

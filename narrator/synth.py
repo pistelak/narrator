@@ -883,7 +883,10 @@ def _rejection(number: int, sentence: int | None, reference: str, attempt: _Atte
         duration_s=attempt.duration, silence_s=attempt.silence_s,
         coverage=v.coverage, transcript=v.transcript,
         dropped_sentence=v.dropped_sentence, word_diagnostics=v.word_diagnostics,
-        audio=raw if reason in ("cap", "duration") else attempt.audio,
+        # Copied: this outlives the loop, and a backend that reuses one output
+        # buffer would otherwise rewrite the evidence with a LATER attempt —
+        # a review reproduced the accepted take saved as the rejected one.
+        audio=np.array(raw if reason in ("cap", "duration") else attempt.audio, copy=True),
     )
 
 
