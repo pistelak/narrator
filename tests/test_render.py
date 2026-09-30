@@ -866,3 +866,31 @@ def test_a_chunk_with_no_audio_at_the_very_end_still_has_a_position(
         "a chunk that occupies nothing begins where the file ends"
     )
     assert shipped.start_s == 0.0
+
+
+def test_cli_refusal_names_the_flag_and_the_rerollable_number(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The wiring, not just `explain()`: `narrate` itself must print the CLI
+    wording. Engine and recogniser are swapped for the fake, which is all the
+    CLI hard-codes."""
+    import sys
+
+    import narrator.backends.higgs as higgs
+    from narrator.cli import main
+
+    # `narrator.render` the attribute is the re-exported function; the module
+    # whose global render() resolves is only reachable through sys.modules.
+    render_mod = sys.modules["narrator.render"]
+
+    backend = FakeBackend(script={i: Failure.TRUNCATE for i in range(1, 50)})
+    monkeypatch.setattr(higgs, "HiggsBackend", lambda: backend)
+    monkeypatch.setattr(render_mod, "default_verifier",
+                        lambda rate, sound_alikes=(): CoverageVerifier(FakeASR(backend)))
+    script = tmp_path / "s.txt"
+    script.write_text("Not the keeper. Not a stranger.\n\n"
+                      "They were sent to a destination that does not exist.", encoding="utf-8")
+    code = main([str(script), str(tmp_path / "o.wav"), "--voice", "v.wav", "--voice-text", "x"])
+    err = capsys.readouterr().err
+    assert code == 1
+    assert "chunk 2:" in err and "--write-anyway" in err and "quarantine" not in err

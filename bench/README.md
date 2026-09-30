@@ -204,9 +204,10 @@ python bench_xtts.py --speaker "Andrew Chipper"
 ## Reference clips
 
 Cloning-backend probes (`intonation_probe.py`, `verifier_acceptance.py`,
-`asr_headtohead.py`, and `bench_higgs.py` via `--ref-audio`/`--ref-text`) take
-an operator-supplied reference clip with its exact
-transcript in a `.txt` sidecar of the same basename. Keep clips under
+`asr_headtohead.py`) take an operator-supplied reference clip with its exact
+transcript in a `.txt` sidecar of the same basename; `bench_higgs.py` takes
+the same clip as `--ref-audio` with its transcript passed literally as
+`--ref-text`. Keep clips under
 `bench/.voices/ref/` — the directory is gitignored because a person's voice
 recording must never land in the repo.
 

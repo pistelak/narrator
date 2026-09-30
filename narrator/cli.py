@@ -69,8 +69,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="seconds of silence for each blank-line paragraph break. "
                              "Default: 0.35")
     parser.add_argument("--max-chars", type=int, default=MAX_CHARS,
-                        help=f"longest chunk sent to the engine in one generation. "
-                             f"Default: {MAX_CHARS}")
+                        help=f"character budget per chunk sent to the engine; a single "
+                             f"unbreakable token may exceed it. Default: {MAX_CHARS}")
     parser.add_argument("--mono", action="store_true",
                         help="mono output; use to match an existing mono back-catalogue")
     parser.add_argument("--preflight", action="store_true",

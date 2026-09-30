@@ -61,7 +61,7 @@ the full `RenderReport` (`.clean`, `.failures`, one `ChunkResult` per chunk).
 
 | `narrate` exit | Meaning |
 |---|---|
-| 0 | written, every chunk verified (or `--preflight` found nothing doomed) |
+| 0 | written, every chunk verified (unchecked under `--no-verify`); or `--preflight` found nothing doomed |
 | 1 | refused; or written under `--write-anyway` with failures; or `--preflight` found a doomed chunk |
 | 2 | bad input or options (unknown `--reroll` number, empty script, …) |
 
@@ -169,7 +169,8 @@ cfg = RenderConfig(synth=SynthConfig(
 - **`non_speech`** declares literal spans — engine control tags such as Higgs'
   `<|emotion:*|>` — that the engine acts on but nobody says aloud. They are
   still sent to the engine and removed from the text the transcript is compared
-  against; without this, every tagged chunk fails by construction. Their
+  against; undeclared, a tag counts as a missing word — on one measured
+  episode all 11 tagged chunks were refused with the audio fine. Their
   *effect* is not verified: nothing checks that the surprise was audible. A
   chunk left with no words once its tags are removed is refused as input
   (`ValueError`).
@@ -339,9 +340,9 @@ or `NullVerifier()`), never a silent fallback.
 **Known limits.** These pass verification today; each is recorded in
 `narrator/verify.py` or `narrator/render.py` rather than silently tolerated:
 
-- **Decimals are not value-checked.** "2.1" heard as "2.2" passes — the
-  number rule covers isolated whole numbers, not a run the verifier cannot
-  read as one value.
+- **A decimal inside a sentence is not value-checked.** "Verze 2.1 je nová."
+  heard as "Verze 2.2 je nová." passes — the number rule covers isolated
+  whole numbers, not a run the verifier cannot read as one value.
 - **A chunk of only punctuation** (`Text("...")`) has no words to compare, so
   it passes against any audio, and preflight calls it clean. Use a `Gap` for
   a pause.

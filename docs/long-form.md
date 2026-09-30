@@ -21,7 +21,7 @@ current sizing, ~94 at the recommended sizing.
 > | §5 `pysbd` segmentation; merge orphans under 20 words | regex splitter (`chunking.split_sentences` says why); orphans merged under `MIN_WORDS = 3` |
 > | §6 `[PAUSE n]` markers | narrator learns no markup: callers pass `Gap` segments |
 > | §7 RAS port, EOC suppression, `generation.py` patches | not built; the Higgs backend sets temperature (0.4) and the frame cap only |
-> | §8 Whisper alone; fail at `num_errors > ceil(words/10)` | Parakeet v3 first, Whisper on its rejections, accept if either confirms; per-sentence coverage ≥ 0.90 plus hard-fail rules (`narrator/verify.py`) |
+> | §8 Whisper alone; fail at `num_errors > ceil(words/10)` | with the `[parakeet]` extra, Parakeet v3 first and Whisper on its rejections, accept if either confirms (Whisper alone without it); per-sentence coverage ≥ 0.90 plus hard-fail rules (`narrator/verify.py`) |
 > | §9 trim instead of retry | not built |
 > | §10 escalating ladder (seed, `min_frames`, split at best boundary) | `max_attempts = 3` plain retries, best take kept, then sentence-by-sentence split |
 > | §11.3 per-chunk loudness matching | not built, and speaker level is declared, never inferred (`AGENTS.md`) |

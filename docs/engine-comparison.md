@@ -12,8 +12,10 @@ deliberately drops the footprint constraint).
   rates best-in-class for Czech. Script: `roundtrip_compare.py`.
 - `synthesize.py`, `roundtrip_compare.py` and `stt-lab` belong to the pipeline
   narrator was extracted from and a sibling project; none is in this repo. The
-  equivalent harness here is [`bench/`](../bench/README.md), and the per-sentence
-  architecture argued for below is what `narrator` ships.
+  equivalent harness here is [`bench/`](../bench/README.md). What `narrator`
+  ships from the argument below: bounded chunks (≤ 250 characters, packed from
+  whole sentences), with sentence-by-sentence synthesis as the recovery for a
+  chunk that fails.
 
 ## 1. Cost
 
