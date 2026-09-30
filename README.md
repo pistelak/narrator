@@ -248,6 +248,32 @@ text, so audio that verifies but does not sound right needs `--reroll 12,40`
 changes how a paragraph packs into chunks invalidates that paragraph's chunks
 from the edit onward — boundaries are not content-defined.
 
+## Keeping refused takes (opt-in)
+
+A chunk "recovered by retry" shipped a take that verified, but the report alone
+cannot say whether the takes refused before it were real defects or the
+recogniser mishearing correct audio. Only listening settles that, so a render
+can keep them:
+
+```bash
+narrate script.txt episode.wav --voice v.wav --voice-text "..." --rejects rejects
+```
+
+```python
+render(segments, voice, backend, out, cfg=RenderConfig(rejects=Path("rejects")))
+```
+
+Each render writes a new `<timestamp>-<id>/` folder under that directory: one
+wav per refused take, and a line in `rejects.jsonl` per refusal with the text it
+was checked against, the check that refused it (`cap`, `duration`, `silence`,
+`verification`, or `raised`), the transcript, coverage and word diagnostics, and
+the transcript the chunk finally ended with. `cap` and `duration` wavs are the
+raw synthesis those checks measured; `silence` and `verification` wavs are the
+trimmed take the gate and the recogniser measured. Listen, and label each one
+yourself — narrator never guesses. The summary line counts this run's refusals
+by check. A write that fails stops the render: the evidence is what was asked
+for. Reused takes bring none; their evidence is in the run that made them.
+
 ## Question intonation (opt-in)
 
 The measured engines render yes/no question rises stochastically — roughly 3

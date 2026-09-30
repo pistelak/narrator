@@ -34,7 +34,7 @@ from narrator.audio import (
 )
 from narrator.chunking import split_sentences
 from narrator.takes import TakeStore, take_key
-from narrator.types import Audio, Backend, ChunkResult, Verdict, Verifier, Voice
+from narrator.types import Audio, Backend, ChunkResult, Rejection, Verdict, Verifier, Voice
 
 SEMANTICS = 3
 """Version of the ladder's own behaviour, for the take store's key.
@@ -521,18 +521,24 @@ def _synthesize(
     intent: _RiseIntent,
 ) -> ChunkResult:
     """The ladder itself, with no store in the picture."""
-    attempt = _best_attempt(text, backend, verifier, voice, cfg, intent.chunk)
+    # Every refused generation, across both ladders, rides out on the result
+    # whatever the outcome — the evidence for issue #55 is exactly the chunks
+    # that recovered, which are the ones a failure-only record would miss.
+    rejected: list[Rejection] = []
+    attempt = _best_attempt(text, backend, verifier, voice, cfg, intent.chunk,
+                            rejected=rejected)
 
     if attempt is not None and attempt.ok:
         # "retry" means a failure was recovered. Keyed off prior_failures, not
         # number: rise selection can select ordinal 2 after a *verified* first
         # take, and calling that a recovery would misreport a healthy chunk.
-        return _result(index, text, attempt, recovered_by="retry" if attempt.prior_failures else "")
+        return _result(index, text, attempt, recovered_by="retry" if attempt.prior_failures else "",
+                       rejected=rejected)
 
     split_spent = 0
     if cfg.allow_sentence_split:
         audio_, coverage_, split_spent = _sentence_split(text, backend, verifier, voice, cfg,
-                                                         intent)
+                                                         intent, rejected)
         # The assembly is checked as a whole, not trusted because its parts
         # passed. Two sentences can each clear the gate and still meet across a
         # join: `trim_silence` is peak-relative, so low-level residue survives it
@@ -555,6 +561,7 @@ def _synthesize(
                 # never be mistaken for the defect.
                 silence_s=longest_silent_run(audio_, backend.sample_rate,
                                              cfg.silence_drop_db),
+                rejected=tuple(rejected),
             )
         # The failed split's generations were still paid for; the failed
         # result must report them, or six real calls read as three.
@@ -584,9 +591,9 @@ def _synthesize(
         return ChunkResult(
             index=index, text=text, audio=np.zeros(0, dtype=np.float32),
             duration_s=0.0, attempts=cfg.max_attempts + split_spent, ok=False,
-            coverage=0.0, dropped_sentence=text,
+            coverage=0.0, dropped_sentence=text, rejected=tuple(rejected),
         )
-    return _result(index, text, attempt, extra_calls=split_spent)
+    return _result(index, text, attempt, extra_calls=split_spent, rejected=rejected)
 
 
 def _rise_checker(wanted: bool) -> Callable | None:
@@ -611,7 +618,13 @@ def _rise_checker(wanted: bool) -> Callable | None:
 def _best_attempt(
     text: str, backend: Backend, verifier: Verifier, voice: Voice, cfg: SynthConfig,
     wants_rise: bool = False,
+    rejected: list[Rejection] | None = None,
+    sentence: int | None = None,
 ) -> _Attempt | None:
+    """The retry loop for one text. Every refused generation is appended to
+    `rejected` when given — an accumulator rather than a second return value,
+    because the bench harness calls this directly for the chosen attempt alone.
+    `sentence` stamps which split sentence this ladder is rendering."""
     reference = resolve_reference(text, cfg)
     # Counted from the REFERENCE, because a declared atom is not a spoken word.
     # Two real words carrying three atoms read as five, and the duration FLOOR
@@ -644,6 +657,8 @@ def _best_attempt(
             # no guard here, so a transient error at chunk 80 discarded fifteen
             # minutes of completed work.
             failures += 1
+            if rejected is not None:
+                rejected.append(Rejection(number, sentence, reference, "raised"))
             continue
 
         # RAW length, on purpose: the floor, the ceiling and the cap are claims
@@ -737,6 +752,9 @@ def _best_attempt(
             failures += 1
             if best is None or attempt.rank > best.rank:
                 best = attempt
+            if rejected is not None:
+                rejected.append(_rejection(number, sentence, reference, attempt,
+                                           raw=audio, silence_ok=silence_ok))
 
     # No verified take cleared the rise threshold: ship the FIRST verified
     # take. Preferring the largest sub-threshold delta is plausible but
@@ -784,7 +802,7 @@ def _coalesce_atom_only(sentences: list[str], cfg: SynthConfig) -> list[str]:
 
 def _sentence_split(
     text: str, backend: Backend, verifier: Verifier, voice: Voice, cfg: SynthConfig,
-    intent: _RiseIntent,
+    intent: _RiseIntent, rejected: list[Rejection] | None = None,
 ) -> tuple[Audio | None, float, int]:
     """Render sentence by sentence. Audio is None unless every sentence passes.
 
@@ -807,12 +825,13 @@ def _sentence_split(
     gap: Audio | None = None
     worst = 1.0
     attempts = 0
-    for sentence in sentences:
+    for k, sentence in enumerate(sentences):
         # Asked here, where the sentence is actually about to be rendered alone.
         # Asking up front for the store's benefit would consume a stateful
         # policy's answers for sentences no ladder ever reaches.
         attempt = _best_attempt(sentence, backend, verifier, voice, cfg,
-                                intent.wants(sentence, voice, cfg))
+                                intent.wants(sentence, voice, cfg),
+                                rejected=rejected, sentence=k)
         if attempt is None or not attempt.ok:
             attempts += attempt.calls_spent if attempt is not None else cfg.max_attempts
             return None, 0.0, attempts
@@ -841,8 +860,38 @@ def _sentence_split(
     return np.concatenate(pieces[:-1]), worst, attempts
 
 
+def _rejection(number: int, sentence: int | None, reference: str, attempt: _Attempt,
+               raw: Audio, silence_ok: bool) -> Rejection:
+    """Record one refused attempt, with the buffer its failing check measured.
+
+    First failing check wins, in the order the ladder applies them. Cap and
+    duration read the RAW length, so they keep the raw buffer: trimming can
+    remove exactly the padding that failed them, and the operator would then
+    listen to evidence the check never saw.
+    """
+    if attempt.hit_cap:
+        reason = "cap"
+    elif not attempt.duration_ok:
+        reason = "duration"
+    elif not silence_ok:
+        reason = "silence"
+    else:
+        reason = "verification"
+    v = attempt.verdict
+    return Rejection(
+        attempt=number, sentence=sentence, reference=reference, reason=reason,
+        duration_s=attempt.duration, silence_s=attempt.silence_s,
+        coverage=v.coverage, transcript=v.transcript,
+        dropped_sentence=v.dropped_sentence, word_diagnostics=v.word_diagnostics,
+        # Copied: this outlives the loop, and a backend that reuses one output
+        # buffer would otherwise rewrite the evidence with a LATER attempt —
+        # a review reproduced the accepted take saved as the rejected one.
+        audio=np.array(raw if reason in ("cap", "duration") else attempt.audio, copy=True),
+    )
+
+
 def _result(index: int, text: str, attempt: _Attempt, recovered_by: str = "",
-            extra_calls: int = 0) -> ChunkResult:
+            extra_calls: int = 0, rejected: list[Rejection] | None = None) -> ChunkResult:
     return ChunkResult(
         index=index, text=text, audio=attempt.audio, duration_s=attempt.duration,
         attempts=attempt.calls_spent + extra_calls, ok=attempt.ok,
@@ -851,4 +900,5 @@ def _result(index: int, text: str, attempt: _Attempt, recovered_by: str = "",
         transcript=attempt.verdict.transcript, recovered_by=recovered_by,
         word_diagnostics=attempt.verdict.word_diagnostics,
         silence_s=attempt.silence_s,
+        rejected=tuple(rejected or ()),
     )

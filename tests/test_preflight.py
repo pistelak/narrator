@@ -159,7 +159,8 @@ def test_cli_preflight_exits_zero_on_a_clean_script(
     assert "every chunk can verify" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("flag", ["--no-verify", "--write-anyway", "--reroll", "--takes"])
+@pytest.mark.parametrize("flag", ["--no-verify", "--write-anyway", "--reroll", "--takes",
+                                  "--rejects"])
 def test_cli_preflight_refuses_render_only_flags(tmp_path: Path, flag: str) -> None:
     """One exit code per outcome, not one per flag combination.
 
@@ -175,7 +176,7 @@ def test_cli_preflight_refuses_render_only_flags(tmp_path: Path, flag: str) -> N
     script = tmp_path / "script.txt"
     script.write_text(DOOMED, encoding="utf-8")
     argv = [str(script), str(tmp_path / "out.wav"), "--preflight", flag]
-    if flag in ("--reroll", "--takes"):
+    if flag in ("--reroll", "--takes", "--rejects"):
         argv.append("1" if flag == "--reroll" else str(tmp_path))
     with pytest.raises(SystemExit):
         main(argv)

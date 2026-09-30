@@ -81,6 +81,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="comma-separated chunk numbers (as printed, 1-based) to "
                              "generate fresh, ignoring any stored take — for audio that "
                              "verifies but does not sound right")
+    parser.add_argument("--rejects", type=Path,
+                        help="directory to keep every refused take in, for listening: "
+                             "each run writes a new timestamped folder of wavs plus "
+                             "rejects.jsonl saying why each was refused")
     args = parser.parse_args(argv)
 
     try:
@@ -109,6 +113,7 @@ def main(argv: list[str] | None = None) -> int:
             name for name, value in (
                 ("--no-verify", args.no_verify), ("--write-anyway", args.write_anyway),
                 ("--takes", args.takes is not None), ("--reroll", bool(args.reroll.strip())),
+                ("--rejects", args.rejects is not None),
             ) if value
         ]
         if conflicting:
@@ -153,6 +158,7 @@ def main(argv: list[str] | None = None) -> int:
         on_progress=_progress,
         takes=args.takes,
         reroll=reroll,
+        rejects=args.rejects,
     )
 
     try:
