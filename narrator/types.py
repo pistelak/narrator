@@ -160,6 +160,50 @@ class Voice:
 # Output
 # --------------------------------------------------------------------------
 
+@dataclass(frozen=True)
+class Rejection:
+    """One generation the retry ladder refused, and why (issue #55).
+
+    The report used to keep only the take that shipped, so a chunk "recovered by
+    retry" said nothing about what the rejected attempts sounded like. On 7 Czech
+    episodes (~540 chunks) all 20 quarantines were transcription mismatches on
+    correct audio, the operator overruling the gate each time — and ~40 more
+    chunks were recovered by retry with no record of what was refused. Whether
+    those refusals were real defects or recogniser noise is the question the gate
+    has to answer for itself, and only listening answers it: a transcript is the
+    recogniser's claim, not ground truth. So this carries the audio, and narrator
+    never labels a rejection defect or noise.
+    """
+
+    attempt: int
+    """1-based ordinal within its ladder. A sentence-split ladder restarts at 1."""
+    sentence: int | None
+    """None for the whole-chunk ladder; k (0-based) for sentence k of the split."""
+    reference: str
+    """The exact text this attempt was checked against — the sentence, not the
+    chunk, on the split path, where the assembly itself carries no transcript."""
+    reason: str
+    """One of "raised", "cap", "duration", "silence", "verification". One per
+    attempt, first failing check wins in that order."""
+    duration_s: float = 0.0
+    """RAW synthesis length; 0.0 when generation raised."""
+    silence_s: float = 0.0
+    coverage: float = 0.0
+    transcript: str = ""
+    """Empty unless the recogniser ran: the cheap checks skip it by design."""
+    dropped_sentence: str = ""
+    word_diagnostics: tuple[str, ...] = ()
+    audio: Audio | None = None
+    """The buffer the FAILING check measured, so what is heard is the evidence.
+
+    "cap" and "duration" hold the RAW synthesis: those checks read the untrimmed
+    length, and trimming can remove exactly the padding that failed them.
+    "silence" and "verification" hold the TRIMMED take, which is what the gate
+    and the recogniser measured. None when generation raised, and None on every
+    result `render` returns — it writes the audio out (when asked) and drops it
+    after each chunk, so a long render never holds its refused takes in memory."""
+
+
 @dataclass
 class ChunkResult:
     """What happened to one chunk. The unit of the render report."""
@@ -243,6 +287,15 @@ class ChunkResult:
     chunks — which is where a real kill lands — while this needs the settled rate
     and the complete piece list. Every result in the returned report has it."""
 
+    rejected: tuple[Rejection, ...] = ()
+    """Every generation refused on the way to this result, in the order made —
+    whole-chunk ladder first, then each split sentence's. See `Rejection`.
+
+    Appended, for the reason `reused` records above. Empty on a reused take:
+    this run made no attempts, and history is not replayed from the store — the
+    run that made the take is the one whose rejects directory holds its evidence.
+    A verified take passed over by rise selection is not here: it verified."""
+
 
 @dataclass
 class RenderReport:
@@ -307,12 +360,22 @@ class RenderReport:
         reused = sum(1 for c in self.chunks if c.reused)
         cached = f", {reused} reused" if reused else ""
         unwritten = f" | {self.takes_unwritten} take(s) not cached" if self.takes_unwritten else ""
+        # What the gate cost on THIS run, by the check that refused. Reused
+        # chunks carry no rejections, so nothing is counted twice across runs.
+        by_reason: dict[str, int] = {}
+        for c in self.chunks:
+            for r in c.rejected:
+                by_reason[r.reason] = by_reason.get(r.reason, 0) + 1
+        rejected = ""
+        if by_reason:
+            parts = ", ".join(f"{reason} {n}" for reason, n in sorted(by_reason.items()))
+            rejected = f" | {sum(by_reason.values())} rejected attempts ({parts})"
         return (
             f"{self.out_path.name}: {self.duration_s / 60:.1f} min | "
             f"{len(self.chunks)} chunks, {len(self.failures)} failed, {rec} recovered"
             f"{cached} | "
             f"{self.loudness_lufs:.1f} LUFS, peak {self.peak_dbfs:.1f} dBFS | "
-            f"rendered in {self.render_s / 60:.1f} min{unwritten}"
+            f"rendered in {self.render_s / 60:.1f} min{unwritten}{rejected}"
         )
 
 

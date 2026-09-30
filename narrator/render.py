@@ -10,9 +10,11 @@ wrong. Pass `quarantine=False` to get the file plus a report that says so.
 
 from __future__ import annotations
 
+import json
 import time
+import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -122,6 +124,27 @@ class RenderConfig:
     rerolling it cannot replace a stored entry, and a later identical chunk goes
     on serving the take a previous run filed."""
 
+    rejects: Path | None = None
+    """Directory to keep every refused generation in, for listening. None: off.
+
+    Issue #55: the report keeps only the take that shipped, so whether retries
+    catch real defects or recogniser noise could not be decided. With this set,
+    each render creates a NEW `<UTC yyyymmddTHHMMSS>-<hex>/` under it — chunk
+    indices restart at 0 every render, so a shared directory would have the
+    second render overwrite the first one's audio while both logs survived —
+    and writes, per rejected attempt, `c<chunk>-<c|s<k>>-a<attempt>.wav` and
+    then one line of `rejects.jsonl` naming it. The wav is written first, so a
+    line never names a file that was not finished. The run directory is not
+    reported: it is the newest one here.
+
+    Which buffer each wav holds follows from its `reason` — see
+    `Rejection.audio`. A "raised" attempt has a line and no wav.
+
+    A failed write RAISES, unlike the take store's: the store is an
+    optimisation, while this evidence is what the caller asked for, and a
+    refused take whose write failed is gone for good. Opt-in for the store's
+    reason too — narrator writes no file nobody asked for."""
+
 
 def render(
     segments: list[Segment],
@@ -211,6 +234,14 @@ def render(
                     f"removed, so there is nothing to verify: {planned.text[:60]!r}"
                 )
 
+    # Created here, after every input check and before the first synthesis, so
+    # an unwritable destination fails before any generation is paid for.
+    run_dir: Path | None = None
+    if cfg.rejects is not None:
+        run_dir = cfg.rejects / (time.strftime("%Y%m%dT%H%M%S", time.gmtime())
+                                 + "-" + uuid.uuid4().hex[:6])
+        run_dir.mkdir(parents=True, exist_ok=False)
+
     pieces: list[Audio | Gap] = []
     results: list[ChunkResult] = []
     # Where each result begins, as an index into `pieces`. One number per result,
@@ -243,6 +274,12 @@ def render(
         result = synthesize_chunk(segment.text, index, backend, verifier,
                                   chunk_voice, cfg.synth,
                                   store=store, reuse=index not in cfg.reroll)
+        if result.rejected:
+            if run_dir is not None:
+                _save_rejections(run_dir, result, backend.sample_rate)
+            # Dropped whether or not it was saved: `results` holds every chunk
+            # until the render ends, and refused takes are several per chunk.
+            result.rejected = tuple(replace(r, audio=None) for r in result.rejected)
         results.append(result)
         starts_at.append(len(pieces))
         index += 1
@@ -384,6 +421,40 @@ def _unscripted_silence(pieces: list[Audio | Gap], audio: Audio, sample_rate: in
                       if min(end, b) > max(start, a))
         worst = max(worst, (end - start - overlap) / sample_rate)
     return worst
+
+
+def _save_rejections(run_dir: Path, result: ChunkResult, sample_rate: int) -> None:
+    """One wav per refused take that has audio, then its line. Errors propagate."""
+    import soundfile as sf
+
+    with open(run_dir / "rejects.jsonl", "a", encoding="utf-8") as log:
+        for r in result.rejected:
+            wav = ""
+            if r.audio is not None:
+                ladder = "c" if r.sentence is None else f"s{r.sentence}"
+                wav = f"c{result.index:04d}-{ladder}-a{r.attempt}.wav"
+                sf.write(str(run_dir / wav), r.audio, sample_rate, subtype="FLOAT")
+            log.write(json.dumps({
+                "chunk": result.index,
+                "text": result.text,
+                "ok": result.ok,
+                "recovered_by": result.recovered_by,
+                # Not "accepted": on a failed chunk this is the best FAILED
+                # attempt's transcript, possibly from the diagnostic re-verify.
+                "final_transcript": result.transcript,
+                "attempt": r.attempt,
+                "sentence": r.sentence,
+                "reference": r.reference,
+                "reason": r.reason,
+                "duration_s": r.duration_s,
+                "silence_s": r.silence_s,
+                "coverage": r.coverage,
+                "transcript": r.transcript,
+                "dropped_sentence": r.dropped_sentence,
+                "word_diagnostics": list(r.word_diagnostics),
+                "wav": wav,
+            }, ensure_ascii=False) + "\n")
+            log.flush()
 
 
 def _write(out: Path, audio: Audio, sample_rate: int) -> None:
