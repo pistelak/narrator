@@ -370,11 +370,17 @@ class RenderReport:
         if by_reason:
             parts = ", ".join(f"{reason} {n}" for reason, n in sorted(by_reason.items()))
             rejected = f" | {sum(by_reason.values())} rejected attempts ({parts})"
+        # Printed on every render, not above a threshold: the number is reported
+        # rather than refused precisely because no threshold has been argued
+        # from data yet, and a field only the Python API could see was invisible
+        # to every CLI user it was added for.
+        dead_air = (f" | longest unscripted silence {self.unscripted_silence_s:.1f}s"
+                    if self.unscripted_silence_s else "")
         return (
             f"{self.out_path.name}: {self.duration_s / 60:.1f} min | "
             f"{len(self.chunks)} chunks, {len(self.failures)} failed, {rec} recovered"
             f"{cached} | "
-            f"{self.loudness_lufs:.1f} LUFS, peak {self.peak_dbfs:.1f} dBFS | "
+            f"{self.loudness_lufs:.1f} LUFS, peak {self.peak_dbfs:.1f} dBFS{dead_air} | "
             f"rendered in {self.render_s / 60:.1f} min{unwritten}{rejected}"
         )
 

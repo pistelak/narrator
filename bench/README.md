@@ -10,6 +10,10 @@ same `inputs/`, and compare with `stt_roundtrip.py`.
 
 ## Original notes
 
+*Kept as written for the first round (assistant TTS, before Higgs). Its engine
+table and "Why Piper wins" record that round's verdict; Higgs has since been
+adopted — see `../docs/engine-comparison.md`.*
+
 A minimal benchmark for evaluating **local** text-to-speech on Czech and
 realistic mixed Czech/English text. Sibling project to `stt-lab/`; same
 folder shape, same CSV style, same "no Docker, no paid APIs" rules.
@@ -91,9 +95,16 @@ Model weights are downloaded on first use:
 - XTTS-v2 → `~/Library/Application Support/tts/` (~1.7 GB)
 - mlx-whisper `large-v3-turbo` → `~/.cache/huggingface/` (~1.5 GB)
 
+Higgs and the measurement tools run in the repo's real-model venv instead
+(Apple Silicon), created from the repo root:
+
+```sh
+python3.12 -m venv .venv-higgs && .venv-higgs/bin/pip install -e '.[higgs,parakeet]'
+```
+
 ## Running
 
-With the venv active:
+With the bench venv active:
 
 ```sh
 # Piper — fastest / smallest.
@@ -109,9 +120,28 @@ python bench_xtts.py
 python stt_roundtrip.py
 ```
 
+Higgs, from the repo root. The script's `--temperature` defaults to 1.0,
+mlx-audio's own default; narrator ships 0.4 (`SynthConfig.temperature`, measured
+in `docs/engine-comparison.md` §4), so pass it to measure what ships. Inputs over
+`--max-chars` (default 1200) are skipped, not truncated:
+
+```sh
+.venv-higgs/bin/python bench/bench_higgs.py --temperature 0.4
+```
+
+The measurement tools also run from the repo root in `.venv-higgs`; each
+script's docstring has its full usage:
+
+```sh
+.venv-higgs/bin/python bench/asr_headtohead.py <report.json> --voice bench/.voices/ref/<clip>.wav [--lang cs]
+.venv-higgs/bin/python bench/verifier_acceptance.py <script.md> --voice bench/.voices/ref/<clip>.wav [--lang cs]
+.venv-higgs/bin/python bench/intonation_probe.py --voice bench/.voices/ref/<clip>.wav --tag baseline
+.venv/bin/python bench/cs_numeral_audit.py   # before touching narrator/cs_numerals.py; [dev] adds num2words
+```
+
 Each `bench_*.py` script:
 
-- reads every `.txt` in `inputs/`,
+- reads every `.txt` in `inputs/` (`bench_higgs.py` skips any over its `--max-chars`),
 - synthesizes one WAV into `outputs/<stem>__<engine>.wav`,
 - and appends one row per input to `outputs/results.csv`.
 
@@ -125,7 +155,7 @@ large-v3-turbo`, language forced to match the source input (Czech for
 | column | meaning |
 |---|---|
 | `input_file` | source .txt filename |
-| `engine` | `piper` or `coqui-xtts` |
+| `engine` | `piper`, `coqui-xtts`, `supertonic` or `higgs` |
 | `model` | engine-specific model id |
 | `voice` | voice / speaker name |
 | `text_chars` | character count of the input |
@@ -133,7 +163,7 @@ large-v3-turbo`, language forced to match the source input (Czech for
 | `audio_duration_seconds` | length of the produced WAV |
 | `realtime_factor` | `synthesis_time / audio_duration` — **lower is faster** |
 | `output_path` | relative path to the WAV |
-| `sample_rate` | WAV sample rate (Piper: 22 050; XTTS-v2: 24 000) |
+| `sample_rate` | WAV sample rate (Piper: 22 050; XTTS-v2 and Higgs: 24 000; Supertonic: 44 100) |
 
 Rows are **appended**, so running both engines accumulates a side-by-side
 comparison in one CSV.
@@ -174,8 +204,8 @@ python bench_xtts.py --speaker "Andrew Chipper"
 ## Reference clips
 
 Cloning-backend probes (`intonation_probe.py`, `verifier_acceptance.py`,
-`asr_headtohead.py` — every script with a `--voice`
-flag) take an operator-supplied reference clip with its exact
+`asr_headtohead.py`, and `bench_higgs.py` via `--ref-audio`/`--ref-text`) take
+an operator-supplied reference clip with its exact
 transcript in a `.txt` sidecar of the same basename. Keep clips under
 `bench/.voices/ref/` — the directory is gitignored because a person's voice
 recording must never land in the repo.
@@ -198,8 +228,10 @@ Suggested naming: `bench/.voices/ref/radek_v1.wav` + `radek_v1.txt`.
 ## How language is chosen
 
 XTTS-v2 and Supertonic 3 require an explicit language code per call. Piper
-voices are single-language and do not. All bench scripts and
-`stt_roundtrip.py` route inputs by filename prefix:
+voices are single-language and Higgs infers language from the text, so neither
+takes one. `bench_xtts.py`, `bench_supertonic.py` and `stt_roundtrip.py` route
+inputs by filename prefix, and any other name falls back to `cs` — so name an
+English input `en_*`:
 
 | Prefix | Language |
 |---|---|

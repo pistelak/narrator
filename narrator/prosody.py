@@ -68,7 +68,8 @@ RISE_THRESHOLD_ST = 1.5
 def voiced_f0(audio: Audio, sample_rate: int) -> np.ndarray:
     """Hz values of accepted voiced frames, time-ordered, one per 10 ms hop.
 
-    Requires librosa (the `[higgs]` extra); callers that must not raise go
+    Requires librosa, which the `[parakeet]` extra brings (via parakeet-mlx;
+    `[higgs]` alone does not); callers that must not raise go
     through `terminal_delta_st` or gate on `rise_delta_checker()`.
     """
     import librosa

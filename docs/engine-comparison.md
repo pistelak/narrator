@@ -1,6 +1,6 @@
 # Higgs Audio v3 TTS vs Supertonic 3 — Czech + embedded English
 
-Addendum to `RESULTS.md`. Run 2026-08-11 on **M5 Pro / 64 GB** (the original
+Addendum to [`bench/RESULTS.md`](../bench/RESULTS.md). Run 2026-08-11 on **M5 Pro / 64 GB** (the original
 benchmark assumed "M1 or newer" and sized every candidate for that; this run
 deliberately drops the footprint constraint).
 
@@ -10,6 +10,10 @@ deliberately drops the footprint constraint).
   settings `synthesize.py` renders episodes with.
 - Intelligibility: `mlx-whisper large-v3-turbo` round-trip, the model `stt-lab`
   rates best-in-class for Czech. Script: `roundtrip_compare.py`.
+- `synthesize.py`, `roundtrip_compare.py` and `stt-lab` belong to the pipeline
+  narrator was extracted from and a sibling project; none is in this repo. The
+  equivalent harness here is [`bench/`](../bench/README.md), and the per-sentence
+  architecture argued for below is what `narrator` ships.
 
 ## 1. Cost
 
@@ -70,7 +74,7 @@ this still needs a lexicon entry whichever engine is used.
 
 ## 4. Temperature matters more than expected
 
-The README's default `temperature=1.0` is too high. One run at 1.0 **silently
+mlx-audio's README default `temperature=1.0` is too high (narrator ships 0.4, `SynthConfig.temperature`). One run at 1.0 **silently
 dropped an entire clause** ("který ho zmáčkne zhruba na polovinu"). A sweep of
 4 temperatures × 2 reps showed the clause surviving in all 8, so that was a
 stochastic failure, not a systematic one — but acronym rendering degrades

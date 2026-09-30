@@ -50,26 +50,13 @@ code before acting; a weak model's silence is never evidence of safety.
 
 For the escalated (frontier) review, use a capable reviewer from a different
 model family than the authoring agent (any independent model for
-human-authored changes). The Codex CLI example below therefore fits changes
-authored outside the GPT family; for Codex-authored changes use a non-GPT
-equivalent, and if none is available, say plainly that the
-independent-review requirement is unmet:
-
-```bash
-P=$(mktemp); O=$(mktemp); cat >"$P" <<'EOF'
-<goal, exact paths in scope, constraints, non-goals,
- proof expected per claim, output shape>
-EOF
-codex exec -s read-only -C . \
-  -m gpt-5.6-sol -c model_reasoning_effort="xhigh" \
-  -o "$O" - <"$P"
-```
-
-The prompt contract does the work: state the goal, the exact scope, what is
-out of scope, and demand file:line evidence for every claim. Read the output
-file and verify every finding against the code. In review-only tasks, report
-verified findings without editing; when implementation is in scope, fix
-verified findings and name any left unresolved.
+human-authored changes); if none is available, say plainly that the
+independent-review requirement is unmet. The command, prompt contract and
+effort policy are in `.claude/skills/narrator-review/SKILL.md` (the
+`/narrator-review` skill) — read it before running one. Verify every finding
+against the code; in review-only tasks report verified findings without
+editing, and when implementation is in scope fix them and name any left
+unresolved.
 
 ## Load-bearing rules
 
@@ -81,12 +68,18 @@ verified findings and name any left unresolved.
   motivated it is not done.
 - **No project vocabulary in the library.** `fold()` holds phonology; the
   letter-name and numeral tables are language data. Word-specific
-  equivalences come from callers via `sound_alikes` (derived from their
-  pronunciation lexicon). A regression test pins the motivating vocabulary
-  boundary.
+  equivalences come from callers via `sound_alikes` — `render` derives them
+  from `SynthConfig.pronunciation` when it builds the default verifier. A pair
+  acts only when each side is one normalized token, so a declared
+  pronunciation can say one word is heard as another but never make a numeral
+  or other word optional (#56). A regression test pins the motivating
+  vocabulary boundary.
 - **The pronunciation lexicon applies at synthesis only**; verification always
   compares against the caller's original text. Substituting upstream makes
-  correct audio fail.
+  correct audio fail. The one subtraction is `SynthConfig.non_speech`: literal
+  spans the caller declared not spoken (engine control tags) are removed from
+  the comparison reference, still sent to the engine, and their effect is
+  never verified.
 - **Speaker level is declared (`Voice.gain_db`), never inferred.** Do not add a
   stage that works out how loud a voice "should" be from the rendered audio.
   Three were built and measured, each rejected: pulling chunks toward the batch
@@ -127,13 +120,16 @@ verified findings and name any left unresolved.
 
 ## Layout
 
-`narrator/`: `chunking` (sentence boundary lives here — one home, three
-importers), `synth` (retry ladder, cheap checks, pronunciation + acronym
-spelling), `verify` (coverage scoring, folds, hard-fail rules, verifiers),
-`render` (orchestration, quarantine), `preflight` (script-only doom check —
-the verifier run against an identity transcript, no model),
-`audio` (DSP/mastering), `asr`
-(recognisers), `backends/` (TTS engines + deterministic fake), `types`
-(protocols), `cli` (the `narrate` entry point), `__init__` (the public API —
-new exports go in `__all__`). `bench/` is measurement tooling; its results
+`narrator/`: `chunking` (sentence boundary lives here — one home, every
+splitter imports it), `synth` (retry ladder, cheap checks, pronunciation +
+acronym spelling), `verify` (coverage scoring, folds, hard-fail rules,
+verifiers), `render` (orchestration, quarantine, refused-take capture),
+`takes` (the content-addressed take store; key rules above), `preflight`
+(script-only doom check — the verifier run against an identity transcript, no
+model), `prosody` (terminal-contour measurement for opt-in rise selection),
+`cs_numerals` (generated Czech numeral phrases — language data; rerun
+`bench/cs_numeral_audit.py` before touching it), `audio` (DSP/mastering),
+`asr` (recognisers), `backends/` (TTS engines + deterministic fake), `types`
+(segments, voice, results, protocols), `cli` (the `narrate` entry point),
+`__init__` (the public API — new exports go in `__all__`). `bench/` is measurement tooling; its results
 justify the design.

@@ -145,6 +145,8 @@ def test_cli_preflight_needs_no_voice_and_exits_nonzero_on_doom(
     captured = capsys.readouterr()
     assert "NEVER" in captured.out
     assert "all-numeral" in captured.err
+    # 1-based, like the progress lines and the --reroll it may be copied into.
+    assert "chunk 1:" in captured.err and "chunk 0:" not in captured.err
 
 
 def test_cli_preflight_exits_zero_on_a_clean_script(

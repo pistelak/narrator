@@ -100,6 +100,27 @@ def test_failure_message_names_chunks_and_content(tmp_path: Path) -> None:
         render(SEGMENTS, VOICE, backend, tmp_path / "e.wav", verifier)
 
 
+def test_refusal_speaks_to_the_reader_who_has_to_act_on_it(tmp_path: Path) -> None:
+    """The CLI printed the library's wording verbatim, which misled twice.
+
+    Measured on the refusal path: it told a CLI user to "Pass quarantine=False",
+    a keyword the command line cannot reach (the flag is --write-anyway), and it
+    listed the failing chunk as "chunk 1" while the progress line had just shown
+    it as [2/2] — and --reroll counts from 1, so the copied number rerolled the
+    chunk BEFORE the one that failed.
+    """
+    # Every generation after the first truncates: chunk 0 lands, chunk 1 fails.
+    backend, verifier = build({i: Failure.TRUNCATE for i in range(1, 50)})
+    with pytest.raises(RenderFailed) as excinfo:
+        render(SEGMENTS, VOICE, backend, tmp_path / "e.wav", verifier)
+    library = str(excinfo.value)
+    assert "chunk 1:" in library and "quarantine=False" in library
+
+    cli = excinfo.value.explain("Pass --write-anyway to write it anyway.", first=1)
+    assert "chunk 2:" in cli and "chunk 1:" not in cli
+    assert "--write-anyway" in cli and "quarantine" not in cli
+
+
 # ------------------------------------------------------------- reporting
 
 def test_report_counts_recoveries(tmp_path: Path) -> None:
@@ -108,6 +129,17 @@ def test_report_counts_recoveries(tmp_path: Path) -> None:
     assert report.clean
     assert any(c.recovered_by for c in report.chunks)
     assert "chunks" in report.summary()
+
+
+def test_summary_shows_unscripted_silence(tmp_path: Path) -> None:
+    """`unscripted_silence_s` was reported on the object and printed nowhere,
+    so a CLI user could not see dead air formed at a join (issue #21)."""
+    backend, verifier = build()
+    report = render(SEGMENTS, VOICE, backend, tmp_path / "g.wav", verifier)
+    report.unscripted_silence_s = 2.25
+    assert "longest unscripted silence 2.2s" in report.summary()
+    report.unscripted_silence_s = 0.0
+    assert "unscripted" not in report.summary()
 
 
 def test_progress_callback_fires_per_chunk(tmp_path: Path) -> None:
